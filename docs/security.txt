@@ -1,0 +1,6 @@
+Contact: mailto:security@ironmesh.dev
+Contact: https://github.com/lumidren/IoT-Security-Framework/security/advisories/new
+Expires: 2027-11-03T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://ironmesh.dev/.well-known/security.txt
+Policy: https://github.com/lumidren/IoT-Security-Framework/blob/main/SECURITY.md
