@@ -1,0 +1,45 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - gosec
+    - misspell
+    - revive
+    - gocritic
+    - unconvert
+    - unparam
+    - prealloc
+    - bodyclose
+    - errorlint
+    - nilerr
+    - copyloopvar
+  settings:
+    gosec:
+      excludes:
+        - G115 # integer conversions are bounds-checked where they matter (TPM parsing)
+    revive:
+      rules:
+        - name: exported
+          arguments: ["checkPrivateReceivers", "disableStutteringCheck"]
+    gocritic:
+      enabled-tags: [diagnostic, performance]
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [gosec, errcheck, unparam, bodyclose, gocritic]
+      - path: internal/kms/pkcs11/pkcs11\.go
+        text: "cgo"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/lumidren/IoT-Security-Framework

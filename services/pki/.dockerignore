@@ -1,0 +1,8 @@
+pki-data/
+*.pem
+*.key
+*.crt
+coverage*.out
+coverage*.html
+bin/
+.git/
