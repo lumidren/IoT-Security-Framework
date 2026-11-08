@@ -1,0 +1,84 @@
+{{- if .Values.ingress.enabled }}
+{{- $ing := .Values.ingress }}
+{{- $svcs := .Values.services }}
+{{- $public := list
+      (dict "name" "console" "port" (index $svcs.console.ports "http") "enabled" $svcs.console.enabled)
+      (dict "name" "registry" "port" (index $svcs.registry.ports "http") "enabled" $svcs.registry.enabled)
+      (dict "name" "ota" "port" (index $svcs.ota.ports "http") "enabled" $svcs.ota.enabled) }}
+{{- $annotations := deepCopy $ing.annotations }}
+{{- if eq $ing.className "nginx" }}
+{{- $_ := set $annotations "nginx.ingress.kubernetes.io/ssl-redirect" "true" }}
+{{- $_ := set $annotations "nginx.ingress.kubernetes.io/force-ssl-redirect" "true" }}
+{{- $_ := set $annotations "nginx.ingress.kubernetes.io/backend-protocol" "HTTP" }}
+{{- $_ := set $annotations "nginx.ingress.kubernetes.io/proxy-body-size" $ing.nginx.proxyBodySize }}
+{{- $_ := set $annotations "nginx.ingress.kubernetes.io/limit-rps" (toString $ing.nginx.limitRps) }}
+{{- $_ := set $annotations "nginx.ingress.kubernetes.io/proxy-read-timeout" "120" }}
+{{- if and $ing.tls.enabled $ing.tls.certManager.enabled (eq $ing.tls.certManager.mode "annotation") }}
+{{- if eq $ing.tls.certManager.issuerRef.kind "ClusterIssuer" }}
+{{- $_ := set $annotations "cert-manager.io/cluster-issuer" $ing.tls.certManager.issuerRef.name }}
+{{- else }}
+{{- $_ := set $annotations "cert-manager.io/issuer" $ing.tls.certManager.issuerRef.name }}
+{{- end }}
+{{- $_ := set $annotations "cert-manager.io/private-key-algorithm" "ECDSA" }}
+{{- $_ := set $annotations "cert-manager.io/private-key-size" "256" }}
+{{- end }}
+{{- else if eq $ing.className "alb" }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/scheme" $ing.alb.scheme }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/target-type" "ip" }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/group.name" $ing.alb.groupName }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/listen-ports" `[{"HTTP": 80}, {"HTTPS": 443}]` }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/ssl-redirect" "443" }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/ssl-policy" $ing.alb.sslPolicy }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/backend-protocol" "HTTP" }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/healthcheck-path" "/healthz" }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/success-codes" "200" }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/load-balancer-attributes" "routing.http.drop_invalid_header_fields.enabled=true,idle_timeout.timeout_seconds=60" }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/target-group-attributes" "deregistration_delay.timeout_seconds=30" }}
+{{- if $ing.alb.certificateArn }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/certificate-arn" $ing.alb.certificateArn }}
+{{- end }}
+{{- if $ing.alb.wafAclArn }}
+{{- $_ := set $annotations "alb.ingress.kubernetes.io/wafv2-acl-arn" $ing.alb.wafAclArn }}
+{{- end }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-public
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress
+  {{- with $annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ $ing.className }}
+  {{- if and $ing.tls.enabled (eq $ing.className "nginx") }}
+  tls:
+    - secretName: {{ $ing.tls.secretName }}
+      hosts:
+        {{- range $public }}
+        {{- if .enabled }}
+        - {{ include "ironmesh.host" (dict "root" $ "name" .name) }}
+        {{- end }}
+        {{- end }}
+  {{- end }}
+  rules:
+    {{- range $public }}
+    {{- if .enabled }}
+    - host: {{ include "ironmesh.host" (dict "root" $ "name" .name) }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ironmesh.svcName" (dict "root" $ "name" .name) }}
+                port:
+                  number: {{ .port }}
+    {{- end }}
+    {{- end }}
+{{- end }}

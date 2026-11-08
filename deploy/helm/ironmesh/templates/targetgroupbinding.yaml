@@ -1,0 +1,44 @@
+{{- /*
+Attach pods to the Terraform-managed ALB/NLB target groups (deploy/terraform/aws, module alb).
+Security group rules from the load balancers to the cluster are created by Terraform, so
+`networking` is only rendered when aws.targetGroupBindings.manageNetworking is true.
+*/}}
+{{- if and .Values.aws.enabled .Values.aws.targetGroupBindings.enabled }}
+{{- $tgb := .Values.aws.targetGroupBindings }}
+{{- $bindings := list
+      (dict "key" "console" "service" (include "ironmesh.svcName" (dict "root" $ "name" "console")) "port" "http" "lb" "alb" "enabled" .Values.services.console.enabled)
+      (dict "key" "registry" "service" (include "ironmesh.svcName" (dict "root" $ "name" "registry")) "port" "http" "lb" "alb" "enabled" .Values.services.registry.enabled)
+      (dict "key" "ota" "service" (include "ironmesh.svcName" (dict "root" $ "name" "ota")) "port" "http" "lb" "alb" "enabled" .Values.services.ota.enabled)
+      (dict "key" "emqx" "service" (printf "%s-emqx" .Release.Name) "port" "mqttssl" "lb" "nlb" "enabled" .Values.emqx.enabled)
+      (dict "key" "pkiMtls" "service" (include "ironmesh.svcName" (dict "root" $ "name" "pki")) "port" "mtls" "lb" "nlb" "enabled" .Values.services.pki.enabled)
+      (dict "key" "pkiCrl" "service" (include "ironmesh.svcName" (dict "root" $ "name" "pki")) "port" "plain" "lb" "nlb" "enabled" .Values.services.pki.enabled) }}
+{{- range $b := $bindings }}
+{{- $arn := (index $tgb $b.key).arn }}
+{{- if and $b.enabled $arn }}
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: {{ include "ironmesh.fullname" $ }}-{{ $b.key | lower }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $b.key | lower }}
+spec:
+  serviceRef:
+    name: {{ $b.service }}
+    port: {{ $b.port }}
+  targetGroupARN: {{ $arn | quote }}
+  targetType: ip
+  {{- if $tgb.manageNetworking }}
+  networking:
+    ingress:
+      - from:
+          - securityGroup:
+              groupID: {{ index $.Values.aws.loadBalancerSecurityGroupIds $b.lb | quote }}
+        ports:
+          - protocol: TCP
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

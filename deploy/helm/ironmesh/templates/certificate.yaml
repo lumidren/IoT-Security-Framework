@@ -1,0 +1,121 @@
+{{- $ing := .Values.ingress }}
+{{- $svcs := .Values.services }}
+{{- if and $ing.enabled $ing.tls.enabled $ing.tls.certManager.enabled (eq $ing.tls.certManager.mode "certificate") (eq $ing.className "nginx") }}
+---
+# Public certificate for the console / registry / ota hostnames (ECDSA P-256, 90 days).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-public
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress
+spec:
+  secretName: {{ $ing.tls.secretName }}
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    {{- range $name := list "console" "registry" "ota" }}
+    {{- if (index $svcs $name).enabled }}
+    - {{ include "ironmesh.host" (dict "root" $ "name" $name) }}
+    {{- end }}
+    {{- end }}
+  issuerRef:
+    name: {{ $ing.tls.certManager.issuerRef.name }}
+    kind: {{ $ing.tls.certManager.issuerRef.kind }}
+    group: cert-manager.io
+{{- end }}
+{{- if .Values.internalTls.certManager.enabled }}
+{{- $itls := .Values.internalTls.certManager }}
+{{- range $name, $svc := $svcs }}
+{{- if and $svc.enabled $svc.tls.enabled (not $svc.tls.existingSecret) }}
+{{- $ctx := dict "root" $ "name" $name }}
+{{- $svcName := include "ironmesh.svcName" $ctx }}
+---
+# Services CA certificate for {{ $name }} (mTLS server + client identity, CN svc-{{ $name }}).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $svcName }}-tls
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" $ctx | nindent 4 }}
+spec:
+  secretName: {{ include "ironmesh.tlsSecretName" $ctx }}
+  commonName: svc-{{ $name }}
+  duration: {{ $itls.duration }}
+  renewBefore: {{ $itls.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+    - {{ $svcName }}
+    - {{ $svcName }}.{{ $.Release.Namespace }}
+    - {{ $svcName }}.{{ $.Release.Namespace }}.svc
+    - {{ $svcName }}.{{ $.Release.Namespace }}.svc.cluster.local
+    {{- if eq $name "pki" }}
+    - {{ include "ironmesh.host" (dict "root" $ "name" "pki") }}
+    {{- end }}
+  uris:
+    - spiffe://ironmesh/service/{{ $name }}
+  issuerRef:
+    name: {{ $itls.issuerRef.name }}
+    kind: {{ $itls.issuerRef.kind }}
+    group: cert-manager.io
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if and .Values.emqx.enabled .Values.emqxTls.certManager.enabled }}
+---
+# Broker listener certificate (Services CA). Devices pin the Services CA SPKI and check the
+# SAN against the configured broker host (DESIGN_CONTRACT.md §4).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.emqxTls.secretName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: emqx
+spec:
+  secretName: {{ .Values.emqxTls.secretName }}
+  commonName: svc-emqx
+  duration: {{ .Values.internalTls.certManager.duration }}
+  renewBefore: {{ .Values.internalTls.certManager.renewBefore }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+    - {{ include "ironmesh.host" (dict "root" $ "name" "mqtt") }}
+    - {{ .Release.Name }}-emqx
+    - {{ .Release.Name }}-emqx.{{ .Release.Namespace }}.svc
+    - {{ .Release.Name }}-emqx-headless.{{ .Release.Namespace }}.svc
+    {{- range .Values.emqxTls.extraDnsNames }}
+    - {{ . }}
+    {{- end }}
+  issuerRef:
+    name: {{ .Values.internalTls.certManager.issuerRef.name }}
+    kind: {{ .Values.internalTls.certManager.issuerRef.kind }}
+    group: cert-manager.io
+{{- end }}
