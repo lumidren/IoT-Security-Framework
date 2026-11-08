@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: ironmesh
+    orgId: 1
+    folder: IronMesh
+    folderUid: ironmesh
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      # Mount observability/grafana/dashboards here.
+      path: /var/lib/grafana/dashboards/ironmesh
+      foldersFromFilesStructure: false
