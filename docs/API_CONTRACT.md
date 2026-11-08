@@ -13,8 +13,11 @@ is checked against those documents in CI.
 * Authentication: `Authorization: Bearer <OIDC access token>` (JWT, verified against the IdP JWKS,
   `aud` must contain `ironmesh-api`). Tenant is derived from the token claim `tenant_id`; users with
   the platform role `platform_admin` may pass `X-IronMesh-Tenant: <uuid>` to act in another tenant
-  (audited). Service-to-service calls use ES256 JWTs signed by the caller's Services CA key with
-  `aud=<service name>`, 5 min lifetime, over mTLS.
+  (audited). Service-to-service calls run over mTLS and authenticate with either an ES256 JWT
+  signed by the caller's Services CA key (`aud=<service name>`, 5 min lifetime) or a static token
+  bound to exactly one calling service (registry: `REGISTRY_INTERNAL_TOKENS`, a JSON map of
+  caller -> token). Each internal endpoint names the callers it accepts; a token or JWT for any
+  other service gets `403`.
 * RBAC roles (per tenant): `owner`, `admin`, `operator`, `viewer`, `factory`. Mutations below list
   the minimum role. API keys (`imk_` prefix, SHA-256 stored) carry a role and optional scopes and are
   accepted in the same header.
@@ -127,7 +130,7 @@ Server sends JSON frames `{type, at, data}` for: `device.connected`, `device.dis
 default subscription is `fleet` + `alerts`. Ping every 30 s.
 
 ### 1.12 Internal
-* `GET /internal/v1/devices/{id}/lifecycle` -> `{device_id, tenant_id, state, assurance_level}`
+* `GET /internal/v1/devices/{id}/lifecycle` -> `{device_id, tenant_id, state, assurance_level, product}`
   (policy service; service JWT `aud=registry`)
 * `POST /internal/v1/devices/{id}/enrolled` (PKI) body `{serial_hex, not_before, not_after, se_type, assurance_level, fw_version, fw_hash_hex}`
   -> transitions `manufactured -> provisioned -> active` and records the cert.
@@ -206,3 +209,4 @@ See `services/pki/README.md`: `POST /v1/certificates/{serial}/revoke`, `GET /v1/
 | `im.alerts`  | `<tenant>/<device>` | `Alert`                                                                | anomaly  | registry (timeline, WS), SIEM forwarder |
 | `im.audit`   | `<tenant>`          | `AuditEvent`                                                           | all      | registry (audit store), SIEM |
 | `im.commands`| `<tenant>/<device>` | `{cmd_id, device_id, status, at}`                                       | registry | ota (campaign device state), anomaly |
+| `im.campaigns`| `<tenant>`         | `{type: "campaign.updated", at, tenant_id, data: Campaign + {campaign_id}}` | ota      | registry (relayed to WebSocket `fleet` and `campaign:<id>`) |
