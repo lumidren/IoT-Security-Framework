@@ -369,6 +369,7 @@ async def test_internal_endpoints(env: Env) -> None:
         "tenant_id": t,
         "state": "manufactured",
         "assurance_level": None,
+        "product": dev["product"],
     }
     r = await env.client.get(f"/internal/v1/devices/{did}/lifecycle", headers=env.service("pki"))
     assert r.status_code == 403
@@ -377,6 +378,19 @@ async def test_internal_endpoints(env: Env) -> None:
         headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
     )
     assert r.status_code == 200
+    # The policy service's static token identifies the policy service only: it cannot call
+    # endpoints reserved for the PKI or the anomaly engine.
+    r = await env.client.post(
+        f"/internal/v1/devices/{did}/quarantine",
+        json={"reason": "forged", "alert_id": "a-1"},
+        headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+    )
+    assert r.status_code == 403
+    r = await env.client.get(
+        f"/internal/v1/devices/{did}/lifecycle",
+        headers={"Authorization": "Bearer not-a-configured-token"},
+    )
+    assert r.status_code == 401
     r = await env.client.get(f"/internal/v1/devices/{did}/lifecycle", headers=env.auth(t))
     assert r.status_code == 401
     r = await env.client.get(f"/internal/v1/devices/{did}/lifecycle")

@@ -340,7 +340,7 @@ def build_env(kind: str, repo: Repository, tmp: Path) -> Env:
         oidc_audience=AUDIENCE,
         background_jobs_enabled=False,
         orchestration_backoff_seconds=0.01,
-        internal_token=SecretStr(INTERNAL_TOKEN),
+        internal_tokens={"policy": SecretStr(INTERNAL_TOKEN)},
         log_level="warning",
         service_jwt_trusted_keys={n: pem_public(k) for n, k in SERVICE_KEYS.items()},
     )

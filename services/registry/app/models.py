@@ -475,6 +475,7 @@ class Lifecycle(BaseModel):
     tenant_id: str
     state: DeviceStateT
     assurance_level: AssuranceT | None
+    product: str
 
 
 class EnrolledInput(BaseModel):

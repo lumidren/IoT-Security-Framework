@@ -196,23 +196,25 @@ def require(permission: str) -> Callable[[Request], Awaitable[Principal]]:
 
 
 def internal(*services: str) -> Callable[[Request], Awaitable[Principal]]:
-    """Service authentication for ``/internal/*``: ES256 service JWT (aud=registry) or the
-    shared ``REGISTRY_INTERNAL_TOKEN`` used by the PKI and policy deployments."""
+    """Service authentication for ``/internal/*``: an ES256 service JWT (aud=registry) or the
+    calling service's own token from ``REGISTRY_INTERNAL_TOKENS``. Either way the caller is
+    identified, and only the services named in ``services`` may call the endpoint."""
 
     async def dependency(request: Request) -> Principal:
         ctx = get_ctx(request)
         token = bearer_token(request.headers.get("authorization"))
         if token is None:
             raise unauthorized("service credentials required")
-        shared = ctx.settings.internal_token
-        if shared is not None and hmac.compare_digest(
-            token.encode(), shared.get_secret_value().encode()
-        ):
-            service = "internal"
-        else:
+        service: str | None = None
+        presented = token.encode()
+        for name, secret in ctx.settings.internal_tokens.items():
+            # Compare against every configured token so timing does not reveal which matched.
+            if hmac.compare_digest(presented, secret.get_secret_value().encode()):
+                service = name
+        if service is None:
             service = ctx.service_jwt.verify(token)
-            if services and service not in services:
-                raise forbidden(f"service {service} may not call this endpoint")
+        if services and service not in services:
+            raise forbidden(f"service {service} may not call this endpoint")
         ip, rid = _origin(request)
         return Principal(
             tenant_id="",

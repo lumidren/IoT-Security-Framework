@@ -5,7 +5,7 @@ Names follow the Helm chart's env-var contract (``deploy/helm/ironmesh/README.md
 ``REGISTRY_{PKI,POLICY,OTA}_URL``,
 ``REGISTRY_EMQX_API_URL``, ``REGISTRY_OIDC_{ISSUER,AUDIENCE}``, ``REGISTRY_PUBLIC_BASE_URL``,
 ``REGISTRY_TLS_*``, ``REGISTRY_LOG_*`` and the secrets ``REGISTRY_DB_PASSWORD``,
-``REGISTRY_INTERNAL_TOKEN``, ``REGISTRY_EMQX_API_KEY``, ``REGISTRY_EMQX_API_SECRET``.
+``REGISTRY_INTERNAL_TOKENS``, ``REGISTRY_EMQX_API_KEY``, ``REGISTRY_EMQX_API_SECRET``.
 ``REGISTRY_DATABASE_URL`` overrides the ``REGISTRY_DB_*`` parts when set.
 """
 
@@ -76,8 +76,11 @@ class Settings(BaseSettings):
     oidc_role_claim: str = "role"
     oidc_platform_roles_claim: str = "platform_roles"
     oidc_leeway_seconds: int = 30
-    internal_token: SecretStr | None = None
-    """Shared bearer for ``/internal/*`` (= ``PKI_REGISTRY_TOKEN`` / ``POLICY_REGISTRY_TOKEN``)."""
+    internal_tokens: dict[str, SecretStr] = Field(default_factory=dict)
+    """Per-caller bearer tokens for ``/internal/*`` as JSON, e.g.
+    ``{"pki": "<PKI_REGISTRY_TOKEN>", "policy": "<POLICY_REGISTRY_TOKEN>", "anomaly": "..."}``.
+    A token authenticates exactly one calling service, so the per-endpoint caller allowlist
+    applies to it just as it does to service JWTs."""
     service_jwt_audience: str = "registry"
     service_jwt_trusted_keys: dict[str, str] = Field(default_factory=dict)
     """``{"pki": "<PEM public key>", "policy": "...", "anomaly": "..."}`` (JSON in the env)."""
@@ -94,6 +97,8 @@ class Settings(BaseSettings):
     kafka_topic_alerts: str = "im.alerts"
     kafka_topic_audit: str = "im.audit"
     kafka_topic_commands: str = "im.commands"
+    kafka_topic_campaigns: str = "im.campaigns"
+    """``campaign.updated`` frames produced by the OTA service and relayed to WebSocket clients."""
     kafka_sasl_mechanism: str = "none"  # none | SCRAM-SHA-512 | AWS_MSK_IAM
     kafka_sasl_username: str | None = None
     kafka_sasl_password: SecretStr | None = None

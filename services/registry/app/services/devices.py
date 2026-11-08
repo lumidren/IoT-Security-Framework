@@ -489,6 +489,7 @@ async def lifecycle(app: AppContext, p: Principal, device_id: str) -> m.Lifecycl
         tenant_id=dev.tenant_id,
         state=dev.state,
         assurance_level=dev.assurance_level,
+        product=dev.product,
     )
 
 

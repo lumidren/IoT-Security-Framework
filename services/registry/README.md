@@ -50,7 +50,7 @@ Multi-stage `python:3.12-slim`, runs as UID 10001, `uvicorn --proxy-headers` (tr
 | `REGISTRY_REPO_BACKEND` | `postgres` | `memory` for local experiments |
 | `REGISTRY_OIDC_ISSUER` / `REGISTRY_OIDC_AUDIENCE` | - / `ironmesh-api` | JWKS discovered from the issuer (`REGISTRY_OIDC_JWKS_URL` overrides), cached `REGISTRY_OIDC_JWKS_CACHE_SECONDS` |
 | `REGISTRY_OIDC_TENANT_CLAIM` / `_ROLE_CLAIM` / `_PLATFORM_ROLES_CLAIM` | `tenant_id` / `role` / `platform_roles` | `platform_admin` in the latter enables `X-IronMesh-Tenant` |
-| `REGISTRY_INTERNAL_TOKEN` (secret) | - | shared bearer for `/internal/*` (= `PKI_REGISTRY_TOKEN`, `POLICY_REGISTRY_TOKEN`) |
+| `REGISTRY_INTERNAL_TOKENS` (secret, JSON) | `{}` | per-caller bearer tokens for `/internal/*`, e.g. `{"pki": "<PKI_REGISTRY_TOKEN>", "policy": "<POLICY_REGISTRY_TOKEN>", "anomaly": "<ANOMALY_INTERNAL_TOKEN>"}`; each token is bound to one caller and the per-endpoint allowlist applies |
 | `REGISTRY_SERVICE_JWT_TRUSTED_KEYS` | `{}` | JSON `{"pki": "<PEM>", "policy": "...", "anomaly": "..."}`: ES256 keys accepted on `/internal/*` (`aud=registry`, <= 5 min) |
 | `REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE` | - | P-256 key used to mint the registry's own service JWTs (`aud=pki` / `aud=ota`) |
 | `REGISTRY_KAFKA_BROKERS` | `localhost:9092` | plus `REGISTRY_KAFKA_TOPIC_{INGEST,AUTH,ALERTS,AUDIT,COMMANDS}`, `REGISTRY_KAFKA_CONSUMER_GROUP` |
