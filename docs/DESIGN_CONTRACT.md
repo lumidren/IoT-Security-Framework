@@ -163,8 +163,9 @@ OtaNotify body (`type=7`): `{1: campaign_id, 2: manifest(bstr: signed manifest, 
 
 Config (`type=9`): the Registry wraps a fresh 256-bit AES key per message using **HPKE** (RFC 9180,
 DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-128-GCM) to the device's **current certificate public
-key**, then AES-256-GCM encrypts the CBOR config. Encoded as `COSE_Encrypt0` with
-`{1: 1 (A128GCM)}`... see `device/common/WIRE_FORMAT.md` for exact header layout. Plaintext config is
+key**, then AES-256-GCM encrypts the tenant-signed Config envelope (sign-then-encrypt). Encoded as
+`COSE_Encrypt0` with protected `{1: 3 (A256GCM)}`; the HPKE `enc` and wrapped key travel in
+header parameter `-70000`. `device/common/WIRE_FORMAT.md` fixes the exact byte layout. Plaintext config is
 never retained on the broker.
 
 ## 6. Firmware image and manifest
@@ -179,7 +180,7 @@ Firmware artifact = `image.bin` + `manifest.cbor` + `manifest.sig`. The manifest
 ```
 
 Signature = `COSE_Sign1` over the manifest bytes with **two** signatures in a `COSE_Sign` (tag 98):
-Ed25519 (alg -8) mandatory, ML-DSA-65 (alg -48, draft-ietf-cose-dilithium) optional; firmware
+Ed25519 (alg -8) mandatory, ML-DSA-65 (alg -49, draft-ietf-cose-dilithium) optional; firmware
 verifies Ed25519 always and ML-DSA when `IRONMESH_PQ_REQUIRED` is set. Devices accept an image only
 if: all required signatures verify with a key in the bundle's `fw_signing_pubkeys`; `image_sha256`
 matches the downloaded bytes; `version_code > current_version_code` (anti-rollback, also enforced by
