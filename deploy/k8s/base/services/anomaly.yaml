@@ -1,0 +1,150 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: anomaly-config
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: anomaly
+data:
+  ANOMALY_LISTEN_PORT: "8002"
+  ANOMALY_DB_HOST: postgres
+  ANOMALY_DB_PORT: "5432"
+  ANOMALY_DB_NAME: anomaly
+  ANOMALY_DB_USER: anomaly_app
+  ANOMALY_DB_SSLMODE: verify-ca
+  ANOMALY_DB_IAM_AUTH: "false"
+  ANOMALY_KAFKA_BROKERS: redpanda:9092
+  ANOMALY_KAFKA_TOPIC_INGEST: im.ingest
+  ANOMALY_KAFKA_TOPIC_AUTH: im.auth
+  ANOMALY_KAFKA_TOPIC_COMMANDS: im.commands
+  ANOMALY_KAFKA_TOPIC_ALERTS: im.alerts
+  ANOMALY_KAFKA_TOPIC_AUDIT: im.audit
+  ANOMALY_KAFKA_CONSUMER_GROUP: anomaly-engine
+  ANOMALY_KAFKA_SASL_MECHANISM: none
+  ANOMALY_KAFKA_TLS_ENABLED: "false"
+  ANOMALY_REGISTRY_URL: http://registry:8000
+  ANOMALY_POLICY_URL: http://policy:8081
+  ANOMALY_OTA_URL: http://ota:8001
+  ANOMALY_PKI_URL: https://pki:8443
+  ANOMALY_AUTO_QUARANTINE: "false"
+  ANOMALY_QUARANTINE_MIN_SEVERITY: high
+  ANOMALY_MODEL_DIR: /var/lib/ironmesh/anomaly/models
+  ANOMALY_OIDC_ISSUER: ""
+  ANOMALY_OIDC_AUDIENCE: ironmesh-api
+  ANOMALY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+  ANOMALY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+  ANOMALY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+  ANOMALY_LOG_LEVEL: debug
+  ANOMALY_LOG_FORMAT: json
+  OTEL_SERVICE_NAME: ironmesh-anomaly
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=ironmesh,deployment.environment=dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anomaly
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: anomaly
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: anomaly
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: anomaly
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8002"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: anomaly
+          image: ghcr.io/lumidren/ironmesh-anomaly:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: anomaly-config
+            - secretRef:
+                name: anomaly-secret
+          ports:
+            - name: http
+              containerPort: 8002
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: models
+              mountPath: /var/lib/ironmesh/anomaly
+            - name: tls
+              mountPath: /etc/ironmesh/tls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: models
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: tls
+          secret:
+            secretName: anomaly-tls
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anomaly
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: anomaly
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: anomaly
+  ports:
+    - name: http
+      port: 8002
+      targetPort: http
+      protocol: TCP

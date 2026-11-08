@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Dev cluster (kind/minikube) layout of the IronMesh stack. Service names follow the design
+# contract's compose names (pki, policy, bridge, registry, ota, anomaly, console, emqx,
+# redpanda, postgres, otel-collector); environment variable names are identical to the Helm
+# chart (deploy/helm/ironmesh/README.md, "Environment variable contract").
+
+namespace: ironmesh
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: ironmesh
+      app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - namespace.yaml
+  - pki-dev/issuers.yaml
+  - pki-dev/service-certs.yaml
+  - postgres/init-script.yaml
+  - postgres/statefulset.yaml
+  - postgres/service.yaml
+  - redpanda/statefulset.yaml
+  - redpanda/service.yaml
+  - emqx/configmap.yaml
+  - emqx/deployment.yaml
+  - emqx/service.yaml
+  - otel-collector/configmap.yaml
+  - otel-collector/deployment.yaml
+  - otel-collector/service.yaml
+  - services/pki.yaml
+  - services/policy.yaml
+  - services/bridge.yaml
+  - services/registry.yaml
+  - services/ota.yaml
+  - services/anomaly.yaml
+  - services/console.yaml
+  - networkpolicies/networkpolicies.yaml

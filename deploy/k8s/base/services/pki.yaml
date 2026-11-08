@@ -1,0 +1,193 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pki-config
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: pki
+data:
+  PKI_LISTEN_MTLS: ":8443"
+  PKI_LISTEN_PLAIN: ":8444"
+  # file provider: CA keys from the cert-manager dev hierarchy mounted under PKI_KEY_DIR
+  # (root/, factory/, device/, services/, bundle/ each with tls.crt and tls.key).
+  PKI_KEY_PROVIDER: file
+  PKI_KEY_DIR: /etc/ironmesh/ca
+  PKI_PUBLIC_BASE_URL: https://pki.ironmesh.local
+  PKI_POLICY_URL: http://policy:8081
+  PKI_REGISTRY_URL: http://registry:8000
+  PKI_CRL_PUBLISH_INTERVAL: 60s
+  PKI_CRL_NEXT_UPDATE: 24h
+  PKI_OCSP_ENABLED: "true"
+  PKI_NONCE_TTL: 120s
+  IRONMESH_OPERATIONAL_CERT_TTL: 336h
+  PKI_DEVICE_CA_BUNDLE_FILE: /etc/ironmesh/ca/device/tls.crt
+  PKI_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+  PKI_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+  PKI_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+  PKI_DB_HOST: postgres
+  PKI_DB_PORT: "5432"
+  PKI_DB_NAME: pki
+  PKI_DB_USER: pki_app
+  PKI_DB_SSLMODE: verify-ca
+  PKI_DB_IAM_AUTH: "false"
+  PKI_LOG_LEVEL: debug
+  PKI_LOG_FORMAT: json
+  OTEL_SERVICE_NAME: ironmesh-pki
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=ironmesh,deployment.environment=dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pki
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: pki
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pki
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pki
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8444"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pki
+          image: ghcr.io/lumidren/ironmesh-pki:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: pki-config
+            - secretRef:
+                name: pki-secret
+          ports:
+            - name: mtls
+              containerPort: 8443
+              protocol: TCP
+            - name: plain
+              containerPort: 8444
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: plain
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: plain
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: plain
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: state
+              mountPath: /var/lib/ironmesh/pki
+            - name: tls
+              mountPath: /etc/ironmesh/tls
+              readOnly: true
+            - name: ca
+              mountPath: /etc/ironmesh/ca
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: state
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tls
+          secret:
+            secretName: pki-tls
+            defaultMode: 0440
+        - name: ca
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: ironmesh-dev-root-ca
+                  items:
+                    - key: tls.crt
+                      path: root/tls.crt
+              - secret:
+                  name: ironmesh-dev-factory-ca
+                  items:
+                    - key: tls.crt
+                      path: factory/tls.crt
+                    - key: tls.key
+                      path: factory/tls.key
+              - secret:
+                  name: ironmesh-dev-device-ca
+                  items:
+                    - key: tls.crt
+                      path: device/tls.crt
+                    - key: tls.key
+                      path: device/tls.key
+              - secret:
+                  name: ironmesh-dev-services-ca
+                  items:
+                    - key: tls.crt
+                      path: services/tls.crt
+                    - key: tls.key
+                      path: services/tls.key
+              - secret:
+                  name: ironmesh-dev-bundle-key
+                  items:
+                    - key: tls.crt
+                      path: bundle/tls.crt
+                    - key: tls.key
+                      path: bundle/tls.key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pki
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: pki
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pki
+  ports:
+    - name: mtls
+      port: 8443
+      targetPort: mtls
+      protocol: TCP
+    - name: plain
+      port: 8444
+      targetPort: plain
+      protocol: TCP

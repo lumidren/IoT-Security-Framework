@@ -1,0 +1,144 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-config
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: registry
+data:
+  REGISTRY_LISTEN_PORT: "8000"
+  REGISTRY_DB_HOST: postgres
+  REGISTRY_DB_PORT: "5432"
+  REGISTRY_DB_NAME: registry
+  REGISTRY_DB_USER: registry_app
+  REGISTRY_DB_SSLMODE: verify-ca
+  REGISTRY_DB_IAM_AUTH: "false"
+  REGISTRY_KAFKA_BROKERS: redpanda:9092
+  REGISTRY_KAFKA_TOPIC_INGEST: im.ingest
+  REGISTRY_KAFKA_TOPIC_AUTH: im.auth
+  REGISTRY_KAFKA_TOPIC_ALERTS: im.alerts
+  REGISTRY_KAFKA_TOPIC_AUDIT: im.audit
+  REGISTRY_KAFKA_TOPIC_COMMANDS: im.commands
+  REGISTRY_KAFKA_CONSUMER_GROUP: registry-ingest
+  REGISTRY_KAFKA_SASL_MECHANISM: none
+  REGISTRY_KAFKA_TLS_ENABLED: "false"
+  REGISTRY_PKI_URL: https://pki:8443
+  REGISTRY_POLICY_URL: http://policy:8081
+  REGISTRY_OTA_URL: http://ota:8001
+  REGISTRY_EMQX_API_URL: http://emqx:18083
+  # No IdP in the dev stack: point this at your Dex/Keycloak before enabling OIDC-protected routes.
+  REGISTRY_OIDC_ISSUER: ""
+  REGISTRY_OIDC_AUDIENCE: ironmesh-api
+  REGISTRY_PUBLIC_BASE_URL: https://registry.ironmesh.local
+  REGISTRY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+  REGISTRY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+  REGISTRY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+  REGISTRY_LOG_LEVEL: debug
+  REGISTRY_LOG_FORMAT: json
+  OTEL_SERVICE_NAME: ironmesh-registry
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=ironmesh,deployment.environment=dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: registry
+          image: ghcr.io/lumidren/ironmesh-registry:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: registry-config
+            - secretRef:
+                name: registry-secret
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tls
+              mountPath: /etc/ironmesh/tls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: tls
+          secret:
+            secretName: registry-tls
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: registry
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: registry
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

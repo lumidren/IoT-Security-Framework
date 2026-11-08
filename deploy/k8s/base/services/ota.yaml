@@ -1,0 +1,169 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ota-config
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: ota
+data:
+  OTA_LISTEN_PORT: "8001"
+  OTA_DB_HOST: postgres
+  OTA_DB_PORT: "5432"
+  OTA_DB_NAME: ota
+  OTA_DB_USER: ota_app
+  OTA_DB_SSLMODE: verify-ca
+  OTA_DB_IAM_AUTH: "false"
+  OTA_KAFKA_BROKERS: redpanda:9092
+  OTA_KAFKA_TOPIC_INGEST: im.ingest
+  OTA_KAFKA_TOPIC_COMMANDS: im.commands
+  OTA_KAFKA_TOPIC_AUDIT: im.audit
+  OTA_KAFKA_CONSUMER_GROUP: ota-status
+  OTA_KAFKA_SASL_MECHANISM: none
+  OTA_KAFKA_TLS_ENABLED: "false"
+  # Dev: artifacts on a local volume, signing key generated on first start under OTA_SIGNING_KEY_FILE.
+  OTA_ARTIFACT_STORE: filesystem
+  OTA_ARTIFACT_PATH: /var/lib/ironmesh/ota/artifacts
+  OTA_SIGNING_PROVIDER: file
+  OTA_SIGNING_KEY_FILE: /var/lib/ironmesh/ota/keys/fw-ed25519.pem
+  OTA_SIGNING_KEY_GENERATE_IF_MISSING: "true"
+  OTA_SIGNING_KEY_ID: fw-ed25519-dev
+  OTA_PQ_SIGNING_ENABLED: "false"
+  OTA_PUBLIC_BASE_URL: https://ota.ironmesh.local
+  OTA_PKI_URL: https://pki:8443
+  OTA_REGISTRY_URL: http://registry:8000
+  OTA_EMQX_API_URL: http://emqx:18083
+  OTA_OIDC_ISSUER: ""
+  OTA_OIDC_AUDIENCE: ironmesh-api
+  OTA_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+  OTA_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+  OTA_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+  OTA_LOG_LEVEL: debug
+  OTA_LOG_FORMAT: json
+  OTEL_SERVICE_NAME: ironmesh-ota
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=ironmesh,deployment.environment=dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ota
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: ota
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ota
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ota
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: /metrics
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ota
+          image: ghcr.io/lumidren/ironmesh-ota:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: ota-config
+            - secretRef:
+                name: ota-secret
+          ports:
+            - name: http
+              containerPort: 8001
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /var/lib/ironmesh/ota
+            - name: tls
+              mountPath: /etc/ironmesh/tls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: data
+          persistentVolumeClaim:
+            claimName: ota-data
+        - name: tls
+          secret:
+            secretName: ota-tls
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ota-data
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: ota
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ota
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: ota
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ota
+  ports:
+    - name: http
+      port: 8001
+      targetPort: http
+      protocol: TCP

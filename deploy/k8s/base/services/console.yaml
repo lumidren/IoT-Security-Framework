@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: console-config
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: console
+data:
+  PORT: "3000"
+  HOSTNAME: 0.0.0.0
+  NODE_ENV: production
+  NEXT_TELEMETRY_DISABLED: "1"
+  CONSOLE_REGISTRY_URL: http://registry:8000
+  CONSOLE_OTA_URL: http://ota:8001
+  CONSOLE_ANOMALY_URL: http://anomaly:8002
+  CONSOLE_POLICY_URL: http://policy:8081
+  CONSOLE_OIDC_ISSUER: ""
+  CONSOLE_OIDC_CLIENT_ID: ironmesh-console
+  NEXT_PUBLIC_APP_URL: http://localhost:30300
+  NEXT_PUBLIC_OIDC_ISSUER: ""
+  NEXT_PUBLIC_OIDC_CLIENT_ID: ironmesh-console
+  NEXT_PUBLIC_OIDC_AUDIENCE: ironmesh-api
+  NEXT_PUBLIC_ENVIRONMENT: dev
+  OTEL_SERVICE_NAME: ironmesh-console
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=ironmesh,deployment.environment=dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: console
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: console
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: console
+          image: ghcr.io/lumidren/ironmesh-console:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: console-config
+            - secretRef:
+                name: console-secret
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /app/.next/cache
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: next-cache
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: console
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: console
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: console
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
