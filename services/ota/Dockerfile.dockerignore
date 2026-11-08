@@ -1,0 +1,10 @@
+# BuildKit picks this up for `docker build -f services/ota/Dockerfile .` (repo-root context)
+*
+!libs/python/ironmesh-wire/pyproject.toml
+!libs/python/ironmesh-wire/README.md
+!libs/python/ironmesh-wire/src/**
+!services/ota/pyproject.toml
+!services/ota/README.md
+!services/ota/src/**
+**/__pycache__
+**/*.egg-info
