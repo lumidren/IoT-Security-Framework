@@ -1175,9 +1175,23 @@ def replay_vectors(keys: TestKeys) -> dict[str, Any]:
         else:
             step["expect"] = "reject"
             step["error"] = _expect_error(call, error)
+        tenant_kid = keys.tenant_identity.kid
         step["store_after"] = {
             "uplink_last_seq": store.last_seq(keys.device_identity.kid, Direction.UPLINK),
-            "downlink_last_seq": store.last_seq(keys.tenant_identity.kid, Direction.DOWNLINK),
+            "downlink_last_seq": store.last_seq(
+                envelope.replay_stream(tenant_kid, Direction.DOWNLINK, MessageType.COMMAND),
+                Direction.DOWNLINK,
+            ),
+            "downlink_last_seq_by_type": {
+                str(int(t)): store.last_seq(
+                    envelope.replay_stream(tenant_kid, Direction.DOWNLINK, t), Direction.DOWNLINK
+                )
+                for t in (
+                    MessageType.SHADOW_DESIRED,
+                    MessageType.COMMAND,
+                    MessageType.OTA_NOTIFY,
+                )
+            },
         }
         steps.append(step)
 
@@ -1253,6 +1267,37 @@ def replay_vectors(keys: TestKeys) -> dict[str, Any]:
         other_tenant,
         error=errors.ENV_TENANT,
     )
+
+    def desired(seq: int, ts: int) -> bytes:
+        return envelope.encode(
+            envelope.Message(
+                seq=seq, ts=ts, body=envelope.ShadowDesired({"interval_s": 30}, version=seq)
+            ),
+            keys.tenant_identity,
+        )
+
+    run(
+        "downlink shadow/desired seq 3 accepted although command stream is at 7 (per-type stream)",
+        desired(3, NOW),
+    )
+    run(
+        "downlink retained shadow/desired seq 4 with ts 7 days old accepted (retainable type)",
+        desired(4, NOW - 7 * 86400),
+    )
+    run(
+        "downlink shadow/desired seq 5 with ts 301 s in the future rejected",
+        desired(5, NOW + 301),
+        error=errors.ENV_TS_SKEW,
+    )
+    run("downlink shadow/desired seq 4 replayed rejected", desired(4, NOW), error=errors.ENV_REPLAY)
+    stale_command = envelope.encode(
+        dataclasses.replace(_command(), seq=9, ts=NOW - 301), keys.tenant_identity
+    )
+    run(
+        "downlink command seq 9 with ts 301 s old rejected (commands are never retained)",
+        stale_command,
+        error=errors.ENV_TS_SKEW,
+    )
     ack = envelope.encode(dataclasses.replace(_ack(), seq=15), keys.device_identity)
     run("uplink ack seq 15 with matching nonce accepted", ack, expected_nonce=NONCE)
     bad_ack = envelope.encode(
@@ -1287,7 +1332,11 @@ def replay_vectors(keys: TestKeys) -> dict[str, Any]:
     run("uplink seq 17 accepted", telemetry(17, NOW))
 
     return _doc(
-        "Ordered sequence of envelopes verified against one replay store (initially empty) with "
+        "Ordered sequence of envelopes verified against one replay store (initially empty), keyed "
+        "by replay stream: uplink = device kid, downlink = '<tenant kid>/<type>' (one sequence per "
+        "downlink message type). Retainable downlink types (4, 7, 9) only enforce the future half "
+        "of the timestamp window. Verified "
+        "with "
         "the given key resolver (device kid -> device key, tenant kid -> tenant key) and "
         "expected_tenant = tenant_id. Each step gives 'now', the expected outcome and, for "
         "rejections, the error code; 'store_after' is the store state after the step. All "

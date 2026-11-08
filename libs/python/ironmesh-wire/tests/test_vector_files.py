@@ -385,9 +385,13 @@ def test_replay_cases() -> None:
             store.last_seq(device_kid, Direction.UPLINK) == step["store_after"]["uplink_last_seq"]
         ), step["name"]
         assert (
-            store.last_seq(doc["tenant_kid"], Direction.DOWNLINK)
+            store.last_seq(f"{doc['tenant_kid']}/5", Direction.DOWNLINK)
             == step["store_after"]["downlink_last_seq"]
         ), step["name"]
+        for msg_type, expected in step["store_after"]["downlink_last_seq_by_type"].items():
+            assert (
+                store.last_seq(f"{doc['tenant_kid']}/{msg_type}", Direction.DOWNLINK) == expected
+            ), step["name"]
 
 
 def test_ids_file() -> None:

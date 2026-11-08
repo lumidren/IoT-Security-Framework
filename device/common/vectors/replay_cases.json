@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Ordered sequence of envelopes verified against one replay store (initially empty) with the given key resolver (device kid -> device key, tenant kid -> tenant key) and expected_tenant = tenant_id. Each step gives 'now', the expected outcome and, for rejections, the error code; 'store_after' is the store state after the step. All device-signed messages are ES256 verification vectors.",
+  "description": "Ordered sequence of envelopes verified against one replay store (initially empty), keyed by replay stream: uplink = device kid, downlink = '<tenant kid>/<type>' (one sequence per downlink message type). Retainable downlink types (4, 7, 9) only enforce the future half of the timestamp window. Verified with the given key resolver (device kid -> device key, tenant kid -> tenant key) and expected_tenant = tenant_id. Each step gives 'now', the expected outcome and, for rejections, the error code; 'store_after' is the store state after the step. All device-signed messages are ES256 verification vectors.",
   "generator": "ironmesh_wire 0.1.0",
   "tenant_id": "7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11",
   "tenant_key": {
@@ -30,130 +30,190 @@
   "steps": [
     {
       "name": "uplink seq 10 accepted",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010a021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840bac5254a2c4a16c3e02cb4069b36af269e267cd8e51f023cbfa1dd65c9270579d519b0818eeda6b1669e8cd8c1fc5903829027c8a23d36ab4f74a808f68c7389",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010a021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f58402d7dc114b5d2ef9c0974fc139fd728fa1e3350e9acd23ead65a63b38edd4d97273adb639e5863c45583b2e2840488ec7748269b7266fb670ddb4a03f161a7408",
       "now": 1767225600,
       "expect": "accept",
       "store_after": {
         "uplink_last_seq": 10,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 10 again rejected (equal)",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010a021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840b1d525c8f3eec067ffc101fa8e79ac9d7d99090cf8092a74b46e827e8dc588c72926e1959b507c674971de8a67c8010de992bb30cdfac587bb4be480531ee9c1",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010a021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840e4823d27df702997c6b644fb2f1809ba17316d20ad169fffd54d51d2df07be1b39954e640301638bfba923b2f85f69c42c3ba904e736540b39ecbbc216aa17fe",
       "now": 1767225600,
       "expect": "reject",
       "error": "ENV_REPLAY",
       "store_after": {
         "uplink_last_seq": 10,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 9 rejected (lower)",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a40109021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f584087f521a6e1af912a73da381a9682fc30c3da6eacfd6d230c3c334be5c6ccd4303bb95b5fec4dccfc04eca9fa63600e9bd9f472a006531d47e33de11855863da1",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a40109021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840935a55be02eaf8fb199225182fee48b232ebd24b16bdcca574477c378656db68c8ded3731766b1283f44b3922bb6776f846cd10d3ad14d86bc3399396f9fc3b2",
       "now": 1767225600,
       "expect": "reject",
       "error": "ENV_REPLAY",
       "store_after": {
         "uplink_last_seq": 10,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 11 accepted (higher)",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010b021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840b9220db0a70b3a36463e88a8135f445ceaae6f533822a592bf4c93bd70f9d2dc5f923bc13ab416b8aca27d1fdf683289d470c884ce7fdca68be6d336788d35aa",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010b021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840a4645f4d4812b2a1c467c3788055389f44d266fe64edf06f5901fb8feb25bb1f8e041e56f9c4d25fb3b85bf050db85cbd658b0248e0f18b5c0c98d5da1a95143",
       "now": 1767225600,
       "expect": "accept",
       "store_after": {
         "uplink_last_seq": 11,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 12 ts 301 s in the past rejected",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010c021a6955b7d3030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840d7d24c8d2d00c0ad563de1c7850b13eabe34f020f12dcfc845b12e1be763ad892ca03ca804386bc96d2c1f6cfd49af397e8a92032a0cbe8f139053a73a009f26",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010c021a6955b7d3030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840b955536cf33d4c029b94547752de71c5733f7fa49fc410d1a53248abf564ee2d88ae94ec8724afe9523c05d0235eed3f9e5540c29f0bea86ef0888c619540d4d",
       "now": 1767225600,
       "expect": "reject",
       "error": "ENV_TS_SKEW",
       "store_after": {
         "uplink_last_seq": 11,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 12 ts 301 s in the future rejected",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010c021a6955ba2d030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f58407dc6c6c7dab48e62a7f036808b8f0f23d58b9b27e43bd8615aa8aef2b0e4ab69c609fdb381c312980b2695055c3d25ba44c8a40d7d82033b2065600d93c730ae",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010c021a6955ba2d030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840f5b7ec486d2ce01ab09f9d8cd58c1d07a15d7ee88acdce5e6c5ee7da59c0631d93251c24ab944a2ed530cb15cd6db2ff33eaaf24a7449a0e60d07acb836eb916",
       "now": 1767225600,
       "expect": "reject",
       "error": "ENV_TS_SKEW",
       "store_after": {
         "uplink_last_seq": 11,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 12 ts exactly 300 s old accepted",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010c021a6955b7d4030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840bb6559b1bd657bf9db0569bc6f8f4cf3f7c246a9d2e5d609b149e5187c64a09d3f831acb408e9dd283e361b4e44f223b736bce7408da68961e50a453a276b02a",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010c021a6955b7d4030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840bd0e7ff8a45f993cbdb4be0a9a54d06653f960c8f8574c13fdd6cc48b4589ad7dc01b5aedcaad16e31b7d213eb823f2a6fadd824149020aeeb8b48abf09a410c",
       "now": 1767225600,
       "expect": "accept",
       "store_after": {
         "uplink_last_seq": 12,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 13 ts exactly 300 s ahead accepted",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010d021a6955ba2c030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840c087d0f7d3a277ec1f8a38d762fcc23ff678e53da9feb7731511303202c64efe5c3b9440acd66a6b64b315a70b6ece85b666560c7a3689a360c4e0290a0639cb",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010d021a6955ba2c030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f58404c55921ddbea4e471c9eecb879de1a04ae2b97031cf2d8fc671d2deca2358b97a6b90a2c8749b952e4e832eb281e57926fb2a97d9924645fdd110d7be89a3103",
       "now": 1767225600,
       "expect": "accept",
       "store_after": {
         "uplink_last_seq": 13,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 14 with flipped signature byte rejected",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010e021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f584052ec4488599027933436528cf63cac401fbddd2a9957e097a2a701eada82c49c616c82b58a382a221d427cc8a6aea019cb63d440ae2936bf8bdc0f0741513498",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010e021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840f89417e25a2c080bd14f60c61fd665a3f9276be2135e28c39ca425265e58651e063ad651bf2ffabd7b858c149f926b99e9a90c2321c2b4bc6f3680986c633a20",
       "now": 1767225600,
       "expect": "reject",
       "error": "COSE_SIGNATURE",
       "store_after": {
         "uplink_last_seq": 13,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 14 with flipped payload byte rejected",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010e031a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f584053ec4488599027933436528cf63cac401fbddd2a9957e097a2a701eada82c49c616c82b58a382a221d427cc8a6aea019cb63d440ae2936bf8bdc0f0741513498",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010e031a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840f99417e25a2c080bd14f60c61fd665a3f9276be2135e28c39ca425265e58651e063ad651bf2ffabd7b858c149f926b99e9a90c2321c2b4bc6f3680986c633a20",
       "now": 1767225600,
       "expect": "reject",
       "error": "COSE_SIGNATURE",
       "store_after": {
         "uplink_last_seq": 13,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 14 signed by another key under the device kid rejected",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010e021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840939c98a83e69e8e3eb80ae2af7335d3bdcc00ca27b34a9fa643a692688f623bea48526505c314dfaa428f7915bf1f5d13f1bfb41e9e3106f8186cfc98b272b9e",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010e021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840998234c34ec9d5a8d248b7c3cc1bc751b61f4205a2f29c7ffb430b6a65f4a196d385f6e2c1ee1377deca6be702fc35870e432800c6f34f4ed0f88518c6c3a53d",
       "now": 1767225600,
       "expect": "reject",
       "error": "COSE_SIGNATURE",
       "store_after": {
         "uplink_last_seq": 13,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 14 from an unknown kid rejected",
-      "wire_hex": "d28455a2012604500123456789abcdef0123456789abcdefa05894a4010e021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840eb0df77f60ca4dfb16e6ba1d424f3212f7aec30df8a398ff70423dd37d8e61a410be76fa1eed85d50348dfa56acd292ce60c5323a0d1895c34ce4f2784476160",
+      "wire_hex": "d28455a2012604500123456789abcdef0123456789abcdefa05894a4010e021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840ec218af4bc9519dec719b8aaf504055aef7c5d187c0f88ee1271ed3bb4797dc7c966bf83e97eca1bb72735b3e8a2a14b435352f901c5142b23b620afe56ea3ba",
       "now": 1767225600,
       "expect": "reject",
       "error": "ENV_UNKNOWN_KEY",
       "store_after": {
         "uplink_last_seq": 13,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
@@ -164,7 +224,12 @@
       "error": "ENV_DIRECTION",
       "store_after": {
         "uplink_last_seq": 13,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
@@ -175,17 +240,27 @@
       "error": "ENV_DIRECTION",
       "store_after": {
         "uplink_last_seq": 13,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 14 accepted (store unchanged by rejected messages)",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010e021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840c31046c6b648c7e82695aa33c5e4aebbce2414ce91c76d543a186c09a91774b4ee5cfc94a781f1139a5e7bbb83b890e16ddc7a2b20ef8c551277315d4dc74a81",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a4010e021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f58409d5bb5c322aba4cd9e0cd6f7b0f34c27e9fe7d81ebc88952273d4e6702c587a7e42536637d1d6aa24ea01e887dfd1c84c90a768b8d8e3539b739821d2e8138ff",
       "now": 1767225600,
       "expect": "accept",
       "store_after": {
         "uplink_last_seq": 14,
-        "downlink_last_seq": null
+        "downlink_last_seq": null,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": null,
+          "7": null
+        }
       }
     },
     {
@@ -195,7 +270,12 @@
       "expect": "accept",
       "store_after": {
         "uplink_last_seq": 14,
-        "downlink_last_seq": 7
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": 7,
+          "7": null
+        }
       }
     },
     {
@@ -206,7 +286,12 @@
       "error": "ENV_REPLAY",
       "store_after": {
         "uplink_last_seq": 14,
-        "downlink_last_seq": 7
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": 7,
+          "7": null
+        }
       }
     },
     {
@@ -217,73 +302,186 @@
       "error": "ENV_TENANT",
       "store_after": {
         "uplink_last_seq": 14,
-        "downlink_last_seq": 7
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": null,
+          "5": 7,
+          "7": null
+        }
+      }
+    },
+    {
+      "name": "downlink shadow/desired seq 3 accepted although command stream is at 7 (per-type stream)",
+      "wire_hex": "d2845835a2012704782f74656e616e742d636d642d37653462316139632d336332652d346134662d396331622d306630643264376136613131a0581ea40103021a6955b900030404a201a16a696e74657276616c5f73181e02035840453fb72ab76359a999fdeb3459f4535e6071ed741f9bcf0b67e3f8a8a73549c1bdae62dbc3b9c564da33b90b7b31e7d96a53410e42512166d39b53b336920803",
+      "now": 1767225600,
+      "expect": "accept",
+      "store_after": {
+        "uplink_last_seq": 14,
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 3,
+          "5": 7,
+          "7": null
+        }
+      }
+    },
+    {
+      "name": "downlink retained shadow/desired seq 4 with ts 7 days old accepted (retainable type)",
+      "wire_hex": "d2845835a2012704782f74656e616e742d636d642d37653462316139632d336332652d346134662d396331622d306630643264376136613131a0581ea40104021a694c7e80030404a201a16a696e74657276616c5f73181e020458400b569cc664dce2fe7046c25e28e1f3f45a09a08ece9e5881646e4afdff8439d674a6f4a0c909f279fc10ebecbde5f5b71b26f3b28e02c9d653e661d1f551ff09",
+      "now": 1767225600,
+      "expect": "accept",
+      "store_after": {
+        "uplink_last_seq": 14,
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
+      }
+    },
+    {
+      "name": "downlink shadow/desired seq 5 with ts 301 s in the future rejected",
+      "wire_hex": "d2845835a2012704782f74656e616e742d636d642d37653462316139632d336332652d346134662d396331622d306630643264376136613131a0581ea40105021a6955ba2d030404a201a16a696e74657276616c5f73181e02055840119539182f0445850a8efdb7b14f2df8e7937ea43120c79621f9c8aca65ba07e6aa481f3b7578a44ed505b16cb9fa409cc6f6a7ac195778bd55c8e88e4264c08",
+      "now": 1767225600,
+      "expect": "reject",
+      "error": "ENV_TS_SKEW",
+      "store_after": {
+        "uplink_last_seq": 14,
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
+      }
+    },
+    {
+      "name": "downlink shadow/desired seq 4 replayed rejected",
+      "wire_hex": "d2845835a2012704782f74656e616e742d636d642d37653462316139632d336332652d346134662d396331622d306630643264376136613131a0581ea40104021a6955b900030404a201a16a696e74657276616c5f73181e02045840b36a4fb1e498e96f37c4e5700eced0b588a64620ad82bb1ea6c205ff2bd15d4ce572ba32f48d69d41985da5d9420074b7298fdf2f1edb5ae56df1393b7567502",
+      "now": 1767225600,
+      "expect": "reject",
+      "error": "ENV_REPLAY",
+      "store_after": {
+        "uplink_last_seq": 14,
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
+      }
+    },
+    {
+      "name": "downlink command seq 9 with ts 301 s old rejected (commands are never retained)",
+      "wire_hex": "d2845835a2012704782f74656e616e742d636d642d37653462316139632d336332652d346134662d396331622d306630643264376136613131a05888a50109021a6955b7d3030504a501782431323365343536372d653839622d313264332d613435362d34323636313431373430303002667265626f6f7403a266726561736f6e6b6d61696e74656e616e63656764656c61795f730504746964656d2d323032362d30312d30312d30303031051a6955bb580550000102030405060708090a0b0c0d0e0f5840dea692f8e0182cc6a11ed9fffe6a14601f28b2d850b129aef2da0222033e29ac70e065fbe40335947088b13e56d54f41f7c2c41c430d4804c78b76c8ffed1303",
+      "now": 1767225600,
+      "expect": "reject",
+      "error": "ENV_TS_SKEW",
+      "store_after": {
+        "uplink_last_seq": 14,
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink ack seq 15 with matching nonce accepted",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05854a5010f021a6955b901030604a301782431323365343536372d653839622d313264332d613435362d343236363134313734303030020003a1687265626f6f746564f50550000102030405060708090a0b0c0d0e0f5840411deab2b38e39272f31fc26b92021351ab8fe8f12297fd8e64df2683f09c4724260bd6cbf93fb7f91c4c127a66cb8729a0d2692e7d7ddbb80e12b2a3124973a",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05854a5010f021a6955b901030604a301782431323365343536372d653839622d313264332d613435362d343236363134313734303030020003a1687265626f6f746564f50550000102030405060708090a0b0c0d0e0f5840b32047af7892ab426b83680fbcbf1bcbe7d5712cdd45842b1025ce6ce45f386c64634b7fd40fc1dc3bbfa31bf752840163a98c33ed4fc8f16e838deb3b5ff8f6",
       "now": 1767225600,
       "expected_nonce_hex": "000102030405060708090a0b0c0d0e0f",
       "expect": "accept",
       "store_after": {
         "uplink_last_seq": 15,
-        "downlink_last_seq": 7
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink ack seq 16 with wrong nonce rejected",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05854a50110021a6955b901030604a301782431323365343536372d653839622d313264332d613435362d343236363134313734303030020003a1687265626f6f746564f50550000000000000000000000000000000005840824560f6606de2d21092d1ad68e03e1a0d9517a03481ec1fbbe78296dce5fb4eec111637dbdfc825cc6976e2dfff439f29fcefa2973c0e535b87e58228770d0e",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05854a50110021a6955b901030604a301782431323365343536372d653839622d313264332d613435362d343236363134313734303030020003a1687265626f6f746564f5055000000000000000000000000000000000584053a308c483ba27044c29dd6b247aa2350e36b9527a9e6627b0dab0dee8d288f7b36cd9c7fef5be21596af5ea37db1894cf2cd59cd88482149685e31a9d1f79bb",
       "now": 1767225600,
       "expected_nonce_hex": "000102030405060708090a0b0c0d0e0f",
       "expect": "reject",
       "error": "ENV_NONCE",
       "store_after": {
         "uplink_last_seq": 15,
-        "downlink_last_seq": 7
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink ack seq 17 without nonce rejected",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05836a40111021a6955b900030604a201782431323365343536372d653839622d313264332d613435362d343236363134313734303030020058406c01d6630d6e9889afcd68222f5f98923b68e2eb6d33691c3e25c2ac908a2b7d879b79ea78cf239ab70b804854c0b5953fb6590b8211254d732e15572ca969ee",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05836a40111021a6955b900030604a201782431323365343536372d653839622d313264332d613435362d34323636313431373430303002005840c111b4aa82ec52c3321b6f7d8260e3e4ab941ac72295a28cd85a0f7ae6872314ad9879bff79e4592ce843632120c918ecf55840beeeeeb6c6f5350445b98b927",
       "now": 1767225600,
       "expect": "reject",
       "error": "ENV_NONCE",
       "store_after": {
         "uplink_last_seq": 15,
-        "downlink_last_seq": 7
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
       }
     },
     {
       "name": "telemetry seq 17 carrying a nonce rejected",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa058a6a50111021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f0550000102030405060708090a0b0c0d0e0f5840d7b13bb058831bf552f70e90d16559bcdf7c6e94ab72ef62d883c0337806c51b62f1b6958d39cfcea8bf7a43657d9849b7e1363255d33e648b081e9681c21296",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa058a6a50111021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f0550000102030405060708090a0b0c0d0e0f58402ee5329ede15d5b114c36415cea37ffe7f334f75dab7921c2e6f17ca8bbd2c509c1eecf4b3c4d2a18c0557d852fb96dcd57f8d0a6a2d354f01075062a3470ebc",
       "now": 1767225600,
       "expect": "reject",
       "error": "ENV_NONCE",
       "store_after": {
         "uplink_last_seq": 15,
-        "downlink_last_seq": 7
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
       }
     },
     {
       "name": "unknown message type 11 rejected",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa04da40111021a6955b900030b04a05840c1501511b5801c33627556da1e04dc5c59c103630bf2a708030d522d89f1e2a893393c00e00f95804063c836c43327965a63e1f949cc35878da27f1066f40e59",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa04da40111021a6955b900030b04a058408b51d97b63cdfb47bae9e252cbf729b05c19cecc17f740a06d1b7cf41e852e34c75fcb1a624d9eded3dd15a2543593a05238b419a0f76dd4a33fb475f70ad329",
       "now": 1767225600,
       "expect": "reject",
       "error": "ENV_TYPE",
       "store_after": {
         "uplink_last_seq": 15,
-        "downlink_last_seq": 7
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
       }
     },
     {
       "name": "uplink seq 17 accepted",
-      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a40111021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840a7dcae12d45238432de4c11e97afebd4cdf54dfd90cd290fc3c05a13664111616f713b5ca4b40fce4227d41b55f6fc34554ae5bd20216df4dfcf4927b4900d9b",
+      "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05894a40111021a6955b900030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840c86357cd0e63a39e7ea62f458a46af8a0c00164b61a398d0370e52a1c1e26b79d9c758ee70fb598373d2308ac5b82eac12e9e51999f99641ac02eb8a95421ddb",
       "now": 1767225600,
       "expect": "accept",
       "store_after": {
         "uplink_last_seq": 17,
-        "downlink_last_seq": 7
+        "downlink_last_seq": 7,
+        "downlink_last_seq_by_type": {
+          "4": 4,
+          "5": 7,
+          "7": null
+        }
       }
     }
   ]
