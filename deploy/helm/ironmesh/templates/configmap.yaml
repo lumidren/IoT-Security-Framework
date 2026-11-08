@@ -1,0 +1,53 @@
+{{- /*
+One ConfigMap per service with its plain environment. Empty values in services.<name>.config
+are dropped, and well-known keys fall back to the shared database / kafka / host settings so
+that an environment only has to set them once.
+*/}}
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+{{- $ctx := dict "root" $ "name" $name }}
+{{- $prefix := upper $name }}
+{{- $data := dict }}
+{{- range $k, $v := $svc.config }}
+{{- if ne (toString $v) "" }}
+{{- $_ := set $data $k (toString $v) }}
+{{- end }}
+{{- end }}
+{{- /* Database defaults */}}
+{{- if hasKey $svc.config (printf "%s_DB_HOST" $prefix) }}
+{{- if not (index $data (printf "%s_DB_HOST" $prefix)) }}{{ $_ := set $data (printf "%s_DB_HOST" $prefix) $.Values.database.host }}{{ end }}
+{{- if not (index $data (printf "%s_DB_PORT" $prefix)) }}{{ $_ := set $data (printf "%s_DB_PORT" $prefix) (toString $.Values.database.port) }}{{ end }}
+{{- if not (index $data (printf "%s_DB_SSLMODE" $prefix)) }}{{ $_ := set $data (printf "%s_DB_SSLMODE" $prefix) $.Values.database.sslMode }}{{ end }}
+{{- if not (index $data (printf "%s_DB_IAM_AUTH" $prefix)) }}{{ $_ := set $data (printf "%s_DB_IAM_AUTH" $prefix) (toString $.Values.database.iamAuth) }}{{ end }}
+{{- end }}
+{{- /* Kafka defaults */}}
+{{- if hasKey $svc.config (printf "%s_KAFKA_BROKERS" $prefix) }}
+{{- if not (index $data (printf "%s_KAFKA_BROKERS" $prefix)) }}{{ $_ := set $data (printf "%s_KAFKA_BROKERS" $prefix) (include "ironmesh.kafkaBootstrap" $) }}{{ end }}
+{{- if not (index $data (printf "%s_KAFKA_SASL_MECHANISM" $prefix)) }}{{ $_ := set $data (printf "%s_KAFKA_SASL_MECHANISM" $prefix) $.Values.kafka.saslMechanism }}{{ end }}
+{{- if not (index $data (printf "%s_KAFKA_TLS_ENABLED" $prefix)) }}{{ $_ := set $data (printf "%s_KAFKA_TLS_ENABLED" $prefix) (toString $.Values.kafka.tlsEnabled) }}{{ end }}
+{{- end }}
+{{- /* Public URLs */}}
+{{- if eq $name "pki" }}
+{{- if not (index $data "PKI_PUBLIC_BASE_URL") }}{{ $_ := set $data "PKI_PUBLIC_BASE_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "pki"))) }}{{ end }}
+{{- else if eq $name "registry" }}
+{{- if not (index $data "REGISTRY_PUBLIC_BASE_URL") }}{{ $_ := set $data "REGISTRY_PUBLIC_BASE_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "registry"))) }}{{ end }}
+{{- else if eq $name "ota" }}
+{{- if not (index $data "OTA_PUBLIC_BASE_URL") }}{{ $_ := set $data "OTA_PUBLIC_BASE_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "ota"))) }}{{ end }}
+{{- else if eq $name "console" }}
+{{- if not (index $data "NEXT_PUBLIC_APP_URL") }}{{ $_ := set $data "NEXT_PUBLIC_APP_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "console"))) }}{{ end }}
+{{- if not (index $data "NEXT_PUBLIC_ENVIRONMENT") }}{{ $_ := set $data "NEXT_PUBLIC_ENVIRONMENT" $.Values.global.environment }}{{ end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ironmesh.svcName" $ctx }}-config
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" $ctx | nindent 4 }}
+data:
+  {{- range $k, $v := $data }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+{{- end }}
+{{- end }}

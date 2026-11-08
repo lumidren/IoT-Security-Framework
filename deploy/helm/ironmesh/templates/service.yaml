@@ -1,0 +1,28 @@
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ironmesh.svcName" $ctx }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" $ctx | nindent 4 }}
+  {{- with $svc.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $svc.service.type }}
+  selector:
+    {{- include "ironmesh.svcSelectorLabels" $ctx | nindent 4 }}
+  ports:
+    {{- range $portName, $portNumber := $svc.ports }}
+    - name: {{ $portName }}
+      port: {{ $portNumber }}
+      targetPort: {{ $portName }}
+      protocol: TCP
+    {{- end }}
+{{- end }}
+{{- end }}

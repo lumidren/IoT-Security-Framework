@@ -1,0 +1,190 @@
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+{{- $ctx := dict "root" $ "name" $name }}
+{{- $svcName := include "ironmesh.svcName" $ctx }}
+{{- $healthPort := index $svc.ports $svc.health.port }}
+{{- $secretRequired := or $.Values.externalSecrets.enabled $svc.secret.create (ne $svc.secret.existingSecret "") }}
+{{- $mountDeviceCa := has $name $.Values.deviceCa.mountInto }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $svcName }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" $ctx | nindent 4 }}
+spec:
+  {{- if not $svc.autoscaling.enabled }}
+  replicas: {{ $svc.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "ironmesh.svcSelectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ironmesh.svcLabels" $ctx | nindent 8 }}
+        {{- with $.Values.global.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ printf "%s%s%s" (toJson $svc.config) (toJson $.Values.database) (toJson $.Values.kafka) | sha256sum }}
+        {{- if $svc.metrics.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ index $svc.ports $svc.metrics.port | quote }}
+        prometheus.io/path: {{ $svc.metrics.path | quote }}
+        {{- end }}
+        {{- with $.Values.global.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $svcName }}
+      automountServiceAccountToken: {{ $.Values.serviceAccount.automountToken }}
+      terminationGracePeriodSeconds: {{ $svc.terminationGracePeriodSeconds }}
+      {{- with $svc.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "ironmesh.podSecurityContext" $ | nindent 8 }}
+      {{- if $svc.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ $svc.topologySpread.maxSkew }}
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: {{ $svc.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "ironmesh.svcSelectorLabels" $ctx | nindent 14 }}
+        - maxSkew: {{ $svc.topologySpread.maxSkew }}
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "ironmesh.svcSelectorLabels" $ctx | nindent 14 }}
+      {{- end }}
+      {{- with $svc.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "ironmesh.image" (dict "root" $ "svc" $svc) | quote }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          securityContext:
+            {{- include "ironmesh.containerSecurityContext" $ | nindent 12 }}
+          ports:
+            {{- range $portName, $portNumber := $svc.ports }}
+            - name: {{ $portName }}
+              containerPort: {{ $portNumber }}
+              protocol: TCP
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ $svcName }}-config
+            - secretRef:
+                name: {{ include "ironmesh.secretName" $ctx }}
+                optional: {{ not $secretRequired }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- include "ironmesh.otelEnv" $ctx | nindent 12 }}
+            {{- with $svc.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: {{ $svc.health.readinessPath }}
+              port: {{ $svc.health.port }}
+              scheme: {{ $svc.health.scheme }}
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: {{ $svc.health.startupFailureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ $svc.health.livenessPath }}
+              port: {{ $svc.health.port }}
+              scheme: {{ $svc.health.scheme }}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: {{ $svc.health.readinessPath }}
+              port: {{ $svc.health.port }}
+              scheme: {{ $svc.health.scheme }}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml $svc.resources | nindent 12 }}
+          volumeMounts:
+            {{- range $i, $dir := $svc.writableDirs }}
+            - name: writable-{{ $i }}
+              mountPath: {{ $dir }}
+            {{- end }}
+            {{- if $svc.tls.enabled }}
+            - name: tls
+              mountPath: {{ $.Values.internalTls.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if $mountDeviceCa }}
+            - name: device-ca
+              mountPath: {{ $.Values.deviceCa.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- with $svc.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        {{- range $i, $dir := $svc.writableDirs }}
+        - name: writable-{{ $i }}
+          emptyDir:
+            sizeLimit: {{ $.Values.writableDirSizeLimit }}
+        {{- end }}
+        {{- if $svc.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ include "ironmesh.tlsSecretName" $ctx }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if $mountDeviceCa }}
+        - name: device-ca
+          secret:
+            secretName: {{ $.Values.deviceCa.existingSecret }}
+        {{- end }}
+        {{- with $svc.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- end }}
