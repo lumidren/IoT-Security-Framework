@@ -318,10 +318,18 @@ Given the message bytes, a key resolver (kid -> public key), a replay store, `no
 7. Decode the payload per §3.1/§3.4.
 8. The type's direction (§3.2) must equal the header direction: `ENV_DIRECTION`.
 9. `|now - ts| <= max_skew`, else `ENV_TS_SKEW` (both 300 s early and 300 s late are accepted;
-   301 s is rejected).
+   301 s is rejected). **Exception (retainable types):** downlink ShadowDesired (4), OtaNotify (7)
+   and Config (9) may arrive as retained MQTT messages long after they were signed, so for them only
+   `ts - now <= max_skew` is enforced (a message dated in the future is still rejected); `seq`
+   ordering prevents replay of older versions. Commands (5) are never retained and keep the full
+   window.
 10. Nonce echo (§3.5): `ENV_NONCE`.
 11. Replay: atomically accept `seq` iff it is strictly greater than the last accepted sequence for
-    `(kid, direction)` (or none exists) and record it; otherwise `ENV_REPLAY`. **The store is
+    the message's **replay stream** (or none exists) and record it; otherwise `ENV_REPLAY`. The
+    replay stream is the device kid for uplink, and the text string `"<tenant kid>/<type>"` (type
+    in decimal, e.g. `tenant-cmd-<uuid>/5`) for downlink. Downlink sequences are per type because
+    different cloud services sign different downlink types with the same tenant key (registry:
+    4, 5, 9; OTA service: 7) and must not consume each other's sequence numbers. **The store is
     updated only when every previous step passed**; rejected messages never advance it.
 
 The first failing step determines the error code; `vectors/replay_cases.json` exercises the

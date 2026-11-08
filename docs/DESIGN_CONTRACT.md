@@ -135,7 +135,7 @@ Every device <-> cloud message is a `COSE_Sign1` (RFC 9052, tag 18) with:
 | Key | Name       | Type        | Rule                                                        |
 |-----|------------|-------------|-------------------------------------------------------------|
 | 1   | `seq`      | uint64      | strictly increasing per (device, direction); persisted       |
-| 2   | `ts`       | uint (unix s)| receiver accepts `|now - ts| <= 300 s` else rejects         |
+| 2   | `ts`       | uint (unix s)| receiver accepts `|now - ts| <= 300 s` else rejects; retainable downlink types 4, 7, 9 enforce only `ts - now <= 300 s` |
 | 3   | `type`     | uint        | message type (see below)                                     |
 | 4   | `body`     | map         | type-specific                                               |
 | 5   | `nonce`    | bstr(16)    | present on `Command`/`CommandAck`; ack echoes command nonce   |
@@ -143,8 +143,9 @@ Every device <-> cloud message is a `COSE_Sign1` (RFC 9052, tag 18) with:
 Message types: 1 Telemetry, 2 Event, 3 ShadowReported, 4 ShadowDesired, 5 Command, 6 CommandAck,
 7 OtaNotify, 8 OtaStatus, 9 Config (inside Encrypt0), 10 Attestation.
 
-**Replay protection**: receivers keep the last accepted `seq` per sender (server: in Postgres per
-device; device: in NVS/keyring per tenant key). Messages with `seq <= last` are dropped and counted
+**Replay protection**: receivers keep the last accepted `seq` per replay stream (server: in
+Postgres per device; device: in NVS/keyring per tenant key **and downlink message type**, because
+the registry signs types 4, 5, 9 and the OTA service signs type 7 with the same tenant key). Messages with `seq <= last` are dropped and counted
 (`ironmesh_replay_rejected_total`). Devices persist `seq` before sending so a reboot never reuses one.
 
 Telemetry body (`type=1`): `{1: cpu_pct(float), 2: mem_pct, 3: net_rx_bytes, 4: net_tx_bytes,
