@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "description": "A Telemetry envelope (type 1) signed by the device key (ES256, kid = certificate serial). Implementations MUST produce payload_hex from the body fields and MUST accept wire_hex with now = 'now' (verification vector: the ES256 signature is randomized).",
+  "generator": "ironmesh_wire 0.1.0",
+  "tenant_id": "7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11",
+  "device_id": "dev-8f3a1c2b9d4e5f60",
+  "device_key": {
+    "algorithm": "ES256",
+    "private_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg4CQ3EN9zY6epkGIt\nMxiMO2ummovoYFHUOXvLhWG2U+OhRANCAAQ7LY99ojko5Ajl7iuBTnpJ6cUhNwwF\n3qTXlrHeILtD4oL7DNokvRpvJI2yFVEgJUOuy4PpW3G6UU7+pmZPTHfF\n-----END PRIVATE KEY-----\n",
+    "public_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOy2PfaI5KOQI5e4rgU56SenFITcM\nBd6k15ax3iC7Q+KC+wzaJL0abySNshVRICVDrsuD6VtxulFO/qZmT0x3xQ==\n-----END PUBLIC KEY-----\n",
+    "public_raw_hex": "043b2d8f7da23928e408e5ee2b814e7a49e9c521370c05dea4d796b1de20bb43e282fb0cda24bd1a6f248db21551202543aecb83e95b71ba514efea6664f4c77c5",
+    "private_scalar_hex": "e0243710df7363a7a990622d33188c3b6ba69a8be86051d4397bcb8561b653e3"
+  },
+  "cert_serial_hex": "3fa1b2c3d4e5f60718293a4b5c6d7e8f",
+  "kid_hex": "3fa1b2c3d4e5f60718293a4b5c6d7e8f",
+  "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/telemetry",
+  "now": 1767225600,
+  "message": {
+    "seq": 1001,
+    "ts": 1767225598,
+    "type": 1,
+    "type_name": "TELEMETRY",
+    "body": {
+      "cpu_pct": 12.5,
+      "mem_pct": 40.25,
+      "net_rx_bytes": 1048576,
+      "net_tx_bytes": 65536,
+      "temp_c": 36.6,
+      "uptime_s": 86400,
+      "auth_failures": 0,
+      "fw_hash_hex": "81862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e70",
+      "fw_version": "2.4.1",
+      "proc_count": 142,
+      "top_procs": [
+        "ironmesh-agent",
+        "sshd",
+        "mosquitto"
+      ],
+      "rssi": null,
+      "free_heap": null,
+      "lat": 52.52,
+      "lon": 13.405
+    },
+    "payload_diag": "{1: 1001, 2: 1767225598, 3: 1, 4: {1: 12.5, 2: 40.25, 3: 1048576, 4: 65536, 5: 36.6, 6: 86400, 7: 0, 8: h'81862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e70', 9: \"2.4.1\", 10: 142, 11: [\"ironmesh-agent\", \"sshd\", \"mosquitto\"], 14: 52.52, 15: 13.405}}",
+    "payload_hex": "a4011903e9021a6955b8fe030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f",
+    "protected_hex": "a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f",
+    "sig_structure_hex": "846a5369676e61747572653155a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f405896a4011903e9021a6955b8fe030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f",
+    "signature_hex": "d0d3b90df2c77fc1cd392dc58643865ef648d513f28b63c45c55f8213ecc11ccf880d9874562dfba643bb04be151cd4d02e105e16d7aa76dd109da3416a998ef",
+    "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05896a4011903e9021a6955b8fe030104ad01f94a4002f95108031a00100000041a0001000005fb40424ccccccccccd061a00015180070008582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700965322e342e310a188e0b836e69726f6e6d6573682d6167656e746473736864696d6f7371756974746f0efb404a428f5c28f5c30ffb402acf5c28f5c28f5840d0d3b90df2c77fc1cd392dc58643865ef648d513f28b63c45c55f8213ecc11ccf880d9874562dfba643bb04be151cd4d02e105e16d7aa76dd109da3416a998ef"
+  },
+  "expect": "accept"
+}

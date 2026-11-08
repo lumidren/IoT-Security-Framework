@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "description": "Attestation envelope (type 10, contract section 3) for a software-keyed device: signed with the current identity key (ES256, kid = cert serial), body {1: nonce, 2: sha256(csr), 3: fw_hash, 4: fw_version, 5: 'software', 6: null}. Verification vector (ES256).",
+  "generator": "ironmesh_wire 0.1.0",
+  "device_key": {
+    "algorithm": "ES256",
+    "private_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg4CQ3EN9zY6epkGIt\nMxiMO2ummovoYFHUOXvLhWG2U+OhRANCAAQ7LY99ojko5Ajl7iuBTnpJ6cUhNwwF\n3qTXlrHeILtD4oL7DNokvRpvJI2yFVEgJUOuy4PpW3G6UU7+pmZPTHfF\n-----END PRIVATE KEY-----\n",
+    "public_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOy2PfaI5KOQI5e4rgU56SenFITcM\nBd6k15ax3iC7Q+KC+wzaJL0abySNshVRICVDrsuD6VtxulFO/qZmT0x3xQ==\n-----END PUBLIC KEY-----\n",
+    "public_raw_hex": "043b2d8f7da23928e408e5ee2b814e7a49e9c521370c05dea4d796b1de20bb43e282fb0cda24bd1a6f248db21551202543aecb83e95b71ba514efea6664f4c77c5",
+    "private_scalar_hex": "e0243710df7363a7a990622d33188c3b6ba69a8be86051d4397bcb8561b653e3"
+  },
+  "kid_hex": "3fa1b2c3d4e5f60718293a4b5c6d7e8f",
+  "now": 1767225600,
+  "nonce_hex": "abf0a3815bf721a90f7b031f6bb0c19ef133485340297f108d13aa9c398a776a",
+  "csr_der_hex": "3082010066557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be",
+  "csr_hash_hex": "918c29ae9ca25f793f0c91ac274e779e0462313aaf50930dc6cf1b86d0a642c5",
+  "message": {
+    "seq": 1,
+    "ts": 1767225600,
+    "type": 10,
+    "type_name": "ATTESTATION",
+    "body": {
+      "nonce_hex": "abf0a3815bf721a90f7b031f6bb0c19ef133485340297f108d13aa9c398a776a",
+      "csr_hash_hex": "918c29ae9ca25f793f0c91ac274e779e0462313aaf50930dc6cf1b86d0a642c5",
+      "fw_hash_hex": "81862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e70",
+      "fw_version": "2.4.1",
+      "se_type": "software",
+      "evidence": null
+    },
+    "payload_diag": "{1: 1, 2: 1767225600, 3: 10, 4: {1: h'abf0a3815bf721a90f7b031f6bb0c19ef133485340297f108d13aa9c398a776a', 2: h'918c29ae9ca25f793f0c91ac274e779e0462313aaf50930dc6cf1b86d0a642c5', 3: h'81862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e70', 4: \"2.4.1\", 5: \"software\", 6: null}}",
+    "payload_hex": "a40101021a6955b900030a04a6015820abf0a3815bf721a90f7b031f6bb0c19ef133485340297f108d13aa9c398a776a025820918c29ae9ca25f793f0c91ac274e779e0462313aaf50930dc6cf1b86d0a642c503582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700465322e342e310568736f66747761726506f6",
+    "protected_hex": "a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f",
+    "sig_structure_hex": "846a5369676e61747572653155a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f405889a40101021a6955b900030a04a6015820abf0a3815bf721a90f7b031f6bb0c19ef133485340297f108d13aa9c398a776a025820918c29ae9ca25f793f0c91ac274e779e0462313aaf50930dc6cf1b86d0a642c503582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700465322e342e310568736f66747761726506f6",
+    "signature_hex": "748e6365c94d05d51d5ac29884e38b0b1b9fdccad2e020b36144113abb82dd2b9f9bf78cc3229d153240fdee2351393b550bdf292bcb172be59f310fdcc604df",
+    "wire_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa05889a40101021a6955b900030a04a6015820abf0a3815bf721a90f7b031f6bb0c19ef133485340297f108d13aa9c398a776a025820918c29ae9ca25f793f0c91ac274e779e0462313aaf50930dc6cf1b86d0a642c503582081862987cd83dd8409bad784657cb06aa04c1356336216d44839ea732ec42e700465322e342e310568736f66747761726506f65840748e6365c94d05d51d5ac29884e38b0b1b9fdccad2e020b36144113abb82dd2b9f9bf78cc3229d153240fdee2351393b550bdf292bcb172be59f310fdcc604df"
+  },
+  "negative": [
+    {
+      "name": "nonce mismatch",
+      "expected_nonce_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "error": "ATT_NONCE"
+    },
+    {
+      "name": "csr mismatch",
+      "csr_der_hex": "3082010066557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be66557e93c50ba63057fe08c3a6fbbe98f1e218ecc383090ca7ce0067448787be78",
+      "error": "ATT_CSR_HASH"
+    },
+    {
+      "name": "se_type not allowed by policy",
+      "allowed_se_types": [
+        "atecc608",
+        "tpm2"
+      ],
+      "error": "ATT_SE_TYPE"
+    }
+  ]
+}
