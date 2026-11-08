@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ from ..integrations.bus import (
     TOPIC_ALERTS,
     TOPIC_AUDIT,
     TOPIC_AUTH,
+    TOPIC_CAMPAIGNS,
     TOPIC_INGEST,
     BusMessage,
 )
@@ -95,6 +97,7 @@ class Ingest:
         self.app.bus.subscribe([s.kafka_topic_auth or TOPIC_AUTH], self.on_auth)
         self.app.bus.subscribe([s.kafka_topic_alerts or TOPIC_ALERTS], self.on_alert)
         self.app.bus.subscribe([s.kafka_topic_audit or TOPIC_AUDIT], self.on_audit)
+        self.app.bus.subscribe([s.kafka_topic_campaigns or TOPIC_CAMPAIGNS], self.on_campaign)
 
     # --------------------------------------------------------------------------------------------
     # im.ingest
@@ -426,6 +429,31 @@ class Ingest:
                 u.emit("alert.created", alert, topics)
             else:
                 u.emit("alert.updated", alert, topics)
+
+    # --------------------------------------------------------------------------------------------
+    # im.campaigns (OTA rollout progress, relayed to the console WebSocket)
+    # --------------------------------------------------------------------------------------------
+
+    async def on_campaign(self, msg: BusMessage) -> None:
+        """Relay an OTA ``campaign.updated`` frame to the tenant's WebSocket subscribers.
+
+        The frame is delivered on the ``fleet`` topic (campaign list, running count) and on
+        ``campaign:<id>`` (campaign detail page). Frames for unknown tenants are dropped."""
+        try:
+            frame = json.loads(msg.value)
+            if frame.get("type") != "campaign.updated":
+                return
+            tenant_id = str(uuid.UUID(str(frame["tenant_id"])))
+            data = frame["data"]
+            campaign_id = str(uuid.UUID(str(data["campaign_id"])))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            log.warning("campaign_frame_malformed")
+            return
+        async with self.app.unit(ingest_principal(tenant_id), tenant_id) as u:
+            if await u.tx.get_tenant() is None:
+                log.warning("campaign_frame_unknown_tenant", tenant_id=tenant_id)
+                return
+            u.emit("campaign.updated", data, {"fleet", f"campaign:{campaign_id}"})
 
     # --------------------------------------------------------------------------------------------
     # im.audit (other services' audit events are chained into the tenant's audit log)

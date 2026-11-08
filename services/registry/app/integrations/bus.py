@@ -17,6 +17,7 @@ TOPIC_AUTH = "im.auth"
 TOPIC_ALERTS = "im.alerts"
 TOPIC_AUDIT = "im.audit"
 TOPIC_COMMANDS = "im.commands"
+TOPIC_CAMPAIGNS = "im.campaigns"
 
 
 @dataclass(frozen=True, slots=True)

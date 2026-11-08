@@ -129,6 +129,42 @@ async def _frames(mem: Env, ws_client: httpx.AsyncClient) -> None:
 
         await mem.bus.deliver(BusMessage("im.alerts", None, json.dumps(alert).encode()))
         assert (await next_frame(wa, {"alert.created"}))["data"]["id"] == "al-1"
+        # OTA campaign progress from im.campaigns reaches the fleet topic; malformed frames and
+        # frames for unknown tenants are dropped.
+        campaign_id = "0b6f2b1e-6c0d-4f2b-9a51-3f3c7e1d2a90"
+        for raw in (
+            b"{not json",
+            json.dumps({"type": "campaign.updated", "tenant_id": "nope", "data": {}}).encode(),
+            json.dumps({"type": "something.else", "tenant_id": a, "data": {}}).encode(),
+            json.dumps(
+                {
+                    "type": "campaign.updated",
+                    "tenant_id": "11111111-1111-4111-8111-111111111111",
+                    "data": {"campaign_id": campaign_id},
+                }
+            ).encode(),
+        ):
+            await mem.bus.deliver(BusMessage("im.campaigns", None, raw))
+        await mem.bus.deliver(
+            BusMessage(
+                "im.campaigns",
+                a,
+                json.dumps(
+                    {
+                        "type": "campaign.updated",
+                        "at": "2026-11-09T10:00:00Z",
+                        "tenant_id": a,
+                        "data": {
+                            "campaign_id": campaign_id,
+                            "state": "running",
+                            "current_stage": 1,
+                        },
+                    }
+                ).encode(),
+            )
+        )
+        upd = await next_frame(wa, {"campaign.updated"})
+        assert upd["data"]["campaign_id"] == campaign_id and upd["data"]["current_stage"] == 1
         # unsubscribe + invalid frames
         await wa.send_json({"type": "unsubscribe", "topics": [f"device:{did}"]})
         assert f"device:{did}" not in (await next_frame(wa, {"subscribed"}))["data"]["topics"]
