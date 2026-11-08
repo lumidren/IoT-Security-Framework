@@ -1,0 +1,64 @@
+IronMesh {{ .Chart.AppVersion }} ({{ .Values.global.environment }}) installed as release "{{ .Release.Name }}"
+in namespace "{{ .Release.Namespace }}".
+
+Services
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+  {{ printf "%-9s" $name }} {{ include "ironmesh.svcName" (dict "root" $ "name" $name) }} ({{ range $pn, $pv := $svc.ports }}{{ $pn }}={{ $pv }} {{ end }}) replicas={{ if $svc.autoscaling.enabled }}{{ $svc.autoscaling.minReplicas }}-{{ $svc.autoscaling.maxReplicas }} (HPA){{ else }}{{ $svc.replicas }}{{ end }}
+{{- end }}
+{{- end }}
+{{- if .Values.emqx.enabled }}
+  emqx      {{ .Release.Name }}-emqx (mqttssl=8883 dashboard=18083) replicas={{ .Values.emqx.replicaCount }}
+{{- end }}
+{{- if .Values.redpanda.enabled }}
+  redpanda  {{ .Release.Name }}-redpanda (kafka={{ .Values.redpanda.listeners.kafka.port }}) replicas={{ .Values.redpanda.statefulset.replicas }}
+{{- else }}
+  kafka     external: {{ .Values.kafka.bootstrapServers | default "<kafka.bootstrapServers not set>" }} ({{ .Values.kafka.mode }})
+{{- end }}
+  postgres  {{ .Values.database.host }}:{{ .Values.database.port }} (iamAuth={{ .Values.database.iamAuth }})
+
+Public endpoints
+  console   https://{{ include "ironmesh.host" (dict "root" $ "name" "console") }}
+  registry  https://{{ include "ironmesh.host" (dict "root" $ "name" "registry") }}
+  ota       https://{{ include "ironmesh.host" (dict "root" $ "name" "ota") }}
+  pki       https://{{ include "ironmesh.host" (dict "root" $ "name" "pki") }} (EST/OCSP, mTLS)  http://{{ include "ironmesh.host" (dict "root" $ "name" "pki") }}/crl/device-ca.crl
+  mqtt      mqtts://{{ include "ironmesh.host" (dict "root" $ "name" "mqtt") }}:8883
+{{- if and .Values.aws.enabled .Values.aws.targetGroupBindings.enabled }}
+  exposure  TargetGroupBindings -> Terraform ALB/NLB
+{{- else if .Values.ingress.enabled }}
+  exposure  Ingress class {{ .Values.ingress.className }} (console/registry/ota); pki and emqx need a LoadBalancer or NodePort service outside this chart
+{{- else }}
+  exposure  none (ingress.enabled=false, targetGroupBindings.enabled=false)
+{{- end }}
+
+Secrets
+{{- if .Values.externalSecrets.enabled }}
+  External Secrets Operator syncs {{ .Values.externalSecrets.secretPathPrefix }}<service> from ClusterSecretStore "{{ .Values.externalSecrets.clusterSecretStore }}".
+  Required JSON keys per service are listed in values.yaml (services.<name>.secretKeys); the EMQX
+  env/api-key Secrets are derived from the policy secret (POLICY_HOOK_TOKEN, POLICY_EMQX_API_*).
+{{- else }}
+  External Secrets are disabled. Each service reads ironmesh-<service>-secret (or
+  services.<name>.secret.existingSecret). Make sure these exist with the keys listed in
+  services.<name>.secretKeys, plus {{ .Values.emqx.envFromSecret }} and ironmesh-emqx-api-keys for EMQX.
+{{- end }}
+  Device CA bundle Secret: {{ .Values.deviceCa.existingSecret }} (key ca.crt) must exist.
+{{- if .Values.internalTls.certManager.enabled }}
+  Service certificates are issued by cert-manager {{ .Values.internalTls.certManager.issuerRef.kind }}/{{ .Values.internalTls.certManager.issuerRef.name }}.
+{{- else }}
+  internalTls.certManager is disabled: provide ironmesh-<service>-tls Secrets (tls.crt, tls.key, ca.crt).
+{{- end }}
+
+Verify
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  helm -n {{ .Release.Namespace }} test {{ .Release.Name }}
+{{- if .Values.monitoring.enabled }}
+  Prometheus: ServiceMonitors + PrometheusRule "{{ include "ironmesh.fullname" . }}-rules" are installed.
+{{- end }}
+{{- if not .Values.networkPolicy.enabled }}
+
+WARNING: networkPolicy.enabled=false. The design contract requires default-deny with explicit allows.
+{{- end }}
+{{- if and (eq .Values.global.environment "prod") (eq (index .Values.services.anomaly.config "ANOMALY_AUTO_QUARANTINE") "true") }}
+
+NOTE: auto-quarantine is ON in prod. Make sure the rules were tuned in dry-run mode first (SECURITY.md).
+{{- end }}

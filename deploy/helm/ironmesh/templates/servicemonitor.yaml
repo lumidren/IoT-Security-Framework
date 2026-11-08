@@ -1,0 +1,109 @@
+{{- if .Values.monitoring.enabled }}
+{{- $mon := .Values.monitoring }}
+{{- range $name, $svc := .Values.services }}
+{{- if and $svc.enabled $svc.metrics.enabled }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ironmesh.svcName" $ctx }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" $ctx | nindent 4 }}
+    {{- with $mon.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # job label = ironmesh-<service>, matching observability/prometheus/prometheus.yml and the rules.
+  jobLabel: ironmesh.dev/job
+  namespaceSelector:
+    matchNames:
+      - {{ $.Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "ironmesh.svcSelectorLabels" $ctx | nindent 6 }}
+  endpoints:
+    - port: {{ $svc.metrics.port }}
+      path: {{ $svc.metrics.path }}
+      scheme: http
+      interval: {{ $mon.serviceMonitor.interval }}
+      scrapeTimeout: {{ $mon.serviceMonitor.scrapeTimeout }}
+      relabelings:
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+{{- end }}
+{{- end }}
+{{- if .Values.emqx.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}-emqx
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: emqx
+    ironmesh.dev/job: ironmesh-emqx
+    {{- with $mon.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: emqx
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: dashboard
+      path: /api/v5/prometheus/stats
+      scheme: http
+      interval: {{ $mon.serviceMonitor.interval }}
+      scrapeTimeout: {{ $mon.serviceMonitor.scrapeTimeout }}
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: ironmesh-emqx
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+{{- end }}
+{{- if and .Values.redpanda.enabled (not .Values.redpanda.monitoring.enabled) }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}-redpanda
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redpanda
+    {{- with $mon.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: admin
+      path: /public_metrics
+      scheme: http
+      interval: {{ $mon.serviceMonitor.interval }}
+      scrapeTimeout: {{ $mon.serviceMonitor.scrapeTimeout }}
+      relabelings:
+        - action: replace
+          targetLabel: job
+          replacement: ironmesh-redpanda
+{{- end }}
+{{- end }}

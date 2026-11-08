@@ -1,0 +1,205 @@
+{{- if .Values.dbInit.enabled }}
+{{- $name := printf "%s-db-init" (include "ironmesh.fullname" .) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-init
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  init.sh: |
+    #!/usr/bin/env bash
+    # Creates the four IronMesh databases and the per-service roles (idempotent).
+    #   <db>_owner  LOGIN  owns the schema, runs migrations
+    #   <db>_app    LOGIN  runtime role; never owns tables so row-level security applies
+    #   ironmesh_backup   LOGIN  read-only (pg_read_all_data) for scripts/backup/pg_backup.sh
+    # With DB_IAM_AUTH=true every role is granted rds_iam and no password is set.
+    set -euo pipefail
+
+    : "${DB_HOST:?DB_HOST is required}"
+    : "${DB_PORT:=5432}"
+    : "${DB_SSLMODE:=verify-full}"
+    : "${DB_IAM_AUTH:=false}"
+    : "${POSTGRES_ADMIN_USER:?POSTGRES_ADMIN_USER is required}"
+    : "${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD is required}"
+    export PGPASSWORD="${POSTGRES_ADMIN_PASSWORD}"
+    export PGSSLMODE="${DB_SSLMODE}"
+    if [[ -n "${DB_SSLROOTCERT:-}" ]]; then export PGSSLROOTCERT="${DB_SSLROOTCERT}"; fi
+
+    psql_admin() {
+      psql -v ON_ERROR_STOP=1 -X -q -h "${DB_HOST}" -p "${DB_PORT}" -U "${POSTGRES_ADMIN_USER}" "$@"
+    }
+
+    ensure_role() {
+      local role="$1" login="$2"
+      psql_admin -d postgres -v role="${role}" -v login="${login}" <<'SQL'
+    SELECT format('CREATE ROLE %I %s', :'role', CASE WHEN :'login' = 'true' THEN 'LOGIN' ELSE 'NOLOGIN' END)
+    WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role') \gexec
+    SQL
+    }
+
+    set_password() {
+      local role="$1" password="$2"
+      if [[ "${DB_IAM_AUTH}" == "true" ]]; then
+        psql_admin -d postgres -v role="${role}" <<'SQL'
+    SELECT format('GRANT rds_iam TO %I', :'role') \gexec
+    SQL
+      elif [[ -n "${password}" ]]; then
+        psql_admin -d postgres -v role="${role}" -v pw="${password}" <<'SQL'
+    SELECT format('ALTER ROLE %I WITH PASSWORD %L', :'role', :'pw') \gexec
+    SQL
+      fi
+    }
+
+    for db in registry ota pki anomaly; do
+      owner="${db}_owner"
+      app="${db}_app"
+      prefix="$(printf '%s' "${db}" | tr '[:lower:]' '[:upper:]')"
+      owner_pw_var="${prefix}_DB_OWNER_PASSWORD"
+      app_pw_var="${prefix}_DB_PASSWORD"
+
+      ensure_role "${owner}" true
+      ensure_role "${app}" true
+      set_password "${owner}" "${!owner_pw_var:-}"
+      set_password "${app}" "${!app_pw_var:-}"
+
+      # The admin must be a member of the owner role to hand over database ownership (RDS).
+      psql_admin -d postgres -v owner="${owner}" -v admin="${POSTGRES_ADMIN_USER}" <<'SQL'
+    SELECT format('GRANT %I TO %I', :'owner', :'admin') \gexec
+    SQL
+      psql_admin -d postgres -v db="${db}" -v owner="${owner}" <<'SQL'
+    SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'owner')
+    WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') \gexec
+    SQL
+      psql_admin -d "${db}" -v owner="${owner}" -v app="${app}" <<'SQL'
+    SELECT format('ALTER DATABASE %I OWNER TO %I', current_database(), :'owner') \gexec
+    REVOKE ALL ON SCHEMA public FROM PUBLIC;
+    SELECT format('GRANT ALL ON SCHEMA public TO %I', :'owner') \gexec
+    SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'app') \gexec
+    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', :'owner', :'app') \gexec
+    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %I', :'owner', :'app') \gexec
+    SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', :'app') \gexec
+    SELECT format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', :'app') \gexec
+    SQL
+      echo "database ${db}: ok"
+    done
+
+    ensure_role ironmesh_backup true
+    set_password ironmesh_backup "${BACKUP_DB_PASSWORD:-}"
+    psql_admin -d postgres -c 'GRANT pg_read_all_data TO ironmesh_backup'
+    for db in registry ota pki anomaly; do
+      psql_admin -d postgres -v db="${db}" <<'SQL'
+    SELECT format('GRANT CONNECT ON DATABASE %I TO ironmesh_backup', :'db') \gexec
+    SQL
+    done
+    echo "db-init complete"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-init
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.dbInit.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.dbInit.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "ironmesh.labels" . | nindent 8 }}
+        app.kubernetes.io/component: db-init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: db-init
+          image: {{ .Values.dbInit.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "/scripts/init.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: DB_HOST
+              value: {{ .Values.database.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: DB_SSLMODE
+              value: {{ .Values.database.sslMode | quote }}
+            - name: DB_IAM_AUTH
+              value: {{ .Values.database.iamAuth | quote }}
+            {{- if .Values.database.caBundleSecret }}
+            - name: DB_SSLROOTCERT
+              value: /etc/ironmesh/db-ca/ca.crt
+            {{- end }}
+            - name: POSTGRES_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dbInit.adminSecretName }}
+                  key: username
+            - name: POSTGRES_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.dbInit.adminSecretName }}
+                  key: password
+          envFrom:
+            {{- range $name := list "registry" "ota" "pki" "anomaly" }}
+            - secretRef:
+                name: {{ include "ironmesh.secretName" (dict "root" $ "name" $name) }}
+                optional: true
+            {{- end }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.database.caBundleSecret }}
+            - name: db-ca
+              mountPath: /etc/ironmesh/db-ca
+              readOnly: true
+            {{- end }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ $name }}
+            defaultMode: 0555
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- if .Values.database.caBundleSecret }}
+        - name: db-ca
+          secret:
+            secretName: {{ .Values.database.caBundleSecret }}
+        {{- end }}
+{{- end }}

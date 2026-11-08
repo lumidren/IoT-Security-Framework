@@ -1,0 +1,64 @@
+{{- $svcs := .Values.services }}
+{{- $checks := list }}
+{{- range $name, $svc := $svcs }}
+{{- if $svc.enabled }}
+{{- $port := index $svc.ports $svc.health.port }}
+{{- $scheme := lower $svc.health.scheme }}
+{{- $checks = append $checks (printf "%s://%s:%d%s" $scheme (include "ironmesh.svcName" (dict "root" $ "name" $name)) (int $port) $svc.health.readinessPath) }}
+{{- end }}
+{{- end }}
+{{- if .Values.emqx.enabled }}
+{{- $checks = append $checks (printf "http://%s-emqx:18083/status" .Release.Name) }}
+{{- end }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-test-connection
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: helm-test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: readiness
+      image: curlimages/curl:8.11.1
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      command:
+        - /bin/sh
+        - -ec
+        - |
+          status=0
+          for url in {{ join " " $checks }}; do
+            if curl --silent --show-error --fail --max-time 10 --insecure --output /dev/null "$url"; then
+              echo "ok   $url"
+            else
+              echo "FAIL $url"
+              status=1
+            fi
+          done
+          exit $status
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
