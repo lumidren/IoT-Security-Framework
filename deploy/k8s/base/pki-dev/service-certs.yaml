@@ -1,0 +1,216 @@
+# Service identities issued by the dev Services CA (90 d, ECDSA P-256), mounted at
+# /etc/ironmesh/tls as tls.crt / tls.key / ca.crt. CN svc-<name> matches the contract
+# (the bridge authenticates to the broker as CN svc-bridge).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: emqx-tls
+  namespace: ironmesh
+spec:
+  secretName: emqx-tls
+  commonName: svc-emqx
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+    - emqx
+    - emqx.ironmesh
+    - emqx.ironmesh.svc
+    - emqx.ironmesh.svc.cluster.local
+    - localhost
+    - mqtt.ironmesh.local
+  issuerRef:
+    name: ironmesh-services-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: pki-tls
+  namespace: ironmesh
+spec:
+  secretName: pki-tls
+  commonName: svc-pki
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+    - pki
+    - pki.ironmesh
+    - pki.ironmesh.svc
+    - pki.ironmesh.svc.cluster.local
+    - localhost
+    - pki.ironmesh.local
+  uris:
+    - spiffe://ironmesh/service/pki
+  issuerRef:
+    name: ironmesh-services-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: policy-tls
+  namespace: ironmesh
+spec:
+  secretName: policy-tls
+  commonName: svc-policy
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+    - policy
+    - policy.ironmesh
+    - policy.ironmesh.svc
+    - policy.ironmesh.svc.cluster.local
+  uris:
+    - spiffe://ironmesh/service/policy
+  issuerRef:
+    name: ironmesh-services-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bridge-tls
+  namespace: ironmesh
+spec:
+  secretName: bridge-tls
+  commonName: svc-bridge
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+    - bridge
+    - bridge.ironmesh.svc
+  uris:
+    - spiffe://ironmesh/service/bridge
+  issuerRef:
+    name: ironmesh-services-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: registry-tls
+  namespace: ironmesh
+spec:
+  secretName: registry-tls
+  commonName: svc-registry
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+    - registry
+    - registry.ironmesh.svc
+    - registry.ironmesh.svc.cluster.local
+  uris:
+    - spiffe://ironmesh/service/registry
+  issuerRef:
+    name: ironmesh-services-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ota-tls
+  namespace: ironmesh
+spec:
+  secretName: ota-tls
+  commonName: svc-ota
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+    - ota
+    - ota.ironmesh.svc
+    - ota.ironmesh.svc.cluster.local
+  uris:
+    - spiffe://ironmesh/service/ota
+  issuerRef:
+    name: ironmesh-services-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: anomaly-tls
+  namespace: ironmesh
+spec:
+  secretName: anomaly-tls
+  commonName: svc-anomaly
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    - client auth
+  dnsNames:
+    - anomaly
+    - anomaly.ironmesh.svc
+    - anomaly.ironmesh.svc.cluster.local
+  uris:
+    - spiffe://ironmesh/service/anomaly
+  issuerRef:
+    name: ironmesh-services-ca
+    kind: Issuer
+    group: cert-manager.io

@@ -1,0 +1,146 @@
+# Development CA hierarchy, mirroring DESIGN_CONTRACT.md §2 with cert-manager acting as the
+# "KMS" (prod keeps the CA keys in AWS KMS; see deploy/terraform/aws/modules/kms).
+#
+#   IronMesh Dev Root CA (P-384)
+#   ├── IronMesh Dev Factory CA  (P-384)  -> bootstrap certs (issued by the pki service, file provider)
+#   ├── IronMesh Dev Device CA   (P-256)  -> operational certs (pki service)
+#   └── IronMesh Dev Services CA (P-256)  -> service identities below (cert-manager)
+#
+# Requires cert-manager in the cluster (see deploy/k8s/README.md).
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: ironmesh-dev-selfsigned
+  namespace: ironmesh
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ironmesh-dev-root-ca
+  namespace: ironmesh
+spec:
+  isCA: true
+  commonName: IronMesh Dev Root CA
+  subject:
+    organizations:
+      - IronMesh
+  secretName: ironmesh-dev-root-ca
+  duration: 87600h
+  renewBefore: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+  issuerRef:
+    name: ironmesh-dev-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: ironmesh-dev-root-ca
+  namespace: ironmesh
+spec:
+  ca:
+    secretName: ironmesh-dev-root-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ironmesh-dev-factory-ca
+  namespace: ironmesh
+spec:
+  isCA: true
+  commonName: IronMesh Dev Factory CA
+  subject:
+    organizations:
+      - IronMesh
+  secretName: ironmesh-dev-factory-ca
+  duration: 43800h
+  renewBefore: 4380h
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+  issuerRef:
+    name: ironmesh-dev-root-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ironmesh-dev-device-ca
+  namespace: ironmesh
+spec:
+  isCA: true
+  commonName: IronMesh Dev Device CA
+  subject:
+    organizations:
+      - IronMesh
+  secretName: ironmesh-dev-device-ca
+  duration: 43800h
+  renewBefore: 4380h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: ironmesh-dev-root-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ironmesh-dev-services-ca
+  namespace: ironmesh
+spec:
+  isCA: true
+  commonName: IronMesh Dev Services CA
+  subject:
+    organizations:
+      - IronMesh
+  secretName: ironmesh-dev-services-ca
+  duration: 43800h
+  renewBefore: 4380h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: ironmesh-dev-root-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+# Same issuer name as the Helm chart default (internalTls.certManager.issuerRef.name).
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: ironmesh-services-ca
+  namespace: ironmesh
+spec:
+  ca:
+    secretName: ironmesh-dev-services-ca
+---
+# PKI bundle signing key (ES256) for X-IronMesh-Bundle; in prod this is the KMS key
+# ironmesh-<env>-bundle-signing.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ironmesh-dev-bundle-key
+  namespace: ironmesh
+spec:
+  commonName: IronMesh Dev Bundle Signing Key
+  secretName: ironmesh-dev-bundle-key
+  duration: 43800h
+  renewBefore: 4380h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  usages:
+    - digital signature
+  issuerRef:
+    name: ironmesh-dev-root-ca
+    kind: Issuer
+    group: cert-manager.io
