@@ -1,0 +1,124 @@
+# OpenTelemetry Collector (contrib >= 0.164) for IronMesh.
+#
+# Receives OTLP from every service (gRPC 4317, HTTP 4318), exposes application metrics for
+# Prometheus on 8889, forwards traces and logs to an OTLP backend (Tempo / Loki / vendor) and
+# serves its own telemetry on 8888. Environment:
+#   IRONMESH_ENVIRONMENT   deployment.environment resource attribute (default dev)
+#   OTEL_TRACES_ENDPOINT   OTLP gRPC endpoint for traces (default tempo:4317)
+#   OTEL_LOGS_ENDPOINT     OTLP/HTTP endpoint for logs (default http://loki:3100/otlp)
+#   OTEL_EXPORTER_INSECURE true for plaintext OTLP to the backends (default true, in-cluster)
+#
+# Note: the former `logging` exporter was removed from the collector; `debug` replaces it.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        max_recv_msg_size_mib: 16
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Must be first: back-pressure before anything else allocates.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  resourcedetection:
+    detectors: [env, system]
+    timeout: 5s
+    override: false
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: ${env:IRONMESH_ENVIRONMENT:-dev}
+        action: upsert
+      - key: service.namespace
+        value: ironmesh
+        action: insert
+  # Never forward credentials or session material that an instrumentation may have attached.
+  attributes/scrub:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.cookie
+        action: delete
+      - key: http.request.header.x-ironmesh-hook-token
+        action: delete
+      - key: http.request.header.x-ironmesh-attestation
+        action: delete
+  batch:
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+    timeout: 5s
+
+exporters:
+  # Scraped by Prometheus (job ironmesh-otlp-metrics in prometheus.yml). Resource attributes
+  # become labels so service.name -> job/instance survive for EMQX and other OTLP-only sources.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    send_timestamps: true
+    enable_open_metrics: true
+    metric_expiration: 5m
+    resource_to_telemetry_conversion:
+      enabled: true
+  otlp/traces:
+    endpoint: ${env:OTEL_TRACES_ENDPOINT:-tempo:4317}
+    tls:
+      insecure: ${env:OTEL_EXPORTER_INSECURE:-true}
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 2000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+  otlphttp/logs:
+    endpoint: ${env:OTEL_LOGS_ENDPOINT:-http://loki:3100/otlp}
+    tls:
+      insecure: ${env:OTEL_EXPORTER_INSECURE:-true}
+    sending_queue:
+      enabled: true
+      queue_size: 2000
+    retry_on_failure:
+      enabled: true
+  debug:
+    verbosity: basic
+    sampling_initial: 5
+    sampling_thereafter: 500
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, zpages]
+  telemetry:
+    logs:
+      level: info
+      encoding: json
+    metrics:
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource, attributes/scrub, batch]
+      exporters: [otlp/traces, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource, attributes/scrub, batch]
+      exporters: [otlphttp/logs, debug]
