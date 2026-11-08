@@ -131,6 +131,9 @@ default subscription is `fleet` + `alerts`. Ping every 30 s.
   (policy service; service JWT `aud=registry`)
 * `POST /internal/v1/devices/{id}/enrolled` (PKI) body `{serial_hex, not_before, not_after, se_type, assurance_level, fw_version, fw_hash_hex}`
   -> transitions `manufactured -> provisioned -> active` and records the cert.
+* `GET /internal/v1/tenants/{tenant}/devices/{id}` (PKI, during EST) -> `{device_id, tenant_id, state, assurance_level, se_type, bootstrap_serial}`
+  where `bootstrap_serial` is the lower-case hex serial recorded at manufacture; `404` if the device is unknown in that tenant.
+* `POST /internal/v1/tenants/{tenant}/devices/{id}/assurance` (PKI) body `{assurance_level}` -> `204`
 * `POST /internal/v1/devices/{id}/quarantine` (anomaly) body `{reason, alert_id}` -> same as public.
 
 ## 2. OTA (`services/ota`, port 8001)
