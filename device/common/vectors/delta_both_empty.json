@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "description": "Both images empty: 92-byte header plus END (SHA-256 of empty input).",
+  "generator": "ironmesh_wire 0.1.0",
+  "name": "both_empty",
+  "block_size": 4096,
+  "old_hex": "",
+  "new_hex": "",
+  "patch_hex": "494d44454c544131000010000000000000000000e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855000000000000000003",
+  "header": {
+    "base_size": 0,
+    "base_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target_size": 0
+  },
+  "copy_ops": 0,
+  "literal_bytes": 0
+}
