@@ -1,0 +1,4 @@
+# The repository ignores *.pem globally; these are fixed PUBLIC test keys that the conformance
+# vectors depend on, so re-include them here.
+!*.pem
+!*.hex
