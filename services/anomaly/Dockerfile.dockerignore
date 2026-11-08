@@ -1,0 +1,10 @@
+# BuildKit per-Dockerfile ignore file (context = repository root): allowlist only what the image needs.
+*
+!libs/python/ironmesh-wire/pyproject.toml
+!libs/python/ironmesh-wire/README.md
+!libs/python/ironmesh-wire/src
+!services/anomaly/pyproject.toml
+!services/anomaly/README.md
+!services/anomaly/src
+**/__pycache__
+**/*.egg-info
