@@ -32,3 +32,5 @@ device/esp32/managed_components/
 .idea/
 *.swp
 .DS_Store
+.venv-infra/
+.hypothesis/
