@@ -1,0 +1,648 @@
+{{- /*
+Default-deny namespace with the explicit allow list of DESIGN_CONTRACT.md §7 and the
+additional east-west calls of API_CONTRACT.md (toggles under networkPolicy.additionalAllows).
+
+Rule fragments are rendered at column 0 by the helpers below and placed with nindent 4
+under `ingress:` / `egress:`.
+*/}}
+{{- define "ironmesh.np.ingressFromSvc" -}}
+- from:
+    - podSelector:
+        matchLabels:
+          {{- include "ironmesh.svcSelectorLabels" (dict "root" .root "name" .name) | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: {{ .port }}
+{{- end -}}
+
+{{- define "ironmesh.np.egressToSvc" -}}
+- to:
+    - podSelector:
+        matchLabels:
+          {{- include "ironmesh.svcSelectorLabels" (dict "root" .root "name" .name) | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: {{ .port }}
+{{- end -}}
+
+{{- define "ironmesh.np.ingressFromEmqx" -}}
+- from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: emqx
+          app.kubernetes.io/instance: {{ .root.Release.Name }}
+  ports:
+    - protocol: TCP
+      port: {{ .port }}
+{{- end -}}
+
+{{- define "ironmesh.np.egressToEmqx" -}}
+- to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: emqx
+          app.kubernetes.io/instance: {{ .root.Release.Name }}
+  ports:
+    - protocol: TCP
+      port: {{ .port }}
+{{- end -}}
+
+{{- define "ironmesh.np.egressToKafka" -}}
+{{- if .root.Values.redpanda.enabled }}
+- to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: redpanda
+          app.kubernetes.io/instance: {{ .root.Release.Name }}
+  ports:
+    - protocol: TCP
+      port: {{ .root.Values.redpanda.listeners.kafka.port }}
+{{- else if .root.Values.kafka.externalCidrs }}
+- to:
+    {{- range .root.Values.kafka.externalCidrs }}
+    - ipBlock:
+        cidr: {{ . }}
+    {{- end }}
+  ports:
+    - protocol: TCP
+      port: {{ .root.Values.kafka.externalPort }}
+    - protocol: TCP
+      port: 9094
+{{- end }}
+{{- end -}}
+
+{{- define "ironmesh.np.egressToPostgres" -}}
+{{- if .root.Values.database.cidrs }}
+- to:
+    {{- range .root.Values.database.cidrs }}
+    - ipBlock:
+        cidr: {{ . }}
+    {{- end }}
+  ports:
+    - protocol: TCP
+      port: {{ .root.Values.database.port }}
+{{- else }}
+- to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: postgres
+  ports:
+    - protocol: TCP
+      port: {{ .root.Values.database.port }}
+{{- end }}
+{{- end -}}
+
+{{- /*
+Public-facing ports. An empty `from` list would mean "any source" in Kubernetes, so the
+sources are always rendered explicitly: the ingress controller pods (nginx mode), the load
+balancer CIDRs (ALB/NLB ip targets), or an explicit 0.0.0.0/0 when neither is configured.
+*/}}
+{{- define "ironmesh.np.ingressFromLoadBalancer" -}}
+{{- $nginx := and .root.Values.ingress.enabled (eq .root.Values.ingress.className "nginx") }}
+- from:
+    {{- if $nginx }}
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .root.Values.networkPolicy.ingressControllerNamespace }}
+      podSelector:
+        matchLabels:
+          {{- toYaml .root.Values.networkPolicy.ingressControllerPodSelector | nindent 10 }}
+    {{- end }}
+    {{- range .root.Values.networkPolicy.loadBalancerCidrs }}
+    - ipBlock:
+        cidr: {{ . }}
+    {{- end }}
+    {{- if and (not $nginx) (not .root.Values.networkPolicy.loadBalancerCidrs) }}
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    {{- end }}
+  ports:
+    - protocol: TCP
+      port: {{ .port }}
+{{- end -}}
+
+{{- define "ironmesh.np.ingressFromDevices" -}}
+{{- if .root.Values.networkPolicy.deviceCidrs }}
+- from:
+    {{- range .root.Values.networkPolicy.deviceCidrs }}
+    - ipBlock:
+        cidr: {{ . }}
+    {{- end }}
+  ports:
+    - protocol: TCP
+      port: {{ .port }}
+{{- end }}
+{{- end -}}
+
+{{- define "ironmesh.np.ingressFromPrometheus" -}}
+{{- if .root.Values.monitoring.enabled }}
+- from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .root.Values.monitoring.namespace }}
+      podSelector:
+        matchLabels:
+          {{- toYaml .root.Values.monitoring.prometheusPodSelector | nindent 10 }}
+  ports:
+    - protocol: TCP
+      port: {{ .port }}
+{{- end }}
+{{- end -}}
+
+{{- define "ironmesh.np.ingressFromHelmTest" -}}
+{{- if .root.Values.networkPolicy.allowHelmTest }}
+- from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: helm-test
+          app.kubernetes.io/instance: {{ .root.Release.Name }}
+  ports:
+    - protocol: TCP
+      port: {{ .port }}
+{{- end }}
+{{- end -}}
+
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $allow := $np.additionalAllows }}
+{{- $svcs := .Values.services }}
+{{- $port := dict
+      "pkiMtls" (index $svcs.pki.ports "mtls")
+      "pkiPlain" (index $svcs.pki.ports "plain")
+      "policy" (index $svcs.policy.ports "http")
+      "bridge" (index $svcs.bridge.ports "http")
+      "registry" (index $svcs.registry.ports "http")
+      "ota" (index $svcs.ota.ports "http")
+      "anomaly" (index $svcs.anomaly.ports "http")
+      "console" (index $svcs.console.ports "http") }}
+---
+# 1. Nothing talks unless a policy below says so.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2. DNS for every pod in the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-allow-dns
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 3. Every pod may export telemetry to the OpenTelemetry collector (contract: all -> otel 4317).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-allow-otel-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.otelCollector.networkPolicy.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.otelCollector.networkPolicy.podSelector | nindent 14 }}
+        {{- if eq .Values.otelCollector.networkPolicy.namespace .Release.Namespace }}
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.otelCollector.networkPolicy.podSelector | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+{{- if $np.externalHttpsEgress.enabled }}
+---
+# 4. HTTPS egress for cloud APIs (STS for IRSA, KMS, S3, Secrets Manager), OIDC issuers and
+#    SIEM webhooks. Narrow externalHttpsEgress.cidrs to the VPC CIDR when VPC endpoints exist.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-allow-https-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "ironmesh.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- range $np.externalHttpsEgress.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
+{{- if $np.allowHelmTest }}
+---
+# 5. The `helm test` pod may reach every IronMesh service port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-allow-helm-test-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: helm-test
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "ironmesh.name" . }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+{{- if .Values.emqx.enabled }}
+---
+# EMQX: devices in on 8883 (NLB passthrough preserves client IPs), bridge shared subscription,
+# management API from policy (+ registry/ota publishers), cluster traffic between brokers.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-emqx
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: emqx
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: emqx
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- include "ironmesh.np.ingressFromDevices" (dict "root" $ "port" 8883) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "bridge" "port" 8883) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "policy" "port" 18083) | nindent 4 }}
+    {{- if $allow.registryToEmqxApi }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "registry" "port" 18083) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.otaToEmqxApi }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "ota" "port" 18083) | nindent 4 }}
+    {{- end }}
+    {{- include "ironmesh.np.ingressFromPrometheus" (dict "root" $ "port" 18083) | nindent 4 }}
+    {{- range $np.loadBalancerCidrs }}
+    - from:
+        - ipBlock:
+            cidr: {{ . }}
+      ports:
+        - protocol: TCP
+          port: 18083
+    {{- end }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: emqx
+              app.kubernetes.io/instance: {{ .Release.Name }}
+  egress:
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "policy" "port" $port.policy) | nindent 4 }}
+    {{- if $allow.emqxToBridgeWebhook }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "bridge" "port" $port.bridge) | nindent 4 }}
+    {{- end }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: emqx
+              app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+{{- if .Values.redpanda.enabled }}
+---
+# Redpanda: Kafka clients, broker-to-broker RPC, Prometheus on the admin port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-redpanda
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redpanda
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- range $client := list "bridge" "registry" "ota" "anomaly" "policy" }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" $client "port" $.Values.redpanda.listeners.kafka.port) | nindent 4 }}
+    {{- end }}
+    {{- include "ironmesh.np.ingressFromPrometheus" (dict "root" $ "port" $.Values.redpanda.listeners.admin.port) | nindent 4 }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redpanda
+              app.kubernetes.io/instance: {{ .Release.Name }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redpanda
+              app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+{{- if $svcs.pki.enabled }}
+---
+# pki: EST/OCSP/API (mTLS) and CRL from devices and the internal callers; signs with KMS
+# (HTTPS egress policy), pushes revocations to policy, records enrollments in the registry.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-pki
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" (dict "root" $ "name" "pki") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ironmesh.svcSelectorLabels" (dict "root" $ "name" "pki") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- include "ironmesh.np.ingressFromDevices" (dict "root" $ "port" $port.pkiMtls) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromDevices" (dict "root" $ "port" $port.pkiPlain) | nindent 4 }}
+    {{- range $client := list "registry" "ota" "anomaly" }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" $client "port" $port.pkiMtls) | nindent 4 }}
+    {{- end }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "policy" "port" $port.pkiPlain) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromPrometheus" (dict "root" $ "port" $port.pkiPlain) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromHelmTest" (dict "root" $ "port" $port.pkiPlain) | nindent 4 }}
+  egress:
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "policy" "port" $port.policy) | nindent 4 }}
+    {{- if $allow.pkiToRegistry }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "registry" "port" $port.registry) | nindent 4 }}
+    {{- end }}
+    {{- include "ironmesh.np.egressToPostgres" (dict "root" $) | nindent 4 }}
+{{- end }}
+{{- if $svcs.policy.enabled }}
+---
+# policy: EMQX authn/authz hooks and revocation pushes in; EMQX kicks, CRL fetches and
+# registry lifecycle lookups out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-policy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" (dict "root" $ "name" "policy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ironmesh.svcSelectorLabels" (dict "root" $ "name" "policy") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- include "ironmesh.np.ingressFromEmqx" (dict "root" $ "port" $port.policy) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "pki" "port" $port.policy) | nindent 4 }}
+    {{- if $allow.registryToPolicy }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "registry" "port" $port.policy) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.anomalyToPolicy }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "anomaly" "port" $port.policy) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.consoleToPolicy }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "console" "port" $port.policy) | nindent 4 }}
+    {{- end }}
+    {{- include "ironmesh.np.ingressFromPrometheus" (dict "root" $ "port" $port.policy) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromHelmTest" (dict "root" $ "port" $port.policy) | nindent 4 }}
+  egress:
+    {{- include "ironmesh.np.egressToEmqx" (dict "root" $ "port" 18083) | nindent 4 }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "pki" "port" $port.pkiPlain) | nindent 4 }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "registry" "port" $port.registry) | nindent 4 }}
+    {{- if $allow.policyToKafka }}
+    {{- include "ironmesh.np.egressToKafka" (dict "root" $) | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if $svcs.bridge.enabled }}
+---
+# bridge: shared subscription on the broker, produces to Kafka; metrics and the EMQX client
+# event webhook on 8082.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-bridge
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" (dict "root" $ "name" "bridge") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ironmesh.svcSelectorLabels" (dict "root" $ "name" "bridge") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if $allow.emqxToBridgeWebhook }}
+    {{- include "ironmesh.np.ingressFromEmqx" (dict "root" $ "port" $port.bridge) | nindent 4 }}
+    {{- end }}
+    {{- include "ironmesh.np.ingressFromPrometheus" (dict "root" $ "port" $port.bridge) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromHelmTest" (dict "root" $ "port" $port.bridge) | nindent 4 }}
+  egress:
+    {{- include "ironmesh.np.egressToEmqx" (dict "root" $ "port" 8883) | nindent 4 }}
+    {{- include "ironmesh.np.egressToKafka" (dict "root" $) | nindent 4 }}
+{{- end }}
+{{- if $svcs.registry.enabled }}
+---
+# registry: public API behind the load balancer, console proxy and internal callers in;
+# database, Kafka, PKI (+ policy/ota/EMQX API) out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-registry
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" (dict "root" $ "name" "registry") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ironmesh.svcSelectorLabels" (dict "root" $ "name" "registry") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- include "ironmesh.np.ingressFromLoadBalancer" (dict "root" $ "port" $port.registry) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "console" "port" $port.registry) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "policy" "port" $port.registry) | nindent 4 }}
+    {{- if $allow.pkiToRegistry }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "pki" "port" $port.registry) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.anomalyToRegistry }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "anomaly" "port" $port.registry) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.otaToRegistry }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "ota" "port" $port.registry) | nindent 4 }}
+    {{- end }}
+    {{- include "ironmesh.np.ingressFromPrometheus" (dict "root" $ "port" $port.registry) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromHelmTest" (dict "root" $ "port" $port.registry) | nindent 4 }}
+  egress:
+    {{- include "ironmesh.np.egressToPostgres" (dict "root" $) | nindent 4 }}
+    {{- include "ironmesh.np.egressToKafka" (dict "root" $) | nindent 4 }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "pki" "port" $port.pkiMtls) | nindent 4 }}
+    {{- if $allow.registryToPolicy }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "policy" "port" $port.policy) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.registryToOta }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "ota" "port" $port.ota) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.registryToEmqxApi }}
+    {{- include "ironmesh.np.egressToEmqx" (dict "root" $ "port" 18083) | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if $svcs.ota.enabled }}
+---
+# ota: public API (firmware upload, campaigns) and internal callers in; database, Kafka,
+# PKI, S3/KMS (HTTPS egress policy), registry and the EMQX API out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-ota
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" (dict "root" $ "name" "ota") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ironmesh.svcSelectorLabels" (dict "root" $ "name" "ota") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- include "ironmesh.np.ingressFromLoadBalancer" (dict "root" $ "port" $port.ota) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "console" "port" $port.ota) | nindent 4 }}
+    {{- if $allow.registryToOta }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "registry" "port" $port.ota) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.anomalyToOta }}
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "anomaly" "port" $port.ota) | nindent 4 }}
+    {{- end }}
+    {{- include "ironmesh.np.ingressFromPrometheus" (dict "root" $ "port" $port.ota) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromHelmTest" (dict "root" $ "port" $port.ota) | nindent 4 }}
+  egress:
+    {{- include "ironmesh.np.egressToPostgres" (dict "root" $) | nindent 4 }}
+    {{- include "ironmesh.np.egressToKafka" (dict "root" $) | nindent 4 }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "pki" "port" $port.pkiMtls) | nindent 4 }}
+    {{- if $allow.otaToRegistry }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "registry" "port" $port.registry) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.otaToEmqxApi }}
+    {{- include "ironmesh.np.egressToEmqx" (dict "root" $ "port" 18083) | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if $svcs.anomaly.enabled }}
+---
+# anomaly: console proxy in; database, Kafka, PKI (+ registry/policy/ota for quarantine) out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-anomaly
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" (dict "root" $ "name" "anomaly") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ironmesh.svcSelectorLabels" (dict "root" $ "name" "anomaly") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- include "ironmesh.np.ingressFromSvc" (dict "root" $ "name" "console" "port" $port.anomaly) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromPrometheus" (dict "root" $ "port" $port.anomaly) | nindent 4 }}
+    {{- include "ironmesh.np.ingressFromHelmTest" (dict "root" $ "port" $port.anomaly) | nindent 4 }}
+  egress:
+    {{- include "ironmesh.np.egressToPostgres" (dict "root" $) | nindent 4 }}
+    {{- include "ironmesh.np.egressToKafka" (dict "root" $) | nindent 4 }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "pki" "port" $port.pkiMtls) | nindent 4 }}
+    {{- if $allow.anomalyToRegistry }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "registry" "port" $port.registry) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.anomalyToPolicy }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "policy" "port" $port.policy) | nindent 4 }}
+    {{- end }}
+    {{- if $allow.anomalyToOta }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "ota" "port" $port.ota) | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- if $svcs.console.enabled }}
+---
+# console: browsers in through the load balancer; server-side proxy to registry/ota/anomaly
+# (+ policy) and the OIDC issuer (HTTPS egress policy) out. Never talks to the broker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-console
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" (dict "root" $ "name" "console") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ironmesh.svcSelectorLabels" (dict "root" $ "name" "console") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- include "ironmesh.np.ingressFromLoadBalancer" (dict "root" $ "port" $port.console) | nindent 4 }}
+    {{- if $svcs.console.metrics.enabled }}
+    {{- include "ironmesh.np.ingressFromPrometheus" (dict "root" $ "port" $port.console) | nindent 4 }}
+    {{- end }}
+    {{- include "ironmesh.np.ingressFromHelmTest" (dict "root" $ "port" $port.console) | nindent 4 }}
+  egress:
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "registry" "port" $port.registry) | nindent 4 }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "ota" "port" $port.ota) | nindent 4 }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "anomaly" "port" $port.anomaly) | nindent 4 }}
+    {{- if $allow.consoleToPolicy }}
+    {{- include "ironmesh.np.egressToSvc" (dict "root" $ "name" "policy" "port" $port.policy) | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}
