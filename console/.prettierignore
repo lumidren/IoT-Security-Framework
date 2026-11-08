@@ -1,0 +1,14 @@
+node_modules
+.next
+.next-mock
+out
+coverage
+playwright-report
+test-results
+.lighthouseci
+public/mockServiceWorker.js
+package-lock.json
+next-env.d.ts
+# rewritten by next build in its own formatting
+tsconfig.json
+public/maplibre
