@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: opentelemetry-collector
+data:
+  # Dev variant of observability/otel-collector/config.yaml: same receivers/processors, traces
+  # and logs go to the debug exporter unless OTEL_TRACES_ENDPOINT / OTEL_LOGS_ENDPOINT are set
+  # on the Deployment (e.g. a Tempo/Loki installed with kube-prometheus-stack).
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 256
+        spike_limit_mib: 64
+      resourcedetection:
+        detectors: [env, system]
+        timeout: 5s
+        override: false
+      resource:
+        attributes:
+          - key: deployment.environment
+            value: ${env:IRONMESH_ENVIRONMENT:-dev}
+            action: upsert
+      attributes/scrub:
+        actions:
+          - key: http.request.header.authorization
+            action: delete
+          - key: http.request.header.cookie
+            action: delete
+      batch:
+        send_batch_size: 512
+        timeout: 5s
+
+    exporters:
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        send_timestamps: true
+        enable_open_metrics: true
+        resource_to_telemetry_conversion:
+          enabled: true
+      debug:
+        verbosity: basic
+        sampling_initial: 5
+        sampling_thereafter: 200
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      zpages:
+        endpoint: 0.0.0.0:55679
+
+    service:
+      extensions: [health_check, zpages]
+      telemetry:
+        logs:
+          level: info
+          encoding: json
+        metrics:
+          level: detailed
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: "0.0.0.0"
+                    port: 8888
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resourcedetection, resource, attributes/scrub, batch]
+          exporters: [debug]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resourcedetection, resource, batch]
+          exporters: [prometheus]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, resourcedetection, resource, attributes/scrub, batch]
+          exporters: [debug]

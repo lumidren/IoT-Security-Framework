@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: postgres
+data:
+  # Runs once on an empty data directory (docker-entrypoint-initdb.d). Creates the four
+  # databases and the roles the services use: <db>_owner (migrations), <db>_app (runtime,
+  # never owns tables so row-level security applies) and ironmesh_backup (read-only).
+  01-ironmesh.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${IRONMESH_DEV_DB_PASSWORD:?IRONMESH_DEV_DB_PASSWORD is required}"
+    psql_admin() {
+      psql -v ON_ERROR_STOP=1 -X -q -U "${POSTGRES_USER}" "$@"
+    }
+    for db in registry ota pki anomaly; do
+      owner="${db}_owner"
+      app="${db}_app"
+      psql_admin -d postgres -v owner="${owner}" -v app="${app}" -v pw="${IRONMESH_DEV_DB_PASSWORD}" -v db="${db}" <<'SQL'
+    SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'owner', :'pw')
+    WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'owner') \gexec
+    SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'app', :'pw')
+    WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app') \gexec
+    SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'owner')
+    WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') \gexec
+    SQL
+      psql_admin -d "${db}" -v owner="${owner}" -v app="${app}" <<'SQL'
+    REVOKE ALL ON SCHEMA public FROM PUBLIC;
+    SELECT format('GRANT ALL ON SCHEMA public TO %I', :'owner') \gexec
+    SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'app') \gexec
+    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', :'owner', :'app') \gexec
+    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %I', :'owner', :'app') \gexec
+    SQL
+    done
+    psql_admin -d postgres -v pw="${IRONMESH_DEV_DB_PASSWORD}" <<'SQL'
+    SELECT format('CREATE ROLE ironmesh_backup LOGIN PASSWORD %L', :'pw')
+    WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ironmesh_backup') \gexec
+    GRANT pg_read_all_data TO ironmesh_backup;
+    SQL

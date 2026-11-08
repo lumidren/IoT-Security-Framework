@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: emqx
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: emqx
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: emqx
+  ports:
+    - name: mqttssl
+      port: 8883
+      targetPort: mqttssl
+      protocol: TCP
+    - name: dashboard
+      port: 18083
+      targetPort: dashboard
+      protocol: TCP
