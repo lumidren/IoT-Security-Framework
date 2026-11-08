@@ -1,0 +1,29 @@
+# kind create cluster --name ironmesh --config deploy/k8s/kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ironmesh
+networking:
+  # The default kindnet CNI does not enforce NetworkPolicy; Calico is installed by the README.
+  disableDefaultCNI: true
+  podSubnet: 10.244.0.0/16
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30300 # console
+        hostPort: 3000
+        protocol: TCP
+      - containerPort: 30883 # emqx mTLS
+        hostPort: 8883
+        protocol: TCP
+      - containerPort: 31883 # emqx dashboard / management API
+        hostPort: 18083
+        protocol: TCP
+      - containerPort: 30443 # pki EST/OCSP/API (mTLS)
+        hostPort: 8443
+        protocol: TCP
+      - containerPort: 30444 # pki CRL / health / metrics
+        hostPort: 8444
+        protocol: TCP
+      - containerPort: 30800 # registry API
+        hostPort: 8000
+        protocol: TCP

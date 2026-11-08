@@ -1,0 +1,94 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# kind / minikube developer overlay:
+#   kind create cluster --config deploy/k8s/kind-config.yaml
+#   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.3/cert-manager.yaml
+#   kubectl apply -k deploy/k8s/overlays/dev
+#
+# Every value in secretGenerator below is a development credential for a throw-away cluster.
+
+namespace: ironmesh
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/lumidren/ironmesh-pki
+    newTag: dev
+  - name: ghcr.io/lumidren/ironmesh-policy
+    newTag: dev
+  - name: ghcr.io/lumidren/ironmesh-bridge
+    newTag: dev
+  - name: ghcr.io/lumidren/ironmesh-registry
+    newTag: dev
+  - name: ghcr.io/lumidren/ironmesh-ota
+    newTag: dev
+  - name: ghcr.io/lumidren/ironmesh-anomaly
+    newTag: dev
+  - name: ghcr.io/lumidren/ironmesh-console
+    newTag: dev
+
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    ironmesh.dev/dev-credential: "true"
+
+secretGenerator:
+  - name: postgres-admin
+    literals:
+      - username=ironmesh_admin
+      - password=ironmesh-dev-admin
+  - name: dev-db
+    literals:
+      - IRONMESH_DEV_DB_PASSWORD=ironmesh-dev
+  - name: pki-secret
+    literals:
+      - PKI_DB_PASSWORD=ironmesh-dev
+      - PKI_POLICY_TOKEN=dev-pki-policy-token
+      - PKI_POLICY_HMAC_SECRET=dev-pki-policy-hmac
+      - PKI_REGISTRY_TOKEN=dev-registry-internal-token
+      - PKI_FILE_KMS_PASSPHRASE=dev-file-kms-passphrase
+  - name: policy-secret
+    literals:
+      - POLICY_EMQX_API_KEY=policy
+      - POLICY_EMQX_API_SECRET=dev-emqx-policy-secret
+      - POLICY_PKI_HMAC_SECRET=dev-pki-policy-hmac
+      - POLICY_PKI_TOKEN=dev-pki-policy-token
+      - POLICY_REGISTRY_TOKEN=dev-registry-internal-token
+      - POLICY_HOOK_TOKEN=dev-emqx-hook-token
+  - name: bridge-secret
+    literals:
+      - BRIDGE_HOOK_TOKEN=dev-emqx-hook-token
+  - name: registry-secret
+    literals:
+      - REGISTRY_DB_PASSWORD=ironmesh-dev
+      - REGISTRY_INTERNAL_TOKEN=dev-registry-internal-token
+      - REGISTRY_EMQX_API_KEY=registry
+      - REGISTRY_EMQX_API_SECRET=dev-emqx-registry-secret
+  - name: ota-secret
+    literals:
+      - OTA_DB_PASSWORD=ironmesh-dev
+      - OTA_INTERNAL_TOKEN=dev-registry-internal-token
+      - OTA_EMQX_API_KEY=ota
+      - OTA_EMQX_API_SECRET=dev-emqx-ota-secret
+  - name: anomaly-secret
+    literals:
+      - ANOMALY_DB_PASSWORD=ironmesh-dev
+      - ANOMALY_INTERNAL_TOKEN=dev-registry-internal-token
+  - name: console-secret
+    literals:
+      - AUTH_SECRET=dev-console-auth-secret
+      - CONSOLE_OIDC_CLIENT_SECRET=dev-console-oidc-client-secret
+  - name: emqx-env
+    literals:
+      - EMQX_DASHBOARD__DEFAULT_PASSWORD=ironmesh-dev
+      - EMQX_AUTHENTICATION__1__HEADERS__X-IRONMESH-HOOK-TOKEN=dev-emqx-hook-token
+      - EMQX_AUTHORIZATION__SOURCES__1__HEADERS__X-IRONMESH-HOOK-TOKEN=dev-emqx-hook-token
+  - name: emqx-api-keys
+    files:
+      - api-keys=emqx-api-keys.txt
+
+patches:
+  # Expose console, broker, PKI and registry on the kind node ports mapped in kind-config.yaml.
+  - path: patches/nodeports.yaml

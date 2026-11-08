@@ -1,0 +1,3 @@
+policy:dev-emqx-policy-secret:administrator
+registry:dev-emqx-registry-secret:publisher
+ota:dev-emqx-ota-secret:publisher
