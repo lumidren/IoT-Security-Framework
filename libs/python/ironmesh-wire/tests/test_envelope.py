@@ -343,7 +343,9 @@ def test_replay_rules(
     # the downlink counter is independent
     cmd = envelope.encode(make_message(Command(UUID, "r", {}, "k", NOW), seq=1), tenant_identity)
     envelope.decode(cmd, resolver, store, NOW)
-    assert store.last_seq(tenant_identity.kid, Direction.DOWNLINK) == 1
+    assert isinstance(tenant_identity.kid, str)
+    assert store.last_seq(f"{tenant_identity.kid}/5", Direction.DOWNLINK) == 1
+    assert store.last_seq(tenant_identity.kid, Direction.DOWNLINK) is None
     with raises_code(errors.ENV_REPLAY):
         envelope.decode(cmd, resolver, store, NOW)
     # ReplayError is an EnvelopeError
@@ -536,3 +538,21 @@ def test_field_helpers_direct() -> None:
     with raises_code(errors.ENV_FIELD):
         fields.check_tstr_map({1: 2}, "m", err)  # type: ignore[dict-item]
     assert fields.check_tstr_map({"a": 1}, "m", err) == {"a": 1}
+
+
+def test_replay_stream_is_per_type_for_downlink_only() -> None:
+    kid = "tenant-cmd-7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11"
+    assert envelope.replay_stream(kid, Direction.DOWNLINK, MessageType.OTA_NOTIFY) == f"{kid}/7"
+    assert envelope.replay_stream(b"\x01\x02", Direction.UPLINK, MessageType.TELEMETRY) == (
+        b"\x01\x02"
+    )
+    with pytest.raises(EnvelopeError):
+        envelope.replay_stream(b"\x01", Direction.DOWNLINK, MessageType.COMMAND)
+
+
+def test_retainable_types_are_the_retained_downlink_topics() -> None:
+    assert {
+        MessageType.SHADOW_DESIRED,
+        MessageType.OTA_NOTIFY,
+        MessageType.CONFIG,
+    } == envelope.RETAINABLE_TYPES

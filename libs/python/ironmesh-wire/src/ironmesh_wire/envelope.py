@@ -40,6 +40,13 @@ KEY_NONCE: Final = 5
 NONCE_SIZE: Final = 16
 SHA256_SIZE: Final = 32
 MAX_SKEW_DEFAULT: Final = 300
+
+#: Downlink types that may be delivered as retained MQTT messages (contract §4). A device that
+#: reconnects after a long outage receives them with their original ``ts``, so only the
+#: "too far in the future" half of the timestamp window applies; ``seq`` still blocks replays.
+RETAINABLE_TYPES: Final = frozenset(
+    {MessageType.SHADOW_DESIRED, MessageType.OTA_NOTIFY, MessageType.CONFIG}
+)
 MAX_TOP_PROCS: Final = 10
 MAX_NAME_LEN: Final = 64
 MAX_URL_LEN: Final = 2048
@@ -601,8 +608,22 @@ class StaticKeyResolver:
         return self._keys.get(kid)
 
 
+def replay_stream(kid: Kid, direction: Direction, message_type: MessageType) -> Kid:
+    """Replay-stream identifier passed to :class:`ReplayStore` as ``sender_kid``.
+
+    Uplink: the device kid (one ``seq`` sequence per device). Downlink: ``"<kid>/<type>"``, one
+    sequence per message type, because different cloud services sign different downlink types
+    with the same tenant key and must not consume each other's sequence numbers.
+    """
+    if direction is Direction.UPLINK:
+        return kid
+    if not isinstance(kid, str):
+        raise EnvelopeError(errors.ENV_KID, "downlink kid must be a text string")
+    return f"{kid}/{int(message_type)}"
+
+
 class ReplayStore(Protocol):
-    """Persists the last accepted ``seq`` per ``(sender_kid, direction)``.
+    """Persists the last accepted ``seq`` per replay stream (see :func:`replay_stream`).
 
     ``check_and_record`` must atomically accept ``seq`` iff it is strictly greater than the last
     accepted value for that sender (or no value exists yet), record it, and return ``True``;
@@ -686,7 +707,8 @@ def decode(
     Check order (the first failure wins, which fixes the error code for a given input):
     CBOR/COSE structure -> header profile for the kid's direction -> ``expected_direction`` ->
     ``expected_tenant`` -> key resolution -> signature -> payload fields -> type/direction match
-    -> timestamp window -> ``expected_nonce`` -> replay (``seq`` strictly increasing).
+    -> timestamp window (retainable downlink types: future bound only) -> ``expected_nonce`` ->
+    replay (``seq`` strictly increasing per :func:`replay_stream`).
     The replay store is updated only when every other check has passed.
     """
     if now is None:
@@ -710,7 +732,8 @@ def decode(
             errors.ENV_DIRECTION,
             f"{message.type.name} cannot be sent in the {direction.value} direction",
         )
-    if abs(now - message.ts) > max_skew:
+    retained = direction is Direction.DOWNLINK and message.type in RETAINABLE_TYPES
+    if message.ts - now > max_skew or (not retained and now - message.ts > max_skew):
         raise EnvelopeError(
             errors.ENV_TS_SKEW, f"timestamp {message.ts} outside now +/- {max_skew}"
         )
@@ -718,7 +741,8 @@ def decode(
         message.type is not MessageType.COMMAND_ACK or message.nonce != expected_nonce
     ):
         raise EnvelopeError(errors.ENV_NONCE, "CommandAck nonce does not echo the command nonce")
-    if not replay_store.check_and_record(signed.kid, direction, message.seq):
+    stream = replay_stream(signed.kid, direction, message.type)
+    if not replay_store.check_and_record(stream, direction, message.seq):
         raise ReplayError(errors.ENV_REPLAY, f"seq {message.seq} not greater than last accepted")
     return replace(message, sender_kid=signed.kid)
 
