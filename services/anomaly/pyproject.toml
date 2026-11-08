@@ -1,0 +1,127 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ironmesh-anomaly"
+version = "0.1.0"
+description = "IronMesh runtime anomaly and threat detection service (rules, Isolation Forest, auto-quarantine, SIEM)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "IronMesh contributors" }]
+dependencies = [
+  "ironmesh-wire",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "structlog>=24.1",
+  "prometheus-client>=0.20",
+  "numpy>=1.26",
+  "scikit-learn>=1.5",
+  "joblib>=1.4",
+  "aiokafka>=0.11",
+  "asyncpg>=0.29",
+  "pyjwt[crypto]>=2.8",
+  "cryptography>=42",
+  "maxminddb>=2.6",
+  "opentelemetry-api>=1.25",
+  "opentelemetry-sdk>=1.25",
+  "opentelemetry-exporter-otlp-proto-grpc>=1.25",
+  "opentelemetry-instrumentation-fastapi>=0.46b0",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.34"]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "pytest-cov>=5",
+  "ruff>=0.5",
+  "mypy>=1.10",
+  "bandit>=1.7",
+  "asyncpg-stubs>=0.29",
+  "pgserver>=0.1.4",
+]
+
+[project.scripts]
+ironmesh-anomaly = "ironmesh_anomaly.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ironmesh_anomaly = ["py.typed", "migrations/*.sql"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PIE", "PT", "RET", "ARG",
+  "N", "PLE", "PLW", "S", "T20", "ISC", "TID", "ERA", "PERF", "ASYNC",
+]
+ignore = [
+  "S101",    # internal invariants
+  "RUF012",
+  "PLW2901",
+  "PLW0603", # module-level metric/log configuration guards
+  "ARG002",  # protocol/interface implementations keep the full signature
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "ARG", "PLW", "E501", "PERF", "ASYNC", "PT018", "N806", "PT011", "T201"]
+"stubs/**" = ["N", "ARG", "PLW", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ironmesh_anomaly", "ironmesh_wire"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+files = ["src", "tests"]
+mypy_path = ["src", "stubs"]
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "postgres: needs a PostgreSQL server (pgserver locally, service container in CI)",
+]
+filterwarnings = [
+  "error",
+  "ignore::DeprecationWarning:aiokafka.*",
+  "ignore::DeprecationWarning:opentelemetry.*",
+  "ignore:.*X does not have valid feature names.*:UserWarning",
+]
+
+[tool.coverage.run]
+source = ["ironmesh_anomaly"]
+branch = true
+omit = ["*/ironmesh_anomaly/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "@overload",
+  "\\.\\.\\.$",
+  "raise NotImplementedError",
+]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "stubs"]
+# B101: asserts in src are type-narrowing invariants only; no security decision relies on them
+# (every security check raises or returns explicitly).
+skips = ["B101"]
