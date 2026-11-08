@@ -1,0 +1,278 @@
+# IronMesh Prometheus recording and alerting rules.
+#
+# Metric names follow docs/DESIGN_CONTRACT.md §9 (prefix ironmesh_) plus the extended metrics
+# listed in observability/README.md. Job labels are ironmesh-<service> (see prometheus.yml and
+# the chart's ServiceMonitors). This file is embedded verbatim by the Helm chart
+# (deploy/helm/ironmesh/rules/ironmesh.rules.yml -> PrometheusRule); keep both copies identical.
+groups:
+  - name: ironmesh.recording
+    interval: 30s
+    rules:
+      - record: ironmesh:connected_devices:sum
+        expr: sum(ironmesh_connected_devices)
+
+      - record: ironmesh:auth_failures:rate5m
+        expr: sum(rate(ironmesh_auth_failures_total[5m]))
+
+      - record: ironmesh:auth_failures_by_reason:rate5m
+        expr: sum by (reason) (rate(ironmesh_auth_failures_total[5m]))
+
+      - record: ironmesh:ota_results:rate10m
+        expr: sum by (result) (rate(ironmesh_ota_result_total[10m]))
+
+      # OTA success ratio over 10 minutes (1 = every reported result was a success).
+      - record: ironmesh:ota_success_ratio:10m
+        expr: |
+          sum(rate(ironmesh_ota_result_total{result="success"}[10m]))
+          /
+          clamp_min(sum(rate(ironmesh_ota_result_total[10m])), 1e-9)
+
+      - record: ironmesh:ota_failure_ratio:10m
+        expr: |
+          sum(rate(ironmesh_ota_result_total{result!="success"}[10m]))
+          /
+          clamp_min(sum(rate(ironmesh_ota_result_total[10m])), 1e-9)
+
+      - record: ironmesh:ota_success_ratio:1h
+        expr: |
+          sum(rate(ironmesh_ota_result_total{result="success"}[1h]))
+          /
+          clamp_min(sum(rate(ironmesh_ota_result_total[1h])), 1e-9)
+
+      # Revocation latency percentiles per exporting job. The policy job measures the
+      # contract's end-to-end budget (revoked_at -> broker kick, < 10 s); the pki job measures
+      # revoke request -> policy acknowledgement.
+      - record: ironmesh:revocation_latency_seconds:p50_5m
+        expr: histogram_quantile(0.50, sum by (job, le) (rate(ironmesh_revocation_latency_seconds_bucket[5m])))
+
+      - record: ironmesh:revocation_latency_seconds:p99_5m
+        expr: histogram_quantile(0.99, sum by (job, le) (rate(ironmesh_revocation_latency_seconds_bucket[5m])))
+
+      # Share of revocations applied within the 10 s contract budget (SLI for the SLO dashboard).
+      - record: ironmesh:revocation_within_budget_ratio:30m
+        expr: |
+          sum(rate(ironmesh_revocation_latency_seconds_bucket{job="ironmesh-policy",le="10"}[30m]))
+          /
+          clamp_min(sum(rate(ironmesh_revocation_latency_seconds_count{job="ironmesh-policy"}[30m])), 1e-9)
+
+      - record: ironmesh:anomaly_alerts:rate5m
+        expr: sum by (rule) (rate(ironmesh_anomaly_alerts_total[5m]))
+
+      - record: ironmesh:replay_rejected:rate5m
+        expr: sum(rate(ironmesh_replay_rejected_total[5m]))
+
+      - record: ironmesh:bridge_forwarded:rate5m
+        expr: sum(rate(ironmesh_bridge_messages_forwarded_total[5m]))
+
+      - record: ironmesh:bridge_forward_errors:rate5m
+        expr: sum(rate(ironmesh_bridge_forward_errors_total[5m]))
+
+      # HTTP API SLIs (extended metric ironmesh_http_requests_total{job,code}).
+      - record: ironmesh:http_requests:rate5m
+        expr: sum by (job) (rate(ironmesh_http_requests_total[5m]))
+
+      - record: ironmesh:http_error_ratio:5m
+        expr: |
+          sum by (job) (rate(ironmesh_http_requests_total{code=~"5.."}[5m]))
+          /
+          clamp_min(sum by (job) (rate(ironmesh_http_requests_total[5m])), 1e-9)
+
+      - record: ironmesh:http_error_ratio:30m
+        expr: |
+          sum by (job) (rate(ironmesh_http_requests_total{code=~"5.."}[30m]))
+          /
+          clamp_min(sum by (job) (rate(ironmesh_http_requests_total[30m])), 1e-9)
+
+      - record: ironmesh:http_error_ratio:1h
+        expr: |
+          sum by (job) (rate(ironmesh_http_requests_total{code=~"5.."}[1h]))
+          /
+          clamp_min(sum by (job) (rate(ironmesh_http_requests_total[1h])), 1e-9)
+
+      - record: ironmesh:http_error_ratio:6h
+        expr: |
+          sum by (job) (rate(ironmesh_http_requests_total{code=~"5.."}[6h]))
+          /
+          clamp_min(sum by (job) (rate(ironmesh_http_requests_total[6h])), 1e-9)
+
+      - record: ironmesh:http_request_duration_seconds:p99_5m
+        expr: histogram_quantile(0.99, sum by (job, le) (rate(ironmesh_http_request_duration_seconds_bucket[5m])))
+
+      # Broker availability SLI from scrape health (1 = all EMQX targets up).
+      - record: ironmesh:broker_up_ratio:5m
+        expr: avg_over_time(up{job="ironmesh-emqx"}[5m])
+
+  - name: ironmesh.alerts
+    rules:
+      - alert: AuthFailureBurst
+        expr: sum(rate(ironmesh_auth_failures_total[2m])) > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: policy
+        annotations:
+          summary: "Authentication failures above 5/s"
+          description: "{{ $value | humanize }} authentication failures per second over the last 2 minutes (threshold 5/s). Possible credential stuffing, a revoked fleet segment reconnecting, or a CA rollover problem."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#authfailureburst"
+
+      - alert: RevocationLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le) (rate(ironmesh_revocation_latency_seconds_bucket{job="ironmesh-policy"}[5m]))) > 8
+        for: 5m
+        labels:
+          severity: critical
+          service: policy
+        annotations:
+          summary: "p99 revocation-to-kick latency above 8 s"
+          description: "p99 of ironmesh_revocation_latency_seconds is {{ $value | humanizeDuration }} (contract budget 10 s end to end). Check the policy service, the EMQX management API and the PKI revocation publisher."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#revocationlatencyhigh"
+
+      - alert: RevocationPublishFailures
+        expr: sum(rate(ironmesh_revocation_publish_failures_total[10m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: pki
+        annotations:
+          summary: "PKI cannot deliver revocation events to the policy service"
+          description: "Revocation events are failing to publish ({{ $value | humanize }}/s). Revoked devices stay connected until the CRL poll fallback (5 s interval) catches up; verify pki -> policy connectivity and the shared token/HMAC."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#revocationpublishfailures"
+
+      - alert: CrlStale
+        expr: (time() - max(ironmesh_crl_last_success_timestamp_seconds)) > 600
+        for: 5m
+        labels:
+          severity: warning
+          service: policy
+        annotations:
+          summary: "Policy service has not fetched a fresh CRL for 10 minutes"
+          description: "The CRL fallback path is stale ({{ $value | humanizeDuration }} since the last successful fetch). Check pki:8444/crl/device-ca.crl and the policy CRL poller."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#crlstale"
+
+      - alert: CertExpiryBacklog
+        expr: sum(ironmesh_cert_expiring_total{window="24h"}) > 0
+        for: 1h
+        labels:
+          severity: warning
+          service: pki
+        annotations:
+          summary: "Device certificates expire within 24 h without renewal"
+          description: "{{ $value }} operational certificates expire in the next 24 hours. Devices renew at 50% lifetime (7 days before expiry), so a non-empty 24 h window means renewal is failing for part of the fleet."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#certexpirybacklog"
+
+      - alert: OtaFailureRateHigh
+        expr: |
+          ironmesh:ota_failure_ratio:10m > 0.05
+          and
+          sum(rate(ironmesh_ota_result_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: critical
+          service: ota
+        annotations:
+          summary: "More than 5% of OTA results are failures"
+          description: "{{ $value | humanizePercentage }} of OTA results over 10 minutes are not successes (failed, rolled back or rejected). Campaign stage gates halt at 5%; verify that the running campaign has been halted and inspect device OtaStatus errors."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#otafailureratehigh"
+
+      - alert: AnomalyRateSpike
+        expr: |
+          sum(rate(ironmesh_anomaly_alerts_total[5m])) > 0.5
+          and
+          sum(rate(ironmesh_anomaly_alerts_total[5m])) > 3 * (sum(rate(ironmesh_anomaly_alerts_total[1h] offset 1h)) + 0.01)
+        for: 5m
+        labels:
+          severity: warning
+          service: anomaly
+        annotations:
+          summary: "Anomaly alert rate is more than 3x the previous hour"
+          description: "{{ $value | humanize }} anomaly alerts per second, over 3x the rate one hour ago. Either a fleet-wide incident or a rule/model regression after a deploy; compare by rule on the Anomaly dashboard."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#anomalyratespike"
+
+      - alert: ConnectedDevicesDrop
+        expr: |
+          sum(ironmesh_connected_devices) < 0.8 * sum(ironmesh_connected_devices offset 5m)
+          and
+          sum(ironmesh_connected_devices offset 5m) > 50
+        for: 2m
+        labels:
+          severity: critical
+          service: broker
+        annotations:
+          summary: "Connected devices dropped by more than 20% in 5 minutes"
+          description: "Connected devices fell to {{ $value }} (more than 20% below the count five minutes ago). Check EMQX nodes, the NLB target health and recent policy/CA changes."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#connecteddevicesdrop"
+
+      - alert: BridgeForwardErrors
+        expr: |
+          sum(rate(ironmesh_bridge_forward_errors_total[5m])) > 0.1
+          or
+          (
+            sum(rate(ironmesh_bridge_forward_errors_total[5m]))
+            /
+            clamp_min(sum(rate(ironmesh_bridge_messages_forwarded_total[5m])), 1e-9)
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          service: bridge
+        annotations:
+          summary: "Bridge is failing to forward MQTT messages to Kafka"
+          description: "The MQTT -> Kafka bridge reports forward errors ({{ $value | humanize }}). Telemetry is buffered in the broker session only while the bridge's shared subscription is alive; check Kafka/MSK connectivity and IAM auth."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#bridgeforwarderrors"
+
+      - alert: ReplayRejectedSpike
+        expr: sum(rate(ironmesh_replay_rejected_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: registry
+        annotations:
+          summary: "Replayed messages rejected above 1/s"
+          description: "{{ $value | humanize }} messages per second were dropped for a stale sequence number. A few after reconnect storms are normal; a sustained rate indicates a replay attack or a device with a broken seq persistence."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#replayrejectedspike"
+
+      - alert: BrokerMessagesDropped
+        expr: sum(rate(emqx_messages_dropped[5m])) > 10
+        for: 10m
+        labels:
+          severity: warning
+          service: broker
+        annotations:
+          summary: "EMQX is dropping messages"
+          description: "EMQX dropped {{ $value | humanize }} messages per second over 10 minutes (expired, no subscribers, or quota). Check bridge subscription health and broker capacity."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#brokermessagesdropped"
+
+      - alert: ServiceDown
+        expr: up{job=~"ironmesh-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} target {{ $labels.instance }} is down"
+          description: "Prometheus has not been able to scrape {{ $labels.job }} ({{ $labels.instance }}) for 2 minutes."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#servicedown"
+
+      - alert: ApiErrorBudgetBurnFast
+        expr: |
+          (ironmesh:http_error_ratio:1h > (14.4 * 0.001))
+          and
+          (ironmesh:http_error_ratio:5m > (14.4 * 0.001))
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is burning its 30-day error budget 14x too fast"
+          description: "5xx ratio for {{ $labels.job }} is {{ $value | humanizePercentage }} over 1 h and 5 m (SLO 99.9%). At this rate the monthly budget is gone in about two days."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#apierrorbudgetburn"
+
+      - alert: ApiErrorBudgetBurnSlow
+        expr: |
+          (ironmesh:http_error_ratio:6h > (6 * 0.001))
+          and
+          (ironmesh:http_error_ratio:30m > (6 * 0.001))
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} is burning its 30-day error budget 6x too fast"
+          description: "5xx ratio for {{ $labels.job }} is {{ $value | humanizePercentage }} over 6 h and 30 m (SLO 99.9%)."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#apierrorbudgetburn"

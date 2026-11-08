@@ -1,0 +1,86 @@
+# Prometheus configuration for the local compose / dev stack. Targets use the design
+# contract's service names and ports (DESIGN_CONTRACT.md §7); on Kubernetes the Helm chart's
+# ServiceMonitors produce the same job labels (ironmesh-<service>), so the rules and dashboards
+# apply unchanged.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: ironmesh-local
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # PKI: /metrics, /healthz and the CRL are served on the plain listener; 8443 is mTLS (EST/OCSP).
+  - job_name: ironmesh-pki
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["pki:8444"]
+
+  - job_name: ironmesh-policy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["policy:8081"]
+
+  - job_name: ironmesh-bridge
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["bridge:8082"]
+
+  - job_name: ironmesh-registry
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["registry:8000"]
+
+  - job_name: ironmesh-ota
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ota:8001"]
+
+  - job_name: ironmesh-anomaly
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["anomaly:8002"]
+
+  # Next.js console exposes /metrics through a route handler; drop this job if it does not.
+  - job_name: ironmesh-console
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["console:3000"]
+
+  # EMQX 5 built-in Prometheus endpoint (prometheus.enable_basic_auth = false).
+  - job_name: ironmesh-emqx
+    metrics_path: /api/v5/prometheus/stats
+    static_configs:
+      - targets: ["emqx:18083"]
+
+  # Redpanda public metrics (admin API).
+  - job_name: ironmesh-redpanda
+    metrics_path: /public_metrics
+    static_configs:
+      - targets: ["redpanda:9644"]
+
+  # OpenTelemetry collector: its own telemetry ...
+  - job_name: ironmesh-otel-collector
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  # ... and application metrics received over OTLP (EMQX OpenTelemetry, SDK-pushed metrics).
+  # honor_labels keeps the job/instance derived from service.name / service.instance.id.
+  - job_name: ironmesh-otlp-metrics
+    metrics_path: /metrics
+    honor_labels: true
+    static_configs:
+      - targets: ["otel-collector:8889"]
