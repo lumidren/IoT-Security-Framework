@@ -1,0 +1,143 @@
+# Staging posture on EKS (eu-west-1). Combine with values-staging.generated.yaml produced by
+# `terraform output -raw helm_values` (IRSA ARNs, target groups, RDS host, Kafka bootstrap,
+# bucket names, KMS aliases):
+#
+#   helm upgrade --install ironmesh deploy/helm/ironmesh -n ironmesh --create-namespace \
+#     -f deploy/helm/ironmesh/values.yaml -f deploy/helm/ironmesh/values-staging.yaml \
+#     -f deploy/helm/ironmesh/values-staging.generated.yaml
+
+global:
+  environment: staging
+  domain: staging.ironmesh.dev
+  imageTag: 0.1.0
+
+aws:
+  enabled: true
+  region: eu-west-1
+  targetGroupBindings:
+    enabled: true
+    manageNetworking: false
+
+# Edge is the Terraform ALB/NLB; no in-cluster ingress controller.
+ingress:
+  enabled: false
+
+database:
+  sslMode: verify-full
+  iamAuth: true
+
+kafka:
+  mode: msk-serverless
+  saslMechanism: AWS_MSK_IAM
+  tlsEnabled: true
+  externalPort: 9098
+
+otelCollector:
+  endpoint: http://otel-collector.observability.svc.cluster.local:4317
+  traceSamplingRatio: "0.25"
+
+monitoring:
+  enabled: true
+  namespace: observability
+
+externalSecrets:
+  enabled: true
+  clusterSecretStore: aws-secrets-manager
+  secretPathPrefix: ironmesh/staging/
+
+internalTls:
+  certManager:
+    enabled: true
+    issuerRef:
+      # CA Issuer holding the Services issuing CA (signed by the KMS Services CA in the ceremony).
+      name: ironmesh-services-issuing-ca
+      kind: Issuer
+
+dbInit:
+  enabled: true
+  adminSecretName: ironmesh-postgres-admin
+
+networkPolicy:
+  enabled: true
+  # ALB/NLB (ip targets) reach pods from the VPC.
+  loadBalancerCidrs:
+    - 10.40.0.0/16
+  externalHttpsEgress:
+    enabled: true
+    cidrs:
+      - 0.0.0.0/0
+
+services:
+  pki:
+    replicas: 2
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4
+    config:
+      PKI_KEY_PROVIDER: aws-kms
+      PKI_LOG_LEVEL: debug
+  policy:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4
+    config:
+      POLICY_LOG_LEVEL: debug
+      POLICY_KAFKA_SASL_MECHANISM: AWS_MSK_IAM
+      POLICY_KAFKA_TLS_ENABLED: "true"
+  bridge:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4
+    config:
+      BRIDGE_KAFKA_SASL_MECHANISM: AWS_MSK_IAM
+      BRIDGE_KAFKA_TLS_ENABLED: "true"
+      # MSK Serverless caps partitions per topic; keep replication at the service default.
+      BRIDGE_KAFKA_TOPIC_PARTITIONS: "6"
+  registry:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4
+    config:
+      REGISTRY_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
+      REGISTRY_LOG_LEVEL: debug
+  ota:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 3
+    config:
+      OTA_ARTIFACT_STORE: s3
+      OTA_SIGNING_PROVIDER: kms-wrapped
+      OTA_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
+      OTA_LOG_LEVEL: debug
+  anomaly:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 3
+    config:
+      ANOMALY_AUTO_QUARANTINE: "false"
+      ANOMALY_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
+      ANOMALY_LOG_LEVEL: debug
+  console:
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 3
+    config:
+      CONSOLE_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
+      NEXT_PUBLIC_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
+
+emqx:
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: gp3-encrypted
+
+redpanda:
+  enabled: false

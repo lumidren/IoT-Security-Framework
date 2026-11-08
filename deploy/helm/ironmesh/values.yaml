@@ -1,0 +1,1099 @@
+# Default values for the IronMesh chart.
+#
+# Layering: values.yaml (this file, sane defaults for any cluster) -> values-staging.yaml /
+# values-prod.yaml (environment posture) -> values-<env>.generated.yaml (Terraform hand-off:
+# IRSA role ARNs, target groups, RDS host, Kafka bootstrap, bucket names).
+#
+# In-cluster hostnames are fixed to ironmesh-<service> by fullnameOverride so that every
+# *_URL below is valid regardless of the Helm release name.
+
+nameOverride: ""
+fullnameOverride: ironmesh
+
+global:
+  # dev | staging | prod. Used for labels and the OTel deployment.environment attribute.
+  environment: dev
+  # Public DNS suffix. Hosts default to console.<domain>, registry.<domain>, ota.<domain>,
+  # pki.<domain>, mqtt.<domain>; override individual names under `hosts`.
+  domain: ironmesh.local
+  # Every IronMesh image is <imageRegistry>/ironmesh-<service>:<imageTag>.
+  imageRegistry: ghcr.io/lumidren
+  # Empty = Chart.appVersion. Pin a release tag in every real environment.
+  imageTag: ""
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+  podLabels: {}
+  podAnnotations: {}
+
+hosts:
+  console: ""
+  registry: ""
+  ota: ""
+  pki: ""
+  mqtt: ""
+
+# UID/GID every IronMesh container runs as (images are built with this user).
+podSecurity:
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+
+serviceAccount:
+  # Services never talk to the Kubernetes API; IRSA injects its own projected token.
+  automountToken: false
+  annotations: {}
+
+# ------------------------------------------------------------------------------------------
+# Platform integrations
+# ------------------------------------------------------------------------------------------
+
+aws:
+  enabled: false
+  region: ""
+  # Terraform (deploy/terraform/aws, module alb) owns the ALB/NLB and target groups; pods are
+  # attached with TargetGroupBinding objects. Networking is left to Terraform's security group
+  # rules unless manageNetworking is true.
+  targetGroupBindings:
+    enabled: false
+    manageNetworking: false
+    console:
+      arn: ""
+    registry:
+      arn: ""
+    ota:
+      arn: ""
+    emqx:
+      arn: ""
+    pkiMtls:
+      arn: ""
+    pkiCrl:
+      arn: ""
+  loadBalancerSecurityGroupIds:
+    alb: ""
+    nlb: ""
+
+# Ingress for console / registry / ota. Mutually exclusive with aws.targetGroupBindings.
+ingress:
+  enabled: true
+  # nginx | alb
+  className: nginx
+  annotations: {}
+  tls:
+    enabled: true
+    secretName: ironmesh-public-tls
+    certManager:
+      enabled: true
+      # certificate: explicit Certificate resource (templates/certificate.yaml, deterministic SANs)
+      # annotation: cert-manager ingress-shim annotations on the Ingress instead
+      mode: certificate
+      issuerRef:
+        name: letsencrypt-prod
+        kind: ClusterIssuer
+  nginx:
+    # Firmware uploads (POST /v1/firmware) are large multipart bodies.
+    proxyBodySize: 512m
+    limitRps: 50
+  alb:
+    scheme: internet-facing
+    groupName: ironmesh
+    certificateArn: ""
+    wafAclArn: ""
+    sslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+
+# PostgreSQL (RDS in AWS, the dev StatefulSet in deploy/k8s). Databases registry, ota, pki,
+# anomaly; one non-owner role per service (DESIGN_CONTRACT.md §8, RLS enforced).
+database:
+  host: postgres
+  port: 5432
+  sslMode: verify-full
+  # RDS IAM authentication (no passwords; the IRSA role carries rds-db:connect).
+  iamAuth: false
+  # CIDRs of the database (NetworkPolicy egress). Empty = in-namespace postgres pods.
+  cidrs: []
+  caBundleSecret: ""
+
+# Kafka: Redpanda sub-chart (redpanda.enabled) or an external cluster (MSK).
+kafka:
+  # msk-serverless | msk-provisioned | redpanda | external
+  mode: redpanda
+  # Used when redpanda.enabled is false.
+  bootstrapServers: ""
+  # none | AWS_MSK_IAM | SCRAM-SHA-512
+  saslMechanism: none
+  tlsEnabled: false
+  # CIDRs of an external Kafka cluster (NetworkPolicy egress), e.g. the isolated subnets.
+  externalCidrs: []
+  externalPort: 9098
+  topics:
+    ingest: im.ingest
+    auth: im.auth
+    alerts: im.alerts
+    audit: im.audit
+    commands: im.commands
+  # Topics are created by the bridge on boot (idempotent) with these settings.
+  partitions: 12
+  replicationFactor: 3
+
+# OpenTelemetry collector reachable from every pod (gRPC 4317). Either the in-namespace
+# collector from deploy/k8s or a cluster-wide one in `namespace`.
+otelCollector:
+  endpoint: http://otel-collector.observability.svc.cluster.local:4317
+  traceSamplingRatio: "0.1"
+  networkPolicy:
+    namespace: observability
+    podSelector:
+      app.kubernetes.io/name: opentelemetry-collector
+
+# Prometheus Operator objects.
+monitoring:
+  enabled: false
+  # Namespace where Prometheus runs (NetworkPolicy ingress on metrics ports).
+  namespace: observability
+  prometheusPodSelector:
+    app.kubernetes.io/name: prometheus
+  serviceMonitor:
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+  prometheusRule:
+    enabled: true
+    labels: {}
+
+# External Secrets Operator: one ExternalSecret per service pulling
+# <secretPathPrefix><service> (JSON, keys = environment variable names) from AWS Secrets Manager.
+externalSecrets:
+  enabled: false
+  clusterSecretStore: aws-secrets-manager
+  secretPathPrefix: ironmesh/dev/
+  refreshInterval: 1h
+
+# Services CA material for mTLS between services (DESIGN_CONTRACT.md §7). cert-manager issues
+# 90-day certificates from a CA Issuer that holds the Services (issuing) CA; with
+# certManager.enabled=false every service's tls.existingSecret must exist (tls.crt, tls.key, ca.crt).
+internalTls:
+  mountPath: /etc/ironmesh/tls
+  certManager:
+    enabled: true
+    issuerRef:
+      name: ironmesh-services-ca
+      kind: Issuer
+    duration: 2160h
+    renewBefore: 720h
+
+# CA bundle (PEM, key ca.crt) that the broker and the PKI trust for client certificates:
+# Device CA + Factory CA certificates.
+deviceCa:
+  existingSecret: ironmesh-device-ca-bundle
+  mountPath: /etc/ironmesh/device-ca
+  # Services that verify device client certificates or CRL signatures.
+  mountInto:
+    - pki
+    - policy
+
+# emptyDir size limit for every writable directory (services.<name>.writableDirs).
+writableDirSizeLimit: 512Mi
+
+# One-shot Job (pre-install/pre-upgrade hook) that creates the four databases and the per
+# service roles. Needs the master credentials (RDS-managed secret synced by External Secrets
+# or any Secret with keys username/password).
+dbInit:
+  enabled: false
+  image: postgres:16-alpine
+  adminSecretName: ironmesh-postgres-admin
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+
+# Default-deny NetworkPolicies with the explicit allow list from the design contract.
+networkPolicy:
+  enabled: true
+  # Namespace + pod selector of the ingress controller (nginx mode).
+  ingressControllerNamespace: ingress-nginx
+  ingressControllerPodSelector:
+    app.kubernetes.io/name: ingress-nginx
+  # CIDRs from which the cloud load balancers (ALB/NLB, ip targets) reach the pods. Usually
+  # the VPC CIDR; empty when ingress.className=nginx.
+  loadBalancerCidrs: []
+  # Source ranges of devices reaching the broker (8883) and the PKI (EST/OCSP 8443, CRL 8444)
+  # through the NLB (client IP preserved). Narrow to known fleet egress ranges when possible.
+  deviceCidrs:
+    - 0.0.0.0/0
+  # HTTPS egress for every IronMesh pod: STS (IRSA), KMS, S3, Secrets Manager, OIDC issuers,
+  # SIEM webhooks. With VPC endpoints this can be narrowed to the VPC CIDR.
+  externalHttpsEgress:
+    enabled: true
+    cidrs:
+      - 0.0.0.0/0
+  # Let the `helm test` pod reach the service ports.
+  allowHelmTest: true
+  # Additional east-west allows that the API contract requires on top of the baseline.
+  additionalAllows:
+    pkiToRegistry: true # POST /internal/v1/devices/{id}/enrolled
+    registryToPolicy: true # quarantine -> policy cache deny
+    registryToOta: true # POST /internal/v1/ota/status, campaign device state
+    registryToEmqxApi: true # publish shadow/desired, cmd/req, config
+    otaToRegistry: true # campaign target resolution
+    otaToEmqxApi: true # publish ota/notify
+    anomalyToRegistry: true # POST /internal/v1/devices/{id}/quarantine
+    anomalyToPolicy: true # kick after quarantine
+    anomalyToOta: true # GET /internal/v1/firmware/known-hashes
+    consoleToPolicy: true # /v1/policy management API through the console proxy
+    policyToKafka: true # im.auth / im.audit producer
+    emqxToBridgeWebhook: true # client lifecycle events -> im.auth
+
+# ------------------------------------------------------------------------------------------
+# IronMesh services
+# ------------------------------------------------------------------------------------------
+# Every entry supports the same keys; see pki for the full annotated set. `config` becomes a
+# ConfigMap (plain environment), `secret` references a Secret (secret environment) and
+# `tls` the Services CA material mounted at internalTls.mountPath.
+
+services:
+  pki:
+    enabled: true
+    image:
+      repository: ironmesh-pki
+      tag: ""
+      digest: ""
+    replicas: 2
+    # Named container ports. `health.port` / `metrics.port` reference these names.
+    ports:
+      mtls: 8443 # EST + OCSP + management API, mutual TLS (NLB :443 passthrough)
+      plain: 8444 # CRL, health, metrics (NLB :80 passthrough, Prometheus)
+    health:
+      port: plain
+      scheme: HTTP
+      livenessPath: /healthz
+      readinessPath: /readyz
+      startupFailureThreshold: 30
+    metrics:
+      enabled: true
+      port: plain
+      path: /metrics
+    service:
+      type: ClusterIP
+      annotations: {}
+    serviceAccount:
+      # IRSA role ARN (Terraform output irsa_role_arns.pki).
+      roleArn: ""
+    tls:
+      enabled: true
+      existingSecret: ""
+    secret:
+      # Name of an existing Secret with the keys listed in `secretKeys`; empty = ironmesh-pki-secret
+      # (created by External Secrets or by `create`).
+      existingSecret: ""
+      # Create the Secret from `data` (development only; never commit real values).
+      create: false
+      data: {}
+    # Documented secret keys expected in the Secret (informational, validated in NOTES).
+    secretKeys:
+      - PKI_DB_PASSWORD
+      - PKI_POLICY_TOKEN
+      - PKI_POLICY_HMAC_SECRET
+      - PKI_REGISTRY_TOKEN
+      - PKI_FILE_KMS_PASSPHRASE
+    # Paths the process writes to (read-only root filesystem otherwise).
+    writableDirs:
+      - /tmp
+      - /var/lib/ironmesh/pki
+    config:
+      PKI_LISTEN_MTLS: ":8443"
+      PKI_LISTEN_PLAIN: ":8444"
+      # aws-kms | file | pkcs11
+      PKI_KEY_PROVIDER: aws-kms
+      PKI_KMS_ROOT_CA_KEY_ID: ""
+      PKI_KMS_FACTORY_CA_KEY_ID: ""
+      PKI_KMS_DEVICE_CA_KEY_ID: ""
+      PKI_KMS_SERVICES_CA_KEY_ID: ""
+      PKI_KMS_BUNDLE_KEY_ID: ""
+      PKI_KEY_DIR: /var/lib/ironmesh/pki/keys
+      # Base URL embedded in CRL DP / AIA extensions (empty = https://pki.<domain>).
+      PKI_PUBLIC_BASE_URL: ""
+      PKI_POLICY_URL: http://ironmesh-policy:8081
+      PKI_REGISTRY_URL: http://ironmesh-registry:8000
+      PKI_CRL_PUBLISH_INTERVAL: 60s
+      PKI_CRL_NEXT_UPDATE: 24h
+      PKI_OCSP_ENABLED: "true"
+      PKI_NONCE_TTL: 120s
+      # Contract name (DESIGN_CONTRACT.md §2), bounded 7-30 d by the service.
+      IRONMESH_OPERATIONAL_CERT_TTL: 336h
+      PKI_DEVICE_CA_BUNDLE_FILE: /etc/ironmesh/device-ca/ca.crt
+      PKI_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      PKI_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      PKI_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      PKI_DB_HOST: ""
+      PKI_DB_PORT: ""
+      PKI_DB_NAME: pki
+      PKI_DB_USER: pki_app
+      PKI_DB_SSLMODE: ""
+      PKI_DB_IAM_AUTH: ""
+      PKI_LOG_LEVEL: info
+      PKI_LOG_FORMAT: json
+    extraEnv: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+    topologySpread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+    terminationGracePeriodSeconds: 30
+    priorityClassName: ""
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  policy:
+    enabled: true
+    image:
+      repository: ironmesh-policy
+      tag: ""
+      digest: ""
+    replicas: 2
+    ports:
+      http: 8081
+    health:
+      port: http
+      scheme: HTTP
+      livenessPath: /healthz
+      readinessPath: /readyz
+      startupFailureThreshold: 30
+    metrics:
+      enabled: true
+      port: http
+      path: /metrics
+    service:
+      type: ClusterIP
+      annotations: {}
+    serviceAccount:
+      roleArn: ""
+    tls:
+      enabled: true
+      existingSecret: ""
+    secret:
+      existingSecret: ""
+      create: false
+      data: {}
+    secretKeys:
+      - POLICY_EMQX_API_KEY
+      - POLICY_EMQX_API_SECRET
+      - POLICY_PKI_HMAC_SECRET
+      - POLICY_PKI_TOKEN
+      - POLICY_REGISTRY_TOKEN
+      - POLICY_HOOK_TOKEN
+    writableDirs:
+      - /tmp
+      - /var/lib/ironmesh/policy
+    # Names and defaults mirror services/policy/internal/config/config.go.
+    config:
+      POLICY_LISTEN: ":8081"
+      POLICY_EMQX_API_URL: http://ironmesh-emqx:18083
+      POLICY_PKI_CRL_URL: http://ironmesh-pki:8444/crl/device-ca.crl
+      POLICY_CRL_POLL_INTERVAL: 5s
+      POLICY_CRL_ISSUER_CERT_FILE: /etc/ironmesh/device-ca/ca.crt
+      POLICY_REGISTRY_URL: http://ironmesh-registry:8000
+      POLICY_REGISTRY_FAIL_OPEN: "false"
+      POLICY_REGISTRY_TIMEOUT: 2s
+      POLICY_REGISTRY_CACHE_TTL: 30s
+      POLICY_STATE_DIR: /var/lib/ironmesh/policy
+      POLICY_AUTHZ_CACHE_TTL: 10s
+      POLICY_SHUTDOWN_TIMEOUT: 10s
+      POLICY_LOG_LEVEL: info
+      POLICY_KAFKA_BROKERS: ""
+      POLICY_KAFKA_TOPIC_AUTH: im.auth
+      POLICY_KAFKA_TOPIC_AUDIT: im.audit
+      POLICY_KAFKA_SASL_MECHANISM: ""
+      POLICY_KAFKA_TLS_ENABLED: ""
+      POLICY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      POLICY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      POLICY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+    extraEnv: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+    topologySpread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+    terminationGracePeriodSeconds: 30
+    priorityClassName: ""
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  bridge:
+    enabled: true
+    image:
+      repository: ironmesh-bridge
+      tag: ""
+      digest: ""
+    replicas: 2
+    ports:
+      http: 8082 # metrics, health and the EMQX client-event webhook
+    health:
+      port: http
+      scheme: HTTP
+      livenessPath: /healthz
+      readinessPath: /readyz
+      startupFailureThreshold: 30
+    metrics:
+      enabled: true
+      port: http
+      path: /metrics
+    service:
+      type: ClusterIP
+      annotations: {}
+    serviceAccount:
+      roleArn: ""
+    tls:
+      enabled: true
+      existingSecret: ""
+    secret:
+      existingSecret: ""
+      create: false
+      data: {}
+    secretKeys:
+      - BRIDGE_HOOK_TOKEN
+      - BRIDGE_KAFKA_SASL_PASSWORD
+    writableDirs:
+      - /tmp
+    config:
+      BRIDGE_LISTEN: ":8082"
+      BRIDGE_MQTT_URL: ssl://ironmesh-emqx:8883
+      BRIDGE_MQTT_CLIENT_ID: svc-bridge
+      BRIDGE_SHARED_SUBSCRIPTION: "$share/bridge/im/v1/#"
+      BRIDGE_MQTT_KEEPALIVE: 60s
+      BRIDGE_KAFKA_BROKERS: ""
+      BRIDGE_KAFKA_TOPIC_INGEST: im.ingest
+      BRIDGE_KAFKA_TOPIC_AUTH: im.auth
+      BRIDGE_KAFKA_TOPIC_AUDIT: im.audit
+      # Topics created idempotently on boot (bridge owns topic creation; see Terraform README).
+      BRIDGE_KAFKA_TOPICS_CREATE: im.ingest,im.auth,im.alerts,im.audit,im.commands
+      BRIDGE_KAFKA_TOPIC_PARTITIONS: "12"
+      BRIDGE_KAFKA_TOPIC_REPLICATION: "3"
+      BRIDGE_KAFKA_SASL_MECHANISM: ""
+      BRIDGE_KAFKA_SASL_USERNAME: ""
+      BRIDGE_KAFKA_TLS_ENABLED: ""
+      BRIDGE_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      BRIDGE_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      BRIDGE_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      BRIDGE_LOG_LEVEL: info
+      BRIDGE_LOG_FORMAT: json
+    extraEnv: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    resources:
+      requests:
+        cpu: 200m
+        memory: 128Mi
+      limits:
+        cpu: "2"
+        memory: 512Mi
+    # CPU only: the shared subscription spreads load across replicas evenly.
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 60
+    pdb:
+      enabled: true
+      minAvailable: 1
+    topologySpread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+    terminationGracePeriodSeconds: 60
+    priorityClassName: ""
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  registry:
+    enabled: true
+    image:
+      repository: ironmesh-registry
+      tag: ""
+      digest: ""
+    replicas: 2
+    ports:
+      http: 8000
+    health:
+      port: http
+      scheme: HTTP
+      livenessPath: /healthz
+      readinessPath: /readyz
+      startupFailureThreshold: 30
+    metrics:
+      enabled: true
+      port: http
+      path: /metrics
+    service:
+      type: ClusterIP
+      annotations: {}
+    serviceAccount:
+      roleArn: ""
+    tls:
+      enabled: true
+      existingSecret: ""
+    secret:
+      existingSecret: ""
+      create: false
+      data: {}
+    secretKeys:
+      - REGISTRY_DB_PASSWORD
+      - REGISTRY_INTERNAL_TOKEN
+      - REGISTRY_EMQX_API_KEY
+      - REGISTRY_EMQX_API_SECRET
+    writableDirs:
+      - /tmp
+    config:
+      REGISTRY_LISTEN_PORT: "8000"
+      REGISTRY_DB_HOST: ""
+      REGISTRY_DB_PORT: ""
+      REGISTRY_DB_NAME: registry
+      REGISTRY_DB_USER: registry_app
+      REGISTRY_DB_SSLMODE: ""
+      REGISTRY_DB_IAM_AUTH: ""
+      REGISTRY_KAFKA_BROKERS: ""
+      REGISTRY_KAFKA_TOPIC_INGEST: im.ingest
+      REGISTRY_KAFKA_TOPIC_AUTH: im.auth
+      REGISTRY_KAFKA_TOPIC_ALERTS: im.alerts
+      REGISTRY_KAFKA_TOPIC_AUDIT: im.audit
+      REGISTRY_KAFKA_TOPIC_COMMANDS: im.commands
+      REGISTRY_KAFKA_CONSUMER_GROUP: registry-ingest
+      REGISTRY_KAFKA_SASL_MECHANISM: ""
+      REGISTRY_KAFKA_TLS_ENABLED: ""
+      REGISTRY_PKI_URL: https://ironmesh-pki:8443
+      REGISTRY_POLICY_URL: http://ironmesh-policy:8081
+      REGISTRY_OTA_URL: http://ironmesh-ota:8001
+      REGISTRY_EMQX_API_URL: http://ironmesh-emqx:18083
+      REGISTRY_OIDC_ISSUER: ""
+      REGISTRY_OIDC_AUDIENCE: ironmesh-api
+      REGISTRY_PUBLIC_BASE_URL: ""
+      REGISTRY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      REGISTRY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      REGISTRY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      REGISTRY_LOG_LEVEL: info
+      REGISTRY_LOG_FORMAT: json
+    extraEnv: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: "2"
+        memory: 1Gi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+    topologySpread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+    terminationGracePeriodSeconds: 30
+    priorityClassName: ""
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  ota:
+    enabled: true
+    image:
+      repository: ironmesh-ota
+      tag: ""
+      digest: ""
+    replicas: 2
+    ports:
+      http: 8001
+    health:
+      port: http
+      scheme: HTTP
+      livenessPath: /healthz
+      readinessPath: /readyz
+      startupFailureThreshold: 30
+    metrics:
+      enabled: true
+      port: http
+      path: /metrics
+    service:
+      type: ClusterIP
+      annotations: {}
+    serviceAccount:
+      roleArn: ""
+    tls:
+      enabled: true
+      existingSecret: ""
+    secret:
+      existingSecret: ""
+      create: false
+      data: {}
+    secretKeys:
+      - OTA_DB_PASSWORD
+      - OTA_INTERNAL_TOKEN
+      - OTA_EMQX_API_KEY
+      - OTA_EMQX_API_SECRET
+      - OTA_SIGNING_PRIVATE_KEY_PEM
+    writableDirs:
+      - /tmp
+      - /var/lib/ironmesh/ota
+    config:
+      OTA_LISTEN_PORT: "8001"
+      OTA_DB_HOST: ""
+      OTA_DB_PORT: ""
+      OTA_DB_NAME: ota
+      OTA_DB_USER: ota_app
+      OTA_DB_SSLMODE: ""
+      OTA_DB_IAM_AUTH: ""
+      OTA_KAFKA_BROKERS: ""
+      OTA_KAFKA_TOPIC_INGEST: im.ingest
+      OTA_KAFKA_TOPIC_COMMANDS: im.commands
+      OTA_KAFKA_TOPIC_AUDIT: im.audit
+      OTA_KAFKA_CONSUMER_GROUP: ota-status
+      OTA_KAFKA_SASL_MECHANISM: ""
+      OTA_KAFKA_TLS_ENABLED: ""
+      # s3 | filesystem (dev only)
+      OTA_ARTIFACT_STORE: s3
+      OTA_ARTIFACT_BUCKET: ""
+      OTA_S3_KMS_KEY_ARN: ""
+      OTA_ARTIFACT_PATH: /var/lib/ironmesh/ota/artifacts
+      # kms-wrapped | file (dev only)
+      OTA_SIGNING_PROVIDER: kms-wrapped
+      OTA_SIGNING_KEK_KEY_ID: ""
+      OTA_SIGNING_KEY_SECRET_ARN: ""
+      OTA_SIGNING_KEY_ID: fw-ed25519-1
+      OTA_PQ_SIGNING_ENABLED: "false"
+      OTA_PUBLIC_BASE_URL: ""
+      OTA_PKI_URL: https://ironmesh-pki:8443
+      OTA_REGISTRY_URL: http://ironmesh-registry:8000
+      OTA_EMQX_API_URL: http://ironmesh-emqx:18083
+      OTA_OIDC_ISSUER: ""
+      OTA_OIDC_AUDIENCE: ironmesh-api
+      OTA_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      OTA_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      OTA_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      OTA_LOG_LEVEL: info
+      OTA_LOG_FORMAT: json
+    extraEnv: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: "2"
+        memory: 1Gi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+    topologySpread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+    terminationGracePeriodSeconds: 60
+    priorityClassName: ""
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  anomaly:
+    enabled: true
+    image:
+      repository: ironmesh-anomaly
+      tag: ""
+      digest: ""
+    replicas: 2
+    ports:
+      http: 8002
+    health:
+      port: http
+      scheme: HTTP
+      livenessPath: /healthz
+      readinessPath: /readyz
+      startupFailureThreshold: 60
+    metrics:
+      enabled: true
+      port: http
+      path: /metrics
+    service:
+      type: ClusterIP
+      annotations: {}
+    serviceAccount:
+      roleArn: ""
+    tls:
+      enabled: true
+      existingSecret: ""
+    secret:
+      existingSecret: ""
+      create: false
+      data: {}
+    secretKeys:
+      - ANOMALY_DB_PASSWORD
+      - ANOMALY_INTERNAL_TOKEN
+      - ANOMALY_SIEM_WEBHOOK_URL
+    writableDirs:
+      - /tmp
+      - /var/lib/ironmesh/anomaly
+    config:
+      ANOMALY_LISTEN_PORT: "8002"
+      ANOMALY_DB_HOST: ""
+      ANOMALY_DB_PORT: ""
+      ANOMALY_DB_NAME: anomaly
+      ANOMALY_DB_USER: anomaly_app
+      ANOMALY_DB_SSLMODE: ""
+      ANOMALY_DB_IAM_AUTH: ""
+      ANOMALY_KAFKA_BROKERS: ""
+      ANOMALY_KAFKA_TOPIC_INGEST: im.ingest
+      ANOMALY_KAFKA_TOPIC_AUTH: im.auth
+      ANOMALY_KAFKA_TOPIC_COMMANDS: im.commands
+      ANOMALY_KAFKA_TOPIC_ALERTS: im.alerts
+      ANOMALY_KAFKA_TOPIC_AUDIT: im.audit
+      ANOMALY_KAFKA_CONSUMER_GROUP: anomaly-engine
+      ANOMALY_KAFKA_SASL_MECHANISM: ""
+      ANOMALY_KAFKA_TLS_ENABLED: ""
+      ANOMALY_REGISTRY_URL: http://ironmesh-registry:8000
+      ANOMALY_POLICY_URL: http://ironmesh-policy:8081
+      ANOMALY_OTA_URL: http://ironmesh-ota:8001
+      ANOMALY_PKI_URL: https://ironmesh-pki:8443
+      # Dry-run by default (SECURITY.md): enable only after tuning rules.
+      ANOMALY_AUTO_QUARANTINE: "false"
+      ANOMALY_QUARANTINE_MIN_SEVERITY: high
+      ANOMALY_MODEL_DIR: /var/lib/ironmesh/anomaly/models
+      ANOMALY_OIDC_ISSUER: ""
+      ANOMALY_OIDC_AUDIENCE: ironmesh-api
+      ANOMALY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      ANOMALY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      ANOMALY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      ANOMALY_LOG_LEVEL: info
+      ANOMALY_LOG_FORMAT: json
+    extraEnv: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+    topologySpread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+    terminationGracePeriodSeconds: 60
+    priorityClassName: ""
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  console:
+    enabled: true
+    image:
+      repository: ironmesh-console
+      tag: ""
+      digest: ""
+    replicas: 2
+    ports:
+      http: 3000
+    health:
+      port: http
+      scheme: HTTP
+      livenessPath: /healthz
+      readinessPath: /readyz
+      startupFailureThreshold: 30
+    metrics:
+      enabled: false
+      port: http
+      path: /metrics
+    service:
+      type: ClusterIP
+      annotations: {}
+    serviceAccount:
+      roleArn: ""
+    tls:
+      enabled: false
+      existingSecret: ""
+    secret:
+      existingSecret: ""
+      create: false
+      data: {}
+    secretKeys:
+      - AUTH_SECRET
+      - CONSOLE_OIDC_CLIENT_SECRET
+    writableDirs:
+      - /tmp
+      - /app/.next/cache
+    config:
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      # Server-side proxy targets (API_CONTRACT.md §0: the browser never calls services directly).
+      CONSOLE_REGISTRY_URL: http://ironmesh-registry:8000
+      CONSOLE_OTA_URL: http://ironmesh-ota:8001
+      CONSOLE_ANOMALY_URL: http://ironmesh-anomaly:8002
+      CONSOLE_POLICY_URL: http://ironmesh-policy:8081
+      CONSOLE_OIDC_ISSUER: ""
+      CONSOLE_OIDC_CLIENT_ID: ironmesh-console
+      # Browser-visible configuration.
+      NEXT_PUBLIC_APP_URL: ""
+      NEXT_PUBLIC_OIDC_ISSUER: ""
+      NEXT_PUBLIC_OIDC_CLIENT_ID: ironmesh-console
+      NEXT_PUBLIC_OIDC_AUDIENCE: ironmesh-api
+      NEXT_PUBLIC_ENVIRONMENT: ""
+    extraEnv: []
+    extraVolumes: []
+    extraVolumeMounts: []
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+    pdb:
+      enabled: true
+      minAvailable: 1
+    topologySpread:
+      enabled: true
+      maxSkew: 1
+      whenUnsatisfiable: ScheduleAnyway
+    terminationGracePeriodSeconds: 30
+    priorityClassName: ""
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+# ------------------------------------------------------------------------------------------
+# EMQX 5 (dependency: https://repos.emqx.io/charts, chart emqx)
+# ------------------------------------------------------------------------------------------
+# Configuration is passed as environment overrides (EMQX_<PATH>__<KEY>). Listener 8883 is the
+# only MQTT listener: TLS 1.3 only, client certificate required (Device CA bundle, partial
+# chain), EKU clientAuth enforced, username = certificate CN. Authentication and authorization
+# are delegated to the policy service over HTTP with a shared hook token.
+emqx:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: emqx/emqx
+    tag: 5.8.9
+  # The chart's own TLS automation is disabled; certificates are mounted explicitly below.
+  ssl:
+    enabled: false
+  # Secret produced by templates/externalsecret.yaml (or by hand): EMQX_DASHBOARD__DEFAULT_PASSWORD
+  # and the X-IronMesh-Hook-Token headers.
+  envFromSecret: ironmesh-emqx-env
+  emqxConfig:
+    EMQX_CLUSTER__DISCOVERY_STRATEGY: dns
+    EMQX_DASHBOARD__DEFAULT_USERNAME: admin
+    EMQX_LISTENERS__TCP__DEFAULT__ENABLE: "false"
+    EMQX_LISTENERS__WS__DEFAULT__ENABLE: "false"
+    EMQX_LISTENERS__WSS__DEFAULT__ENABLE: "false"
+    EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
+    EMQX_LISTENERS__SSL__DEFAULT__ENABLE_AUTHN: quick_deny_anonymous
+    EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERSIONS: "[tlsv1.3]"
+    EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERIFY: verify_peer
+    EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "true"
+    EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__PARTIAL_CHAIN: "true"
+    EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERIFY_PEER_EXT_KEY_USAGE: clientAuth
+    EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /etc/ironmesh/tls/tls.crt
+    EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /etc/ironmesh/tls/tls.key
+    EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /etc/ironmesh/device-ca/ca.crt
+    EMQX_MQTT__PEER_CERT_AS_USERNAME: cn
+    EMQX_MQTT__SESSION_EXPIRY_INTERVAL: 7d
+    EMQX_MQTT__MAX_PACKET_SIZE: 1MB
+    EMQX_MQTT__RETAIN_AVAILABLE: "true"
+    EMQX_MQTT__WILDCARD_SUBSCRIPTION: "true"
+    EMQX_MQTT__SHARED_SUBSCRIPTION: "true"
+    EMQX_AUTHENTICATION__1__MECHANISM: password_based
+    EMQX_AUTHENTICATION__1__BACKEND: http
+    EMQX_AUTHENTICATION__1__METHOD: post
+    EMQX_AUTHENTICATION__1__URL: http://ironmesh-policy:8081/emqx/authn
+    EMQX_AUTHENTICATION__1__BODY__CLIENTID: "${clientid}"
+    EMQX_AUTHENTICATION__1__BODY__USERNAME: "${username}"
+    EMQX_AUTHENTICATION__1__BODY__CERT_COMMON_NAME: "${cert_common_name}"
+    EMQX_AUTHENTICATION__1__BODY__CERT_SUBJECT: "${cert_subject}"
+    EMQX_AUTHENTICATION__1__BODY__PEERHOST: "${peerhost}"
+    EMQX_AUTHENTICATION__1__CONNECT_TIMEOUT: 5s
+    EMQX_AUTHENTICATION__1__REQUEST_TIMEOUT: 5s
+    EMQX_AUTHENTICATION__1__POOL_SIZE: "16"
+    EMQX_AUTHORIZATION__NO_MATCH: deny
+    EMQX_AUTHORIZATION__DENY_ACTION: disconnect
+    EMQX_AUTHORIZATION__CACHE__ENABLE: "true"
+    EMQX_AUTHORIZATION__CACHE__TTL: 10s
+    EMQX_AUTHORIZATION__SOURCES__1__TYPE: http
+    EMQX_AUTHORIZATION__SOURCES__1__METHOD: post
+    EMQX_AUTHORIZATION__SOURCES__1__URL: http://ironmesh-policy:8081/emqx/authz
+    EMQX_AUTHORIZATION__SOURCES__1__BODY__CLIENTID: "${clientid}"
+    EMQX_AUTHORIZATION__SOURCES__1__BODY__USERNAME: "${username}"
+    EMQX_AUTHORIZATION__SOURCES__1__BODY__TOPIC: "${topic}"
+    EMQX_AUTHORIZATION__SOURCES__1__BODY__ACTION: "${action}"
+    EMQX_AUTHORIZATION__SOURCES__1__BODY__QOS: "${qos}"
+    EMQX_AUTHORIZATION__SOURCES__1__BODY__RETAIN: "${retain}"
+    EMQX_AUTHORIZATION__SOURCES__1__CONNECT_TIMEOUT: 5s
+    EMQX_AUTHORIZATION__SOURCES__1__REQUEST_TIMEOUT: 5s
+    # Management API key for the policy service (session kicks); file = "key:secret:role" lines.
+    EMQX_API_KEY__BOOTSTRAP_FILE: /etc/ironmesh/emqx-api-keys/api-keys
+    EMQX_PROMETHEUS__ENABLE_BASIC_AUTH: "false"
+    EMQX_OPENTELEMETRY__EXPORTER__ENDPOINT: http://otel-collector.observability.svc.cluster.local:4317
+    EMQX_OPENTELEMETRY__METRICS__ENABLE: "true"
+    EMQX_OPENTELEMETRY__TRACES__ENABLE: "true"
+    EMQX_LOG__CONSOLE__FORMATTER: json
+    EMQX_LOG__CONSOLE__LEVEL: warning
+  extraVolumes:
+    - name: tls
+      secret:
+        secretName: ironmesh-emqx-tls
+        defaultMode: 0440
+    - name: device-ca
+      secret:
+        secretName: ironmesh-device-ca-bundle
+    - name: api-keys
+      secret:
+        secretName: ironmesh-emqx-api-keys
+        defaultMode: 0440
+  extraVolumeMounts:
+    - name: tls
+      mountPath: /etc/ironmesh/tls
+      readOnly: true
+    - name: device-ca
+      mountPath: /etc/ironmesh/device-ca
+      readOnly: true
+    - name: api-keys
+      mountPath: /etc/ironmesh/emqx-api-keys
+      readOnly: true
+  service:
+    type: ClusterIP
+    mqttssl: 8883
+    dashboard: 18083
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+  persistence:
+    enabled: true
+    size: 5Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: emqx
+  # The chart's own ServiceMonitor is not used; templates/servicemonitor.yaml scrapes
+  # /api/v5/prometheus/stats on 18083.
+  metrics:
+    enabled: false
+  nodeSelector: {}
+  tolerations: []
+
+# Certificate for the broker listener (Services CA, SAN = mqtt host + in-cluster names).
+emqxTls:
+  certManager:
+    enabled: true
+  secretName: ironmesh-emqx-tls
+  extraDnsNames: []
+
+# ------------------------------------------------------------------------------------------
+# Redpanda (dependency: https://charts.redpanda.com, chart redpanda). Self-hosted Kafka for
+# clusters without MSK (kafka.mode=redpanda).
+# ------------------------------------------------------------------------------------------
+redpanda:
+  enabled: false
+  statefulset:
+    replicas: 3
+    budget:
+      maxUnavailable: 1
+  # In-cluster plaintext guarded by NetworkPolicy. Set tls.enabled=true and point
+  # *_KAFKA_TLS_ENABLED / CA at <release>-redpanda-default-cert for TLS between pods.
+  tls:
+    enabled: false
+  external:
+    enabled: false
+  console:
+    enabled: false
+  listeners:
+    kafka:
+      port: 9092
+    admin:
+      port: 9644
+  auth:
+    sasl:
+      enabled: false
+  resources:
+    cpu:
+      cores: 1
+    memory:
+      container:
+        max: 2.5Gi
+  storage:
+    persistentVolume:
+      enabled: true
+      size: 50Gi
+      storageClass: ""
+  config:
+    cluster:
+      auto_create_topics_enabled: false
+      default_topic_replications: 3
+  monitoring:
+    enabled: false

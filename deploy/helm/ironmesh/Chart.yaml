@@ -1,0 +1,33 @@
+apiVersion: v2
+name: ironmesh
+description: >-
+  IronMesh IoT security framework control plane: PKI/EST, policy (EMQX authn/authz + revocation),
+  MQTT-to-Kafka bridge, device registry, OTA, anomaly engine and fleet console, with EMQX 5 as the
+  mTLS MQTT broker and optional self-hosted Redpanda.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0-0"
+home: https://github.com/lumidren/IoT-Security-Framework
+sources:
+  - https://github.com/lumidren/IoT-Security-Framework
+keywords:
+  - iot
+  - mqtt
+  - pki
+  - security
+  - ota
+maintainers:
+  - name: lumidren
+    url: https://github.com/lumidren
+annotations:
+  ironmesh.dev/design-contract: docs/DESIGN_CONTRACT.md
+dependencies:
+  - name: emqx
+    version: 5.8.9
+    repository: https://repos.emqx.io/charts
+    condition: emqx.enabled
+  - name: redpanda
+    version: 26.2.5
+    repository: https://charts.redpanda.com
+    condition: redpanda.enabled
