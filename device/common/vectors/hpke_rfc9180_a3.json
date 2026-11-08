@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "description": "HPKE (RFC 9180) DHKEM(P-256, HKDF-SHA256) / HKDF-SHA256 / AES-128-GCM base-mode vectors copied from RFC 9180 Appendix A.3.1 (which this library reproduces), plus an IronMesh Config key-wrap example: the plaintext (a signed Config envelope, deterministic) is encrypted as COSE_Encrypt0 with fixed CEK, IV and ephemeral ikm so that encrypt0_hex is reproducible by an implementation exposing the same test hooks; every implementation MUST at least decrypt encrypt0_hex with the device private key.",
+  "generator": "ironmesh_wire 0.1.0",
+  "rfc9180_a3_1": {
+    "mode": 0,
+    "kem_id": 16,
+    "kdf_id": 1,
+    "aead_id": 1,
+    "info": "4f6465206f6e2061204772656369616e2055726e",
+    "ikmE": "4270e54ffd08d79d5928020af4686d8f6b7d35dbe470265f1f5aa22816ce860e",
+    "pkEm": "04a92719c6195d5085104f469a8b9814d5838ff72b60501e2c4466e5e67b325ac98536d7b61a1af4b78e5b7f951c0900be863c403ce65c9bfcb9382657222d18c4",
+    "skEm": "4995788ef4b9d6132b249ce59a77281493eb39af373d236a1fe415cb0c2d7beb",
+    "ikmR": "668b37171f1072f3cf12ea8a236a45df23fc13b82af3609ad1e354f6ef817550",
+    "pkRm": "04fe8c19ce0905191ebc298a9245792531f26f0cece2460639e8bc39cb7f706a826a779b4cf969b8a0e539c7f62fb3d30ad6aa8f80e30f1d128aafd68a2ce72ea0",
+    "skRm": "f3ce7fdae57e1a310d87f1ebbde6f328be0a99cdbcadf4d6589cf29de4b8ffd2",
+    "enc": "04a92719c6195d5085104f469a8b9814d5838ff72b60501e2c4466e5e67b325ac98536d7b61a1af4b78e5b7f951c0900be863c403ce65c9bfcb9382657222d18c4",
+    "shared_secret": "c0d26aeab536609a572b07695d933b589dcf363ff9d93c93adea537aeabb8cb8",
+    "key_schedule_context": "00b88d4e6d91759e65e87c470e8b9141113e9ad5f0c8ceefc1e088c82e6980500798e486f9c9c09c9b5c753ac72d6005de254c607d1b534ed11d493ae1c1d9ac85",
+    "secret": "2eb7b6bf138f6b5aff857414a058a3f1750054a9ba1f72c2cf0684a6f20b10e1",
+    "key": "868c066ef58aae6dc589b6cfdd18f97e",
+    "base_nonce": "4e0bc5018beba4bf004cca59",
+    "exporter_secret": "14ad94af484a7ad3ef40e9f3be99ecc6fa9036df9d4920548424df127ee0d99f",
+    "encryptions": [
+      {
+        "sequence_number": 0,
+        "pt": "4265617574792069732074727574682c20747275746820626561757479",
+        "aad": "436f756e742d30",
+        "nonce": "4e0bc5018beba4bf004cca59",
+        "ct": "5ad590bb8baa577f8619db35a36311226a896e7342a6d836d8b7bcd2f20b6c7f9076ac232e3ab2523f39513434"
+      },
+      {
+        "sequence_number": 1,
+        "pt": "4265617574792069732074727574682c20747275746820626561757479",
+        "aad": "436f756e742d31",
+        "nonce": "4e0bc5018beba4bf004cca58",
+        "ct": "fa6f037b47fc21826b610172ca9637e82d6e5801eb31cbd3748271affd4ecb06646e0329cbdf3c3cd655b28e82"
+      },
+      {
+        "sequence_number": 2,
+        "pt": "4265617574792069732074727574682c20747275746820626561757479",
+        "aad": "436f756e742d32",
+        "nonce": "4e0bc5018beba4bf004cca5b",
+        "ct": "895cabfac50ce6c6eb02ffe6c048bf53b7f7be9a91fc559402cbc5b8dcaeb52b2ccc93e466c28fb55fed7a7fec"
+      },
+      {
+        "sequence_number": 4,
+        "pt": "4265617574792069732074727574682c20747275746820626561757479",
+        "aad": "436f756e742d34",
+        "nonce": "4e0bc5018beba4bf004cca5d",
+        "ct": "8787491ee8df99bc99a246c4b3216d3d57ab5076e18fa27133f520703bc70ec999dd36ce042e44f0c3169a6a8f"
+      },
+      {
+        "sequence_number": 255,
+        "pt": "4265617574792069732074727574682c20747275746820626561757479",
+        "aad": "436f756e742d323535",
+        "nonce": "4e0bc5018beba4bf004ccaa6",
+        "ct": "2ad71c85bf3f45c6eca301426289854b31448bcf8a8ccb1deef3ebd87f60848aa53c538c30a4dac71d619ee2cd"
+      },
+      {
+        "sequence_number": 256,
+        "pt": "4265617574792069732074727574682c20747275746820626561757479",
+        "aad": "436f756e742d323536",
+        "nonce": "4e0bc5018beba4bf004ccb59",
+        "ct": "10f179686aa2caec1758c8e554513f16472bd0a11e2a907dde0b212cbe87d74f367f8ffe5e41cd3e9962a6afb2"
+      }
+    ],
+    "exports": [
+      {
+        "exporter_context": "",
+        "L": 32,
+        "exported_value": "5e9bc3d236e1911d95e65b576a8a86d478fb827e8bdfe77b741b289890490d4d"
+      },
+      {
+        "exporter_context": "00",
+        "L": 32,
+        "exported_value": "6cff87658931bda83dc857e6353efe4987a201b849658d9b047aab4cf216e796"
+      },
+      {
+        "exporter_context": "54657374436f6e74657874",
+        "L": 32,
+        "exported_value": "d8f1ea7942adbba7412c6d431c62d01371ea476b823eb697e1f6e6cae1dab85a"
+      }
+    ]
+  },
+  "config_encrypt0": {
+    "device_key": {
+      "algorithm": "ES256",
+      "private_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg4CQ3EN9zY6epkGIt\nMxiMO2ummovoYFHUOXvLhWG2U+OhRANCAAQ7LY99ojko5Ajl7iuBTnpJ6cUhNwwF\n3qTXlrHeILtD4oL7DNokvRpvJI2yFVEgJUOuy4PpW3G6UU7+pmZPTHfF\n-----END PRIVATE KEY-----\n",
+      "public_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOy2PfaI5KOQI5e4rgU56SenFITcM\nBd6k15ax3iC7Q+KC+wzaJL0abySNshVRICVDrsuD6VtxulFO/qZmT0x3xQ==\n-----END PUBLIC KEY-----\n",
+      "public_raw_hex": "043b2d8f7da23928e408e5ee2b814e7a49e9c521370c05dea4d796b1de20bb43e282fb0cda24bd1a6f248db21551202543aecb83e95b71ba514efea6664f4c77c5",
+      "private_scalar_hex": "e0243710df7363a7a990622d33188c3b6ba69a8be86051d4397bcb8561b653e3"
+    },
+    "wrong_device_key": {
+      "algorithm": "ES256",
+      "private_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgJAHLXVUutJd7BbeW\nxYXkr5EHbjmrP9yZAFaeuCMbOA6hRANCAARO0Mq+ZjW1FRJyBekvNwJQQBy0Qf0i\nmaslr1ZiD83fmzATv02HmODQNOOROZ6yV8odM23BWK3DCssoX1jS49kU\n-----END PRIVATE KEY-----\n",
+      "public_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETtDKvmY1tRUScgXpLzcCUEActEH9\nIpmrJa9WYg/N35swE79Nh5jg0DTjkTmeslfKHTNtwVitwwrLKF9Y0uPZFA==\n-----END PUBLIC KEY-----\n",
+      "public_raw_hex": "044ed0cabe6635b515127205e92f370250401cb441fd2299ab25af56620fcddf9b3013bf4d8798e0d034e391399eb257ca1d336dc158adc30acb285f58d2e3d914",
+      "private_scalar_hex": "2401cb5d552eb4977b05b796c585e4af91076e39ab3fdc9900569eb8231b380e"
+    },
+    "hpke_info_hex": "69726f6e6d6573682d636f6e6669672d63656b2d7631",
+    "hpke_info_ascii": "ironmesh-config-cek-v1",
+    "cek_hex": "3f4128386400ba048c8e59737efbb1ced52f489a5ebe55c727b883164b916b0f",
+    "iv_hex": "72213dae2e44ddaec8867460",
+    "ephemeral_ikm_hex": "7a29b7bd61ee1259324c246092dd6c01a26415a49fe90df09773a72c15ecfb53",
+    "protected_hex": "a10103",
+    "enc_structure_hex": "8368456e63727970743043a1010340",
+    "enc_hex": "04b3db09dacb02b7baeaff5fba18107d2c6af344cb36c631d24e35e00026aa76f0073d059ec5ee26dcab5d6ab32b04cc936bba696bfb8917ed728ff0ef5e4e0b41",
+    "wrapped_key_hex": "464ca6a93071eacd49c2ab25b9c9aaefa9e99d1a2b12af89e5add0aa6c21f3a644adfb9dd1d79ba3a73391ee777ff704",
+    "ciphertext_hex": "16ca0aa47430a8db1b4e85d250ef03cdb00615910193a6fc1106cbffb5d6904b5f12a96b4980e0178e59741057d16564b24ffe9fdf9ab9b5af91665cf30e0a60007519689e0ba2125586100cfa7d91d588a41ae0c842d41aff47419280d3a976623a12fb8efa79757880fba4570d801f9deb725c03c324f237bb506ac50ef8a5a8edfad10e23cba973b8fc42682fd5e222f189e6830b4d4a431e250330bb4d320a0a256738fd44acedc05215b42d0aa07d54ee37bb5fd05243d41a1b43b752f62f695a8c54",
+    "plaintext_message": {
+      "seq": 3,
+      "ts": 1767225600,
+      "type": 9,
+      "type_name": "CONFIG",
+      "body": {
+        "version": 12,
+        "settings": {
+          "telemetry_interval_s": 60,
+          "log_level": "info"
+        }
+      },
+      "payload_diag": "{1: 3, 2: 1767225600, 3: 9, 4: {1: 12, 2: {\"log_level\": \"info\", \"telemetry_interval_s\": 60}}}",
+      "payload_hex": "a40103021a6955b900030904a2010c02a2696c6f675f6c6576656c64696e666f7474656c656d657472795f696e74657276616c5f73183c",
+      "protected_hex": "a2012704782f74656e616e742d636d642d37653462316139632d336332652d346134662d396331622d306630643264376136613131",
+      "sig_structure_hex": "846a5369676e6174757265315835a2012704782f74656e616e742d636d642d37653462316139632d336332652d346134662d396331622d306630643264376136613131405837a40103021a6955b900030904a2010c02a2696c6f675f6c6576656c64696e666f7474656c656d657472795f696e74657276616c5f73183c",
+      "signature_hex": "4ef3c065dceccf8537011adb0d173bc36a3ff130a7f888e842a2abcc64076ee4cd4fa50896450957b2ee8025ddf6c6b346a853586289c0a57574d5b9602da10b",
+      "wire_hex": "d2845835a2012704782f74656e616e742d636d642d37653462316139632d336332652d346134662d396331622d306630643264376136613131a05837a40103021a6955b900030904a2010c02a2696c6f675f6c6576656c64696e666f7474656c656d657472795f696e74657276616c5f73183c58404ef3c065dceccf8537011adb0d173bc36a3ff130a7f888e842a2abcc64076ee4cd4fa50896450957b2ee8025ddf6c6b346a853586289c0a57574d5b9602da10b"
+    },
+    "plaintext_hex": "d2845835a2012704782f74656e616e742d636d642d37653462316139632d336332652d346134662d396331622d306630643264376136613131a05837a40103021a6955b900030904a2010c02a2696c6f675f6c6576656c64696e666f7474656c656d657472795f696e74657276616c5f73183c58404ef3c065dceccf8537011adb0d173bc36a3ff130a7f888e842a2abcc64076ee4cd4fa50896450957b2ee8025ddf6c6b346a853586289c0a57574d5b9602da10b",
+    "encrypt0_hex": "d08343a10103a2054c72213dae2e44ddaec88674603a0001116fa201584104b3db09dacb02b7baeaff5fba18107d2c6af344cb36c631d24e35e00026aa76f0073d059ec5ee26dcab5d6ab32b04cc936bba696bfb8917ed728ff0ef5e4e0b41025830464ca6a93071eacd49c2ab25b9c9aaefa9e99d1a2b12af89e5add0aa6c21f3a644adfb9dd1d79ba3a73391ee777ff70458c516ca0aa47430a8db1b4e85d250ef03cdb00615910193a6fc1106cbffb5d6904b5f12a96b4980e0178e59741057d16564b24ffe9fdf9ab9b5af91665cf30e0a60007519689e0ba2125586100cfa7d91d588a41ae0c842d41aff47419280d3a976623a12fb8efa79757880fba4570d801f9deb725c03c324f237bb506ac50ef8a5a8edfad10e23cba973b8fc42682fd5e222f189e6830b4d4a431e250330bb4d320a0a256738fd44acedc05215b42d0aa07d54ee37bb5fd05243d41a1b43b752f62f695a8c54",
+    "negative": [
+      {
+        "name": "ciphertext tag byte flipped",
+        "encrypt0_hex": "d08343a10103a2054c72213dae2e44ddaec88674603a0001116fa201584104b3db09dacb02b7baeaff5fba18107d2c6af344cb36c631d24e35e00026aa76f0073d059ec5ee26dcab5d6ab32b04cc936bba696bfb8917ed728ff0ef5e4e0b41025830464ca6a93071eacd49c2ab25b9c9aaefa9e99d1a2b12af89e5add0aa6c21f3a644adfb9dd1d79ba3a73391ee777ff70458c516ca0aa47430a8db1b4e85d250ef03cdb00615910193a6fc1106cbffb5d6904b5f12a96b4980e0178e59741057d16564b24ffe9fdf9ab9b5af91665cf30e0a60007519689e0ba2125586100cfa7d91d588a41ae0c842d41aff47419280d3a976623a12fb8efa79757880fba4570d801f9deb725c03c324f237bb506ac50ef8a5a8edfad10e23cba973b8fc42682fd5e222f189e6830b4d4a431e250330bb4d320a0a256738fd44acedc05215b42d0aa07d54ee37bb5fd05243d41a1b43b752f62f695a8c55",
+        "error": "COSE_DECRYPT"
+      },
+      {
+        "name": "wrong recipient key",
+        "encrypt0_hex": "d08343a10103a2054c72213dae2e44ddaec88674603a0001116fa201584104b3db09dacb02b7baeaff5fba18107d2c6af344cb36c631d24e35e00026aa76f0073d059ec5ee26dcab5d6ab32b04cc936bba696bfb8917ed728ff0ef5e4e0b41025830464ca6a93071eacd49c2ab25b9c9aaefa9e99d1a2b12af89e5add0aa6c21f3a644adfb9dd1d79ba3a73391ee777ff70458c516ca0aa47430a8db1b4e85d250ef03cdb00615910193a6fc1106cbffb5d6904b5f12a96b4980e0178e59741057d16564b24ffe9fdf9ab9b5af91665cf30e0a60007519689e0ba2125586100cfa7d91d588a41ae0c842d41aff47419280d3a976623a12fb8efa79757880fba4570d801f9deb725c03c324f237bb506ac50ef8a5a8edfad10e23cba973b8fc42682fd5e222f189e6830b4d4a431e250330bb4d320a0a256738fd44acedc05215b42d0aa07d54ee37bb5fd05243d41a1b43b752f62f695a8c54",
+        "error": "HPKE_OPEN"
+      }
+    ]
+  }
+}

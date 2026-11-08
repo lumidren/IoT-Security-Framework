@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "description": "Identifier formats (contract section 1), key identifiers (section 5) and the MQTT topic scheme (section 4).",
+  "generator": "ironmesh_wire 0.1.0",
+  "identifiers": {
+    "tenant_valid": [
+      "7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11",
+      "0f0d2d7a-6a11-4a4f-9c1b-7e4b1a9c3c2e"
+    ],
+    "tenant_invalid": [
+      "7E4B1A9C-3C2E-4A4F-9C1B-0F0D2D7A6A11",
+      "7e4b1a9c-3c2e-1a4f-9c1b-0f0d2d7a6a11",
+      "7e4b1a9c3c2e4a4f9c1b0f0d2d7a6a11"
+    ],
+    "device_valid": [
+      "dev-8f3a1c2b9d4e5f60",
+      "dev-0000000000000000"
+    ],
+    "device_invalid": [
+      "dev-8f3a1c2b9d4e5f6",
+      "dev-8F3A1C2B9D4E5F60",
+      "device-8f3a1c2b9d4e5f60"
+    ],
+    "group_valid": [
+      "eu-west-gateways",
+      "a",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    "group_invalid": [
+      "",
+      "EU-west",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "eu_west"
+    ],
+    "firmware_id_valid": [
+      "gateway-rpi/2.4.1",
+      "sensor-esp32/1.0.0-rc.1+build.5"
+    ],
+    "firmware_id_invalid": [
+      "gateway-rpi",
+      "gateway-rpi/2.4",
+      "Gateway/1.0.0"
+    ]
+  },
+  "key_ids": {
+    "device_kid_hex": "3fa1b2c3d4e5f60718293a4b5c6d7e8f",
+    "device_serial_hex": "3fa1b2c3d4e5f60718293a4b5c6d7e8f",
+    "device_kid_leading_zero_stripped_hex": "ff",
+    "tenant_kid": "tenant-cmd-7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11",
+    "fw_ed25519_kid_rule": "SHA-256(raw 32-byte public key)[0:8]",
+    "fw_mldsa65_kid_rule": "SHA-256(raw 1952-byte public key)[0:8]"
+  },
+  "topics": [
+    {
+      "class": "TELEMETRY",
+      "suffix": "telemetry",
+      "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/telemetry",
+      "direction": "uplink",
+      "device_publishes": true,
+      "message_type": 1,
+      "retained_allowed": false,
+      "qos": 1
+    },
+    {
+      "class": "EVENTS",
+      "suffix": "events",
+      "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/events",
+      "direction": "uplink",
+      "device_publishes": true,
+      "message_type": 2,
+      "retained_allowed": false,
+      "qos": 1
+    },
+    {
+      "class": "SHADOW_REPORTED",
+      "suffix": "shadow/reported",
+      "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/shadow/reported",
+      "direction": "uplink",
+      "device_publishes": true,
+      "message_type": 3,
+      "retained_allowed": false,
+      "qos": 1
+    },
+    {
+      "class": "CMD_ACK",
+      "suffix": "cmd/ack",
+      "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/cmd/ack",
+      "direction": "uplink",
+      "device_publishes": true,
+      "message_type": 6,
+      "retained_allowed": false,
+      "qos": 1
+    },
+    {
+      "class": "OTA_STATUS",
+      "suffix": "ota/status",
+      "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/ota/status",
+      "direction": "uplink",
+      "device_publishes": true,
+      "message_type": 8,
+      "retained_allowed": false,
+      "qos": 1
+    },
+    {
+      "class": "SHADOW_DESIRED",
+      "suffix": "shadow/desired",
+      "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/shadow/desired",
+      "direction": "downlink",
+      "device_publishes": false,
+      "message_type": 4,
+      "retained_allowed": true,
+      "qos": 1
+    },
+    {
+      "class": "CMD_REQ",
+      "suffix": "cmd/req",
+      "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/cmd/req",
+      "direction": "downlink",
+      "device_publishes": false,
+      "message_type": 5,
+      "retained_allowed": false,
+      "qos": 1
+    },
+    {
+      "class": "OTA_NOTIFY",
+      "suffix": "ota/notify",
+      "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/ota/notify",
+      "direction": "downlink",
+      "device_publishes": false,
+      "message_type": 7,
+      "retained_allowed": true,
+      "qos": 1
+    },
+    {
+      "class": "CONFIG",
+      "suffix": "config",
+      "topic": "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/config",
+      "direction": "downlink",
+      "device_publishes": false,
+      "message_type": 9,
+      "retained_allowed": true,
+      "qos": 1
+    }
+  ],
+  "invalid_topics": [
+    "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/#",
+    "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/+/telemetry",
+    "im/v2/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/telemetry",
+    "im/v1/not-a-tenant/dev-8f3a1c2b9d4e5f60/telemetry",
+    "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8F3A1C2B9D4E5F60/telemetry",
+    "im/v1/7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11/dev-8f3a1c2b9d4e5f60/shadow"
+  ],
+  "bridge_shared_subscription": "$share/bridge/im/v1/#"
+}

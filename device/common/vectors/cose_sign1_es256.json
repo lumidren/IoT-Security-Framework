@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "description": "COSE_Sign1 with ES256 (ECDSA P-256 / SHA-256, raw r||s signature) over the IronMesh protected header {1: -7, 4: kid}. ECDSA signatures are randomized, so these are VERIFICATION vectors: implementations must accept every case with the given public key and reject every 'negative' case with the given error code; they are not expected to reproduce signature_hex.",
+  "generator": "ironmesh_wire 0.1.0",
+  "deterministic": false,
+  "key": {
+    "algorithm": "ES256",
+    "private_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg4CQ3EN9zY6epkGIt\nMxiMO2ummovoYFHUOXvLhWG2U+OhRANCAAQ7LY99ojko5Ajl7iuBTnpJ6cUhNwwF\n3qTXlrHeILtD4oL7DNokvRpvJI2yFVEgJUOuy4PpW3G6UU7+pmZPTHfF\n-----END PRIVATE KEY-----\n",
+    "public_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEOy2PfaI5KOQI5e4rgU56SenFITcM\nBd6k15ax3iC7Q+KC+wzaJL0abySNshVRICVDrsuD6VtxulFO/qZmT0x3xQ==\n-----END PUBLIC KEY-----\n",
+    "public_raw_hex": "043b2d8f7da23928e408e5ee2b814e7a49e9c521370c05dea4d796b1de20bb43e282fb0cda24bd1a6f248db21551202543aecb83e95b71ba514efea6664f4c77c5",
+    "private_scalar_hex": "e0243710df7363a7a990622d33188c3b6ba69a8be86051d4397bcb8561b653e3"
+  },
+  "wrong_key": {
+    "algorithm": "ES256",
+    "private_pem": "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgJAHLXVUutJd7BbeW\nxYXkr5EHbjmrP9yZAFaeuCMbOA6hRANCAARO0Mq+ZjW1FRJyBekvNwJQQBy0Qf0i\nmaslr1ZiD83fmzATv02HmODQNOOROZ6yV8odM23BWK3DCssoX1jS49kU\n-----END PRIVATE KEY-----\n",
+    "public_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETtDKvmY1tRUScgXpLzcCUEActEH9\nIpmrJa9WYg/N35swE79Nh5jg0DTjkTmeslfKHTNtwVitwwrLKF9Y0uPZFA==\n-----END PUBLIC KEY-----\n",
+    "public_raw_hex": "044ed0cabe6635b515127205e92f370250401cb441fd2299ab25af56620fcddf9b3013bf4d8798e0d034e391399eb257ca1d336dc158adc30acb285f58d2e3d914",
+    "private_scalar_hex": "2401cb5d552eb4977b05b796c585e4af91076e39ab3fdc9900569eb8231b380e"
+  },
+  "kid_hex": "3fa1b2c3d4e5f60718293a4b5c6d7e8f",
+  "cases": [
+    {
+      "name": "empty payload",
+      "payload_hex": "",
+      "protected_hex": "a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f",
+      "sig_structure_hex": "846a5369676e61747572653155a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f4040",
+      "signature_hex": "383090a8e416269abf76cd3f0bc48a272239445c8fec918d30d02e85f1da9e4b454dacee5e34f23979db8d54a2c16c0f9035073a2158ea6a74700d947f199096",
+      "message_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa0405840383090a8e416269abf76cd3f0bc48a272239445c8fec918d30d02e85f1da9e4b454dacee5e34f23979db8d54a2c16c0f9035073a2158ea6a74700d947f199096"
+    },
+    {
+      "name": "short payload",
+      "payload_hex": "49726f6e4d657368",
+      "protected_hex": "a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f",
+      "sig_structure_hex": "846a5369676e61747572653155a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f404849726f6e4d657368",
+      "signature_hex": "31eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a31b",
+      "message_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa04849726f6e4d657368584031eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a31b"
+    },
+    {
+      "name": "cbor map payload",
+      "payload_hex": "a40101021a6955b900030104a0",
+      "protected_hex": "a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f",
+      "sig_structure_hex": "846a5369676e61747572653155a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8f404da40101021a6955b900030104a0",
+      "signature_hex": "ca923fdd942050f758dd9739a632fbf610f195aa9a44ba6e7dcee04a9f6472bea28a40275fe19f8dc36197a9e199f500dfdc222a5cd491380d908424a87fd951",
+      "message_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa04da40101021a6955b900030104a05840ca923fdd942050f758dd9739a632fbf610f195aa9a44ba6e7dcee04a9f6472bea28a40275fe19f8dc36197a9e199f500dfdc222a5cd491380d908424a87fd951"
+    }
+  ],
+  "negative": [
+    {
+      "name": "flip payload byte",
+      "message_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa04848726f6e4d657368584031eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a31b",
+      "verify_with": "key",
+      "error": "COSE_SIGNATURE"
+    },
+    {
+      "name": "flip signature byte",
+      "message_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa04849726f6e4d657368584030eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a31b",
+      "verify_with": "key",
+      "error": "COSE_SIGNATURE"
+    },
+    {
+      "name": "flip alg byte (-7 -> -8): algorithm no longer matches the key",
+      "message_hex": "d28455a2012704503fa1b2c3d4e5f60718293a4b5c6d7e8fa04849726f6e4d657368584031eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a31b",
+      "verify_with": "key",
+      "error": "COSE_ALG"
+    },
+    {
+      "name": "flip last kid byte (header still valid, signature breaks)",
+      "message_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8ea04849726f6e4d657368584031eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a31b",
+      "verify_with": "key",
+      "error": "COSE_SIGNATURE"
+    },
+    {
+      "name": "wrong public key",
+      "message_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa04849726f6e4d657368584031eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a31b",
+      "verify_with": "wrong_key",
+      "error": "COSE_SIGNATURE"
+    },
+    {
+      "name": "tag 18 removed",
+      "message_hex": "8455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa04849726f6e4d657368584031eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a31b",
+      "verify_with": "key",
+      "error": "COSE_TAG"
+    },
+    {
+      "name": "unprotected header not empty",
+      "message_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa101264849726f6e4d657368584031eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a31b",
+      "verify_with": "key",
+      "error": "COSE_HEADER"
+    },
+    {
+      "name": "signature truncated",
+      "message_hex": "d28455a2012604503fa1b2c3d4e5f60718293a4b5c6d7e8fa04849726f6e4d657368583f31eaa934b8c9600b25c79ba923508cb45586ba266b8c90c702aa659cc60bf4205237250cf5f5378968761fe745708cdb8018af319ed1187844b01ee1c289a3",
+      "verify_with": "key",
+      "error": "COSE_SIGNATURE"
+    }
+  ]
+}
