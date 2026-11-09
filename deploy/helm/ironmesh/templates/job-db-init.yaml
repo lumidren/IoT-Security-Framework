@@ -18,7 +18,9 @@ data:
     #!/usr/bin/env bash
     # Creates the four IronMesh databases and the per-service roles (idempotent).
     #   <db>_owner  LOGIN  owns the schema, runs migrations
-    #   <db>_app    LOGIN  runtime role; never owns tables so row-level security applies
+    #   <db>_app    LOGIN  runtime role; never owns tables so row-level security applies.
+    #               Table grants come from each service's migration (append-only tables such as
+    #               audit_events / firmware stay INSERT+SELECT), so no default privileges here.
     #   ironmesh_backup   LOGIN  read-only (pg_read_all_data) for scripts/backup/pg_backup.sh
     # With DB_IAM_AUTH=true every role is granted rds_iam and no password is set.
     set -euo pipefail
@@ -83,10 +85,7 @@ data:
     REVOKE ALL ON SCHEMA public FROM PUBLIC;
     SELECT format('GRANT ALL ON SCHEMA public TO %I', :'owner') \gexec
     SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'app') \gexec
-    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', :'owner', :'app') \gexec
-    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %I', :'owner', :'app') \gexec
-    SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', :'app') \gexec
-    SELECT format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', :'app') \gexec
+    SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'app') \gexec
     SQL
       echo "database ${db}: ok"
     done
@@ -94,6 +93,8 @@ data:
     ensure_role ironmesh_backup true
     set_password ironmesh_backup "${BACKUP_DB_PASSWORD:-}"
     psql_admin -d postgres -c 'GRANT pg_read_all_data TO ironmesh_backup'
+    # pg_dump cannot read tables with forced row-level security without BYPASSRLS.
+    psql_admin -d postgres -c 'ALTER ROLE ironmesh_backup BYPASSRLS'
     for db in registry ota pki anomaly; do
       psql_admin -d postgres -v db="${db}" <<'SQL'
     SELECT format('GRANT CONNECT ON DATABASE %I TO ironmesh_backup', :'db') \gexec

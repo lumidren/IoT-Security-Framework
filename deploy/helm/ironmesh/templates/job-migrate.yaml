@@ -1,0 +1,103 @@
+{{- /*
+Schema migrations as the schema owner, before the service pods of an upgrade roll (pre-upgrade)
+and right after a first install (post-install; the service pods retry until the schema exists).
+
+  registry  alembic -c /srv/alembic.ini upgrade head   REGISTRY_MIGRATION_DATABASE_URL
+  ota       python -m ironmesh_ota.migrate             OTA_MIGRATION_DATABASE_URL
+
+Both DSNs are read from the service Secret (services.<name>.secretKeys). anomaly applies its
+schema at start (ANOMALY_DATABASE_MIGRATE_URL) and pki migrates itself with PKI_DATABASE_URL.
+*/}}
+{{- if .Values.migrations.enabled }}
+{{- $jobs := dict "registry" (list "alembic" "-c" "/srv/alembic.ini" "upgrade" "head") "ota" (list "python" "-m" "ironmesh_ota.migrate") }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# Hook pods (db-init, migrate) may reach PostgreSQL; DNS is allowed namespace-wide.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-db-hooks
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade,post-install
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - db-init
+          - migrate
+  policyTypes:
+    - Egress
+  egress:
+    {{- include "ironmesh.np.egressToPostgres" (dict "root" $) | nindent 4 }}
+{{- end }}
+{{- range $name, $command := $jobs }}
+{{- $svc := index $.Values.services $name }}
+{{- if $svc.enabled }}
+{{- $ctx := dict "root" $ "name" $name }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ironmesh.svcName" $ctx }}-migrate
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: migrate
+    ironmesh.dev/service: {{ $name }}
+  annotations:
+    helm.sh/hook: post-install,pre-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ $.Values.migrations.backoffLimit }}
+  ttlSecondsAfterFinished: {{ $.Values.migrations.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "ironmesh.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: migrate
+        ironmesh.dev/service: {{ $name }}
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      serviceAccountName: {{ include "ironmesh.svcName" $ctx }}
+      securityContext:
+        {{- include "ironmesh.podSecurityContext" $ | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "ironmesh.image" (dict "root" $ "svc" $svc) | quote }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          {{- if eq $name "registry" }}
+          workingDir: /srv
+          {{- end }}
+          command:
+            {{- toYaml $command | nindent 12 }}
+          securityContext:
+            {{- include "ironmesh.containerSecurityContext" $ | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "ironmesh.secretName" $ctx }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+{{- end }}
+{{- end }}
+{{- end }}
