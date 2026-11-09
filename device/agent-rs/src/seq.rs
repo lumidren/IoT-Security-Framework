@@ -12,16 +12,33 @@ use crate::wire::cose::Kid;
 use crate::wire::envelope::{InMemoryReplayStore, ReplayStore};
 use crate::wire::ids::Direction;
 
-/// Wall clock with an adjustable offset (DUT `set_clock`) and a monotonic origin.
+/// 2024-01-01T00:00:00Z. A device clock before this is treated as unset (threat model T-10).
+pub const CLOCK_UNSET_BEFORE: u64 = 1_704_067_200;
+
+/// A clock this far (s) behind a certificate's `notBefore` is still considered plausible (it is
+/// well inside the +/-300 s envelope window); further behind, the time hint applies.
+pub const TIME_HINT_TOLERANCE_S: u64 = 60;
+
+/// Wall clock with an adjustable offset (DUT `set_clock`), a monotonic origin and an optional
+/// **authenticated time floor** (T-10).
+///
+/// The floor is a `(unix seconds, monotonic ms)` anchor taken from the `Date` header of a
+/// mutually authenticated EST response ([`Clock::apply_time_hint`]); while it is set,
+/// [`Clock::now_unix`] never returns less than `anchor + elapsed monotonic time`, so time never
+/// moves backwards below the last authenticated server time. Residual risk: this is time from a
+/// trusted server over TLS, not a secure time source - it is only as good as the EST server's
+/// clock, the HTTP `Date` header has 1 s resolution, and it can only move the clock *forward*
+/// (a clock that runs fast is not corrected; the receivers' skew window rejects it).
 #[derive(Debug)]
 pub struct Clock {
     offset_s: AtomicI64,
     origin: Instant,
+    floor: Mutex<Option<(u64, u64)>>,
 }
 
 impl Default for Clock {
     fn default() -> Self {
-        Self { offset_s: AtomicI64::new(0), origin: Instant::now() }
+        Self { offset_s: AtomicI64::new(0), origin: Instant::now(), floor: Mutex::new(None) }
     }
 }
 
@@ -32,17 +49,62 @@ impl Clock {
         Self::default()
     }
 
-    /// Unix seconds including the offset.
-    #[must_use]
-    pub fn now_unix(&self) -> u64 {
+    fn wall_unix(&self) -> u64 {
         let sys = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
         u64::try_from(sys.saturating_add(self.offset_s.load(Ordering::Relaxed))).unwrap_or(0)
     }
 
-    /// Make `now_unix()` return `unix_s` from now on.
+    fn floor_now(&self) -> Option<u64> {
+        let (unix_s, at_ms) = (*self.floor.lock().unwrap_or_else(std::sync::PoisonError::into_inner))?;
+        Some(unix_s.saturating_add(self.monotonic_ms().saturating_sub(at_ms) / 1000))
+    }
+
+    /// Unix seconds including the offset, never below the authenticated time floor.
+    #[must_use]
+    pub fn now_unix(&self) -> u64 {
+        let wall = self.wall_unix();
+        self.floor_now().map_or(wall, |f| wall.max(f))
+    }
+
+    /// Make `now_unix()` return `unix_s` from now on. An explicit setting (DUT `set_clock`)
+    /// replaces the time floor.
     pub fn set_unix(&self, unix_s: u64) {
         let sys = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
         self.offset_s.store(i64::try_from(unix_s).unwrap_or(i64::MAX) - sys, Ordering::Relaxed);
+        *self.floor.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    /// Raise the time floor to `unix_s` (from now on `now_unix() >= unix_s + elapsed`). Returns
+    /// whether the clock moved; it never moves backwards.
+    pub fn raise_floor(&self, unix_s: u64) -> bool {
+        if unix_s <= self.now_unix() {
+            return false;
+        }
+        *self.floor.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((unix_s, self.monotonic_ms()));
+        true
+    }
+
+    /// The current floor anchor (unix seconds), if any.
+    #[must_use]
+    pub fn floor(&self) -> Option<u64> {
+        self.floor_now()
+    }
+
+    /// T-10: apply the `Date` of a mutually authenticated EST response. Only when the device
+    /// clock is obviously unset (before [`CLOCK_UNSET_BEFORE`]) or more than
+    /// [`TIME_HINT_TOLERANCE_S`] behind the newly issued certificate's `notBefore`, and only
+    /// forward. Returns the new time when the clock moved.
+    pub fn apply_time_hint(&self, server_time: u64, cert_not_before: u64) -> Option<u64> {
+        if server_time < CLOCK_UNSET_BEFORE {
+            return None; // an implausible server time is ignored, never trusted
+        }
+        let now = self.now_unix();
+        let unset = now < CLOCK_UNSET_BEFORE;
+        let behind_cert = now.saturating_add(TIME_HINT_TOLERANCE_S) < cert_not_before;
+        if !(unset || behind_cert) {
+            return None;
+        }
+        self.raise_floor(server_time).then_some(server_time)
     }
 
     /// Milliseconds since the clock was created (monotonic).
@@ -339,5 +401,42 @@ mod tests {
         c.set_unix(1_000);
         assert!((1_000..1_003).contains(&c.now_unix()));
         assert!(c.monotonic_ms() < 10_000);
+    }
+
+    const SERVER: u64 = 1_790_000_000; // 2026-09
+
+    #[test]
+    fn time_hint_fixes_an_unset_clock_and_never_goes_backwards() {
+        let c = Clock::new();
+        c.set_unix(86_400); // RTC-less device after power loss: 1970-01-02
+        assert_eq!(c.apply_time_hint(SERVER, SERVER - 10), Some(SERVER));
+        assert!((SERVER..SERVER + 3).contains(&c.now_unix()));
+        assert!(c.floor().is_some());
+        // A second (older) hint cannot move time backwards.
+        assert_eq!(c.apply_time_hint(SERVER - 1000, 0), None);
+        assert!(c.now_unix() >= SERVER);
+        // An implausible server time is never applied.
+        let d = Clock::new();
+        d.set_unix(86_400);
+        assert_eq!(d.apply_time_hint(1_000_000, 0), None);
+        assert!(d.now_unix() < CLOCK_UNSET_BEFORE);
+        // An explicit set_clock (DUT) replaces the floor.
+        c.set_unix(CLOCK_UNSET_BEFORE + 5);
+        assert!(c.floor().is_none());
+        assert!(c.now_unix() < SERVER);
+    }
+
+    #[test]
+    fn time_hint_only_when_behind_the_certificate() {
+        let c = Clock::new();
+        c.set_unix(SERVER);
+        // Plausible clock: no change, even if the server is a little ahead.
+        assert_eq!(c.apply_time_hint(SERVER + 30, SERVER + 30), None);
+        assert!(c.now_unix() < SERVER + 30);
+        // Clock (after 2024) but well before the issued certificate's notBefore.
+        assert_eq!(c.apply_time_hint(SERVER + 3600, SERVER + 3590), Some(SERVER + 3600));
+        assert!(c.now_unix() >= SERVER + 3600);
+        assert_eq!(c.apply_time_hint(SERVER, SERVER + 7200), None, "never backwards");
+        assert!(!c.raise_floor(SERVER));
     }
 }

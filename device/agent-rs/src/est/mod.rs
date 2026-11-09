@@ -120,6 +120,10 @@ fn parse_http_date(v: &str) -> Option<u64> {
     u64::try_from(days * 86400).ok().map(|d| d + hms[0] * 3600 + hms[1] * 60 + hms[2])
 }
 
+fn http_date(headers: &http::HeaderMap) -> Option<u64> {
+    headers.get(http::header::DATE).and_then(|d| d.to_str().ok()).and_then(parse_http_date)
+}
+
 impl EstClient {
     /// New client.
     #[must_use]
@@ -193,16 +197,27 @@ impl EstClient {
     /// # Errors
     /// [`EstError`].
     pub async fn nonce(&self) -> Result<[u8; 32], EstError> {
+        self.nonce_and_date().await.map(|(n, _)| n)
+    }
+
+    /// `GET /ironmesh/nonce` -> 32-byte nonce and the response's `Date` (unix s, if parseable).
+    /// The `Date` comes over the mutually authenticated, pinned EST connection (T-10 time hint).
+    ///
+    /// # Errors
+    /// [`EstError`].
+    pub async fn nonce_and_date(&self) -> Result<([u8; 32], Option<u64>), EstError> {
         #[derive(serde::Deserialize)]
         struct NonceResponse {
             nonce: String,
         }
         let resp = Self::ok(self.request(http::Method::GET, &format!("{BASE_PATH}/ironmesh/nonce"), &[], Vec::new()).await?)?;
+        let date = http_date(&resp.headers);
         let parsed: NonceResponse = serde_json::from_slice(&resp.body).map_err(|e| EstError::Protocol(format!("nonce JSON: {e}")))?;
         let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(parsed.nonce.trim_end_matches('='))
             .map_err(|e| EstError::Protocol(format!("nonce base64url: {e}")))?;
-        raw.try_into().map_err(|_| EstError::Protocol("nonce must be 32 bytes".into()))
+        let nonce = raw.try_into().map_err(|_| EstError::Protocol("nonce must be 32 bytes".into()))?;
+        Ok((nonce, date))
     }
 
     /// `POST /simpleenroll` or `/simplereenroll` with the attestation header.
@@ -227,7 +242,7 @@ impl EstClient {
                     .map_err(|e| EstError::Protocol(format!("bundle base64: {e}")))?,
             ),
         };
-        let server_time = resp.headers.get(http::header::DATE).and_then(|d| d.to_str().ok()).and_then(parse_http_date);
+        let server_time = http_date(&resp.headers);
         Ok(Enrollment { certs, bundle, server_time })
     }
 }
@@ -244,6 +259,10 @@ mod tests {
         assert_eq!(parse_http_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
         assert_eq!(parse_http_date("garbage"), None);
         assert_eq!(parse_http_date("Sun, 06 Foo 1994 08:49:37 GMT"), None);
+        let mut h = http::HeaderMap::new();
+        assert_eq!(http_date(&h), None);
+        h.insert(http::header::DATE, http::HeaderValue::from_static("Mon, 09 Nov 2026 12:00:00 GMT"));
+        assert_eq!(http_date(&h), Some(1_794_225_600));
         assert_eq!(EstError::Http { status: 403, reason: "x".into() }.http_status(), 403);
         assert_eq!(EstError::Protocol("x".into()).http_status(), 0);
         assert!(EstError::Connect(ConnectFailure::Network, "x".into()).to_string().contains("network"));

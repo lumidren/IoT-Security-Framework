@@ -157,6 +157,30 @@ async fn quarantined_device_enrollment_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unset_clock_is_raised_to_the_authenticated_est_time() {
+    // T-10: an RTC-less device that comes up at 1970 enrolls (the attestation is timestamped
+    // with the Date of the pinned, mutually authenticated nonce response), and the floor is
+    // persisted so a restart with an unset clock does not fall back below it.
+    use ironmesh_agent::seq::CLOCK_UNSET_BEFORE;
+    let wall = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let env = Env::new(3600).await;
+    let (agent, _rx) = env.start().await;
+    agent.set_clock(86_400);
+    assert!(agent.clock().now_unix() < CLOCK_UNSET_BEFORE);
+    let out = agent.enroll().await.unwrap();
+    let hint = out.time_hint.expect("the clock was moved to the EST server time");
+    assert!(hint + 5 >= wall() && hint <= wall() + 5);
+    assert!(agent.clock().now_unix() >= hint);
+    agent.set_clock(86_400);
+    let (agent2, _rx2) = env.restart(&agent, RebootReason::Requested).await;
+    assert!(agent2.clock().now_unix() >= hint, "persisted floor applied after restart");
+    // A plausible clock is left alone by a later enrollment.
+    let out = agent2.renew().await.unwrap();
+    assert!(out.time_hint.is_none());
+    agent2.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rogue_broker_and_tls12_broker_are_rejected() {
     let mut env = Env::new(3600).await;
     let (agent, _rx, _ev) = enrolled_and_connected(&env).await;
@@ -437,6 +461,20 @@ async fn ota_tamper_rejection_delta_update_health_gate_and_rollback() {
     let r = ota_outcome(&mut ev, c2).await;
     assert_eq!((r["state"].as_str(), r["code"].as_str()), (Some("rejected"), Some("COSE_UNKNOWN_KEY")));
     assert_eq!(r["error"], "untrusted_key");
+    // T-60: a validly signed update whose artifact host is not on the default allowlist (the
+    // configured EST host, 127.0.0.1) is refused before anything is downloaded.
+    let c_host = "0f0d2d7a-6a11-4a4f-9c1b-7e4b1a9c3c2f";
+    let off_list = OtaNotify {
+        campaign_id: c_host.into(),
+        manifest: fw.signed.clone(),
+        url: format!("https://localhost:{}/fw/v2.bin", env.artifacts.0.port()),
+        delta_from: None,
+    };
+    env.broker.inject(DEVICE, &topic, env.downlink(42, env.now(), Body::OtaNotify(off_list), None), true);
+    let r = ota_outcome(&mut ev, c_host).await;
+    assert_eq!((r["state"].as_str(), r["error"].as_str()), (Some("rejected"), Some("download")));
+    assert_eq!(r["code"], "URL_NOT_ALLOWED");
+    assert_eq!(agent.ota_slots()["active_slot"], "a");
     // C-OTA-1: not signed at all (garbage manifest).
     let c3 = "0f0d2d7a-6a11-4a4f-9c1b-7e4b1a9c3c23";
     let unsigned = Fw {
@@ -454,13 +492,13 @@ async fn ota_tamper_rejection_delta_update_health_gate_and_rollback() {
         })
         .unwrap(),
     };
-    env.broker.inject(DEVICE, &topic, notify(&env, 42, c3, &unsigned, "v2.bin", None), true);
+    env.broker.inject(DEVICE, &topic, notify(&env, 43, c3, &unsigned, "v2.bin", None), true);
     let r = ota_outcome(&mut ev, c3).await;
     assert_eq!((r["state"].as_str(), r["error"].as_str()), (Some("rejected"), Some("unsigned")));
     // C-OTA-4: downgrade.
     let (old, _) = firmware(&env, v2.clone(), "0.9.0", 50, &env.pki.fw_key, None);
     let c4 = "0f0d2d7a-6a11-4a4f-9c1b-7e4b1a9c3c24";
-    env.broker.inject(DEVICE, &topic, notify(&env, 43, c4, &old, "v2.bin", None), true);
+    env.broker.inject(DEVICE, &topic, notify(&env, 44, c4, &old, "v2.bin", None), true);
     let r = ota_outcome(&mut ev, c4).await;
     assert_eq!((r["code"].as_str(), r["error"].as_str()), (Some("MF_ROLLBACK"), Some("downgrade")));
     assert!(reboots.try_recv().is_err(), "no rejected update triggers a reboot");
@@ -469,7 +507,7 @@ async fn ota_tamper_rejection_delta_update_health_gate_and_rollback() {
     let (fw2, patch) = firmware(&env, v2.clone(), "2.0.0", 200, &env.pki.fw_key, Some(&base));
     env.artifacts.1 .0.lock().unwrap().insert("v2.patch".into(), patch.unwrap());
     let c5 = "0f0d2d7a-6a11-4a4f-9c1b-7e4b1a9c3c25";
-    env.broker.inject(DEVICE, &topic, notify(&env, 44, c5, &fw2, "v2.patch", Some(Sha256::digest(&base).into())), true);
+    env.broker.inject(DEVICE, &topic, notify(&env, 45, c5, &fw2, "v2.patch", Some(Sha256::digest(&base).into())), true);
     assert_eq!(ota_outcome(&mut ev, c5).await["state"], "rebooting");
     assert_eq!(tokio::time::timeout(T, reboots.recv()).await.unwrap(), Some(RebootReason::OtaApply));
     let (agent, mut reboots) = env.restart(&agent, RebootReason::OtaApply).await;
@@ -495,7 +533,7 @@ async fn ota_tamper_rejection_delta_update_health_gate_and_rollback() {
     let (fw3, _) = firmware(&env, v3.clone(), "3.0.0", 300, &env.pki.fw_key, None);
     env.artifacts.1 .0.lock().unwrap().insert("v3.bin".into(), v3);
     let c6 = "0f0d2d7a-6a11-4a4f-9c1b-7e4b1a9c3c26";
-    env.broker.inject(DEVICE, &topic, notify(&env, 45, c6, &fw3, "v3.bin", None), true);
+    env.broker.inject(DEVICE, &topic, notify(&env, 46, c6, &fw3, "v3.bin", None), true);
     assert_eq!(ota_outcome(&mut ev, c6).await["state"], "rebooting");
     assert_eq!(tokio::time::timeout(T, reboots.recv()).await.unwrap(), Some(RebootReason::OtaApply));
     env.broker.state.lock().unwrap().drop_telemetry_acks = true;

@@ -10,6 +10,7 @@ use crate::est::bundle::{self, TrustBundle};
 use crate::est::{EstClient, EstError};
 use crate::identity::{IdentityError, IdentitySigner, KeySlot, SharedIdentity};
 use crate::persist;
+use crate::seq::Clock;
 use crate::telemetry::FirmwareInfo;
 use crate::tls::{self, ClientIdentity, PinnedVerifier};
 use crate::wire::attestation;
@@ -201,6 +202,8 @@ pub struct EnrollOutcome {
     pub reenroll: bool,
     /// Server time from the `Date` header.
     pub server_time: Option<u64>,
+    /// Authenticated time floor applied during this enrollment (T-10), if the clock was moved.
+    pub time_hint: Option<u64>,
 }
 
 /// Run one enrollment (bootstrap or re-enrollment) and persist the result.
@@ -208,6 +211,17 @@ pub struct EnrollOutcome {
 /// # Errors
 /// [`EnrollError`]; on any failure the operational key and certificate are unchanged.
 pub async fn enroll(req: EnrollRequest<'_>) -> Result<EnrollOutcome, EnrollError> {
+    enroll_with_clock(req, None).await
+}
+
+/// [`enroll`] with a T-10 time hint: when `clock` is set, the `Date` of the authenticated EST
+/// responses is applied with [`Clock::apply_time_hint`] - after the nonce (before the attestation
+/// is timestamped, against the presented certificate's `notBefore`) and after issuance (against
+/// the new certificate's `notBefore`). [`EnrollOutcome::time_hint`] reports a moved clock.
+///
+/// # Errors
+/// [`EnrollError`]; on any failure the operational key and certificate are unchanged.
+pub async fn enroll_with_clock(req: EnrollRequest<'_>, clock: Option<&Clock>) -> Result<EnrollOutcome, EnrollError> {
     let identity = req.identity;
     let (current, slot) = if req.force_bootstrap {
         req.creds
@@ -236,7 +250,15 @@ pub async fn enroll(req: EnrollRequest<'_>) -> Result<EnrollOutcome, EnrollError
     )
     .map_err(|e| EnrollError::NotProvisioned(e.to_string()))?;
     let client = EstClient::new(req.est_host, req.est_port, tls_config, req.timeout);
-    let nonce = client.nonce().await?;
+    let (nonce, nonce_date) = client.nonce_and_date().await?;
+    let mut now = req.now;
+    let mut time_hint = None;
+    if let (Some(clock), Some(t)) = (clock, nonce_date) {
+        if let Some(applied) = clock.apply_time_hint(t, current.not_before) {
+            time_hint = Some(applied);
+            now = clock.now_unix();
+        }
+    }
     let pending = identity.generate_operational_key()?;
     let id2 = identity.clone();
     let sign = move |d: &[u8; 32]| id2.sign(KeySlot::Pending, d).map_err(|e| e.to_string());
@@ -248,7 +270,7 @@ pub async fn enroll(req: EnrollRequest<'_>) -> Result<EnrollOutcome, EnrollError
         &signer,
         &Kid::Bytes(current.kid.clone()),
         req.seq,
-        req.now,
+        now,
         &nonce,
         &csr,
         &req.fw.hash,
@@ -268,7 +290,13 @@ pub async fn enroll(req: EnrollRequest<'_>) -> Result<EnrollOutcome, EnrollError
     if leaf.subject_cn.as_deref() != Some(identity.device_id()) {
         return Err(EnrollError::Invalid("issued certificate CN is not the device id".into()));
     }
-    if leaf.not_after <= req.now {
+    if let (Some(clock), Some(t)) = (clock, resp.server_time) {
+        if let Some(applied) = clock.apply_time_hint(t, leaf.not_before) {
+            time_hint = Some(applied);
+            now = clock.now_unix();
+        }
+    }
+    if leaf.not_after <= now {
         return Err(EnrollError::Invalid("issued certificate is already expired".into()));
     }
     let bundle = match (&resp.bundle, req.bundle_key) {
@@ -296,6 +324,7 @@ pub async fn enroll(req: EnrollRequest<'_>) -> Result<EnrollOutcome, EnrollError
         bundle,
         reenroll,
         server_time: resp.server_time,
+        time_hint,
     })
 }
 
