@@ -76,8 +76,19 @@ impl SeqCounter {
     /// # Errors
     /// I/O errors.
     pub fn open(path: &Path, block: u64) -> std::io::Result<Self> {
-        let file: SeqFile = persist::read_json(path)?.unwrap_or_default();
-        let next = file.reserved_until.max(1);
+        let stored: Option<SeqFile> = persist::read_json(path)?;
+        let next = match stored {
+            // A restart burns one value past the persisted bound, and the bump is persisted at
+            // once: every boot moves the counter strictly forward even if nothing is sent, so
+            // `status.seq_out` after a reboot is always greater than before (conformance C-RPL-4)
+            // and matches the C core, which resumes above its reserved high-water mark.
+            Some(file) => {
+                let bumped = file.reserved_until.max(1).saturating_add(1);
+                persist::write_json(path, &SeqFile { reserved_until: bumped })?;
+                bumped
+            }
+            None => 1,
+        };
         Ok(Self { path: Some(path.to_path_buf()), state: Mutex::new((next, next)), block: block.max(1) })
     }
 
@@ -263,7 +274,20 @@ mod tests {
             strict.next().unwrap();
         }
         drop(strict);
-        assert_eq!(SeqCounter::open(&dir.path().join("s2.json"), 1).unwrap().next().unwrap(), 6);
+        let after = SeqCounter::open(&dir.path().join("s2.json"), 1).unwrap().next().unwrap();
+        assert!(after > 5, "{after}");
+        // Reboots without sending still move the counter forward every time.
+        let idle = dir.path().join("idle.json");
+        let first = SeqCounter::open(&idle, 1).unwrap();
+        first.next().unwrap();
+        let before = first.peek();
+        drop(first);
+        let mut last = before;
+        for _ in 0..3 {
+            let reopened = SeqCounter::open(&idle, 1).unwrap().peek();
+            assert!(reopened > last, "{reopened} <= {last}");
+            last = reopened;
+        }
         let m = SeqCounter::in_memory(7);
         assert_eq!(m.next().unwrap(), 7);
     }
