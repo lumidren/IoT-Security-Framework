@@ -14,7 +14,7 @@ detection with automatic quarantine · a full fleet console.
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs&logoColor=white)
 ![MQTT 5](https://img.shields.io/badge/MQTT-5.0-660066?logo=mqtt&logoColor=white)
-![ETSI EN 303 645](https://img.shields.io/badge/ETSI%20EN%20303%20645-0%20provisions%20unmet-2ea44f)
+![ETSI EN 303 645](https://img.shields.io/badge/ETSI%20EN%20303%20645-45%20of%2067%20satisfied%2C%200%20unmet-2ea44f)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 ![IronMesh fleet console: overview](docs/images/console-overview.png)
@@ -352,17 +352,24 @@ replay, stale and forged command rejection, offline buffering, and encrypted con
 
 | Framework | Provisions | Satisfied | Partially | Integrator / N/A | Not satisfied |
 |---|---|---|---|---|---|
-| ETSI EN 303 645 v2.1.1 | 67 | 47 | 9 | 11 | **0** |
+| ETSI EN 303 645 v2.1.1 | 67 | 45 | 11 | 11 | **0** |
 | NIST IR 8259A | 18 | 16 | 2 | 0 | **0** |
-| IEC 62443-4-2 (selected CRs) | 42 | 37 | 3 | 2 | **0** |
+| IEC 62443-4-2 (selected CRs) | 42 | 30 | 10 | 2 | **0** |
 | EU Cyber Resilience Act, Annex I | 22 | 17 | 5 | 0 | **0** |
 
-Each row maps a clause to the control and the evidence that satisfies it, in
-[COMPLIANCE_MATRIX.md](COMPLIANCE_MATRIX.md). The STRIDE model in
-[THREAT_MODEL.md](THREAT_MODEL.md) covers 79 threats across device, network and cloud, each mapped
-to its mitigation. Four are explicitly **not mitigated**, with residual risk and
-compensating controls: secure-element side channels, a factory insider holding the Factory CA,
-compromise during the offline root ceremony, and volumetric DoS on the broker.
+Each row maps a clause to the control that satisfies it, with evidence at `file:line`, in
+[COMPLIANCE_MATRIX.md](COMPLIANCE_MATRIX.md). "Partially" rows name the gap and sit in the gap
+register; none is marked Satisfied without code that does it.
+
+The STRIDE model in [THREAT_MODEL.md](THREAT_MODEL.md) covers 79 threats across device, network
+and cloud. Every mitigation cites the enforcing code at `file:line`, and all 457 references are
+checked by `scripts/resolve_threat_refs.py --strict` in CI. Threats that are only partially
+mitigated say exactly what is missing. A few are explicitly **not mitigated**, each with residual
+risk and compensating controls:
+- secure-element side channels
+- a factory insider holding the Factory CA
+- compromise during the offline root ceremony
+- volumetric DoS on the broker
 
 ---
 
