@@ -164,7 +164,7 @@
     },
     "/emqx/authn": { "post": { "summary": "EMQX HTTP authentication backend (internal)", "responses": { "200": { "description": "{result: allow|deny, client_attrs}" } } } },
     "/emqx/authz": { "post": { "summary": "EMQX HTTP authorization backend (internal)", "responses": { "200": { "description": "{result: allow|deny}" } } } },
-    "/internal/v1/revocations": { "post": { "summary": "Signed PKI revocation event (internal)", "responses": { "202": { "description": "Accepted" } } } },
+    "/internal/v1/revocations": { "post": { "summary": "Signed PKI event (internal): a revocation, or event=device_release to lift a device-level deny", "responses": { "202": { "description": "Accepted" } } } },
     "/healthz": { "get": { "summary": "Liveness", "responses": { "200": { "description": "OK" } } } },
     "/readyz": { "get": { "summary": "Readiness", "responses": { "200": { "description": "Ready" }, "503": { "description": "Not ready" } } } },
     "/metrics": { "get": { "summary": "Prometheus metrics", "responses": { "200": { "description": "Metrics" } } } }

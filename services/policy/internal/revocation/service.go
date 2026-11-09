@@ -28,14 +28,34 @@ import (
 // DeviceDeny asks for a device-level deny (revoke-all: registry quarantine or decommission).
 // Without it only Serial is denied, unless Reason is keyCompromise or cessationOfOperation (see
 // DeviceDenyReason), so a superseded certificate does not lock the renewed device out.
+//
+// Kind ("event" on the wire) selects the event type: empty or "revocation" is a revocation, and
+// "device_release" ({event_id, event, device_id, tenant_id, released_at}) lifts the device-level
+// deny of a device the registry released from quarantine (serial-level denies stay).
 type Event struct {
 	EventID    string    `json:"event_id"`
+	Kind       string    `json:"event,omitempty"`
 	Serial     string    `json:"serial"`
 	DeviceID   string    `json:"device_id"`
 	TenantID   string    `json:"tenant_id"`
 	Reason     string    `json:"reason"`
 	RevokedAt  time.Time `json:"revoked_at"`
 	DeviceDeny bool      `json:"device_deny,omitempty"`
+	ReleasedAt time.Time `json:"released_at"`
+}
+
+// Event kinds accepted on POST /internal/v1/revocations.
+const (
+	KindRevocation    = "revocation"
+	KindDeviceRelease = "device_release"
+)
+
+// EventKind returns the normalised kind of e ("revocation" when the body has no "event").
+func (e Event) EventKind() string {
+	if e.Kind == "" {
+		return KindRevocation
+	}
+	return e.Kind
 }
 
 // DeviceDenyReason reports whether a revocation reason deny-lists the whole device:
@@ -55,13 +75,30 @@ type SessionSerials interface {
 	LiveSerial(clientID string) (serial string, known bool)
 }
 
-// Validate checks the event shape.
+// Validate checks the event shape for its kind.
 func (e Event) Validate() error {
 	var errs []error
 	if strings.TrimSpace(e.EventID) == "" {
 		errs = append(errs, errors.New("event_id is required"))
 	} else if len(e.EventID) > 128 {
 		errs = append(errs, errors.New("event_id is too long"))
+	}
+	switch e.EventKind() {
+	case KindRevocation:
+	case KindDeviceRelease:
+		if !identity.IsDeviceID(e.DeviceID) {
+			errs = append(errs, errors.New("device_id is required and must be a device id"))
+		}
+		if !identity.IsTenantID(e.TenantID) {
+			errs = append(errs, errors.New("tenant_id is required and must be a UUID"))
+		}
+		if e.ReleasedAt.IsZero() {
+			errs = append(errs, errors.New("released_at is required"))
+		}
+		return errors.Join(errs...)
+	default:
+		errs = append(errs, fmt.Errorf("event kind %q is not supported", e.Kind))
+		return errors.Join(errs...)
 	}
 	if e.Serial != "" && NormalizeSerial(e.Serial) == "" {
 		errs = append(errs, errors.New("serial is not hexadecimal"))
@@ -262,6 +299,36 @@ func (s *Service) Apply(ctx context.Context, ev Event, source string) (Result, e
 	}
 }
 
+// ReleaseResult describes what ApplyRelease did.
+type ReleaseResult struct {
+	Added     bool `json:"added"`
+	Duplicate bool `json:"duplicate"`
+	// Lifted reports that a device-level deny was removed by this event.
+	Lifted bool `json:"lifted"`
+}
+
+// ApplyRelease records a device_release event: device-level denies of the device revoked at or
+// before released_at stop applying (and later-arriving older ones are ignored), while every
+// revoked serial stays denied, so the released device is admitted only with a newly enrolled
+// certificate. Duplicates (same event_id) are no-ops.
+func (s *Service) ApplyRelease(ev Event) (ReleaseResult, error) {
+	added, lifted, perr := s.cache.Release(Release{
+		EventID:    ev.EventID,
+		DeviceID:   ev.DeviceID,
+		TenantID:   ev.TenantID,
+		ReleasedAt: ev.ReleasedAt.UTC(),
+	})
+	if perr != nil {
+		s.log.Error("revocation snapshot not persisted", "event_id", ev.EventID, "err", perr.Error())
+	}
+	if !added {
+		return ReleaseResult{Duplicate: true}, nil
+	}
+	s.log.Info("device release applied", "event_id", ev.EventID, "device_id", ev.DeviceID, "tenant_id", ev.TenantID,
+		"released_at", ev.ReleasedAt.UTC(), "device_deny_lifted", lifted)
+	return ReleaseResult{Added: true, Lifted: lifted}, nil
+}
+
 func (s *Service) run(ctx context.Context) {
 	defer s.wg.Done()
 	ticker := time.NewTicker(s.retryInterval)
@@ -288,8 +355,19 @@ func (s *Service) kick(ctx context.Context, eventID string) {
 	if !ok || e.DeviceID == "" || e.Kicked {
 		return
 	}
+	// A device-level deny lifted by a later release behaves like a serial-scoped revocation: the
+	// released device may already run a session on its newly enrolled certificate.
+	released := e.DeviceDeny && !s.cache.IsRevokedDevice(e.DeviceID)
+	if released && e.Serial == "" {
+		s.metrics.Kicks.WithLabelValues("skipped").Inc()
+		if err := s.cache.MarkKickSkipped(eventID); err != nil {
+			s.log.Error("failed to record skipped kick", "event_id", eventID, "err", err.Error())
+		}
+		s.log.Info("device was released; kick skipped", "device_id", e.DeviceID, "tenant_id", e.TenantID, "event_id", eventID)
+		return
+	}
 	// A serial-scoped revocation only ends the session if it runs on that certificate.
-	if !e.DeviceDeny && e.Serial != "" && s.sessions != nil {
+	if (!e.DeviceDeny || released) && e.Serial != "" && s.sessions != nil {
 		if live, known := s.sessions.LiveSerial(e.DeviceID); known && NormalizeSerial(live) != e.Serial {
 			s.metrics.Kicks.WithLabelValues("skipped").Inc()
 			if err := s.cache.MarkKickSkipped(eventID); err != nil {
@@ -370,7 +448,28 @@ func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		problem.Write(w, r, http.StatusUnprocessableEntity, "revocation event failed validation", strings.Split(err.Error(), "\n")...)
 		return
 	}
+	if ev.EventKind() == KindDeviceRelease {
+		rel, _ := s.ApplyRelease(ev)
+		status := "accepted"
+		if rel.Duplicate {
+			status = "duplicate"
+		} else {
+			s.metrics.RevocationEvents.WithLabelValues(KindDeviceRelease).Inc()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":             status,
+			"event_id":           ev.EventID,
+			"event":              KindDeviceRelease,
+			"device_deny_lifted": rel.Lifted,
+		})
+		return
+	}
 	res, err := s.Apply(r.Context(), ev, SourceEvent)
+	if res.Added {
+		s.metrics.RevocationEvents.WithLabelValues(KindRevocation).Inc()
+	}
 	if err != nil {
 		problem.Write(w, r, http.StatusServiceUnavailable, "revocation accepted into cache but kick could not be queued; retry")
 		return

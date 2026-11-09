@@ -46,6 +46,19 @@ one, or unknown (admitted by another replica / before a restart: the session is 
 renewed device simply reconnects with its current certificate). Revocation snapshots written
 before this change (format 1) keep their device-level meaning.
 
+**device release** (same endpoint, same bearer + HMAC, deduplicated by `event_id`): when the
+registry releases a quarantined device the PKI pushes
+`{"event_id","event":"device_release","device_id","tenant_id","released_at"}` (a body without
+`event` is a revocation; any other `event` value is `422`). The release lifts the **device-level**
+deny of that device: every device-level entry revoked at or before `released_at` stops applying,
+including entries delivered late (out-of-order fan-out), while a quarantine revoked after the
+release denies the device again. Serial-level denies are never lifted, so the certificates revoked
+by the quarantine stay refused (`revoked_serial`) and the device is admitted with the certificate
+it re-enrolls. Releases are stored in the snapshot (format 3, `releases`), so a restarted replica
+keeps the device admitted; unkicked entries of a released device are kicked only like
+serial-scoped ones (or skipped when they name no serial). The response is
+`202 {"status":"accepted"|"duplicate","event_id","event":"device_release","device_deny_lifted"}`.
+
 **authz** (`POST /emqx/authz`, body `{clientid, username, topic, action, qos, retain, client_attrs}`):
 evaluates `policy/rego/mqtt_acl.rego` (package `ironmesh.mqtt`) with the session attributes; the
 decision is cached 10 s keyed by (clientid, topic, action, retain, qos) and flushed on every policy
@@ -90,7 +103,7 @@ retained device publishes, and cross-device/cross-tenant topics.
 | Path | Auth | Purpose |
 |---|---|---|
 | `POST /emqx/authn`, `POST /emqx/authz` | optional hook token | EMQX backends |
-| `POST /internal/v1/revocations` | bearer + HMAC | PKI revocation event → cache, snapshot, kick (202) |
+| `POST /internal/v1/revocations` | bearer + HMAC | PKI revocation event → cache, snapshot, kick (202); `event: "device_release"` lifts the device-level deny (202) |
 | `GET /v1/policy` | bearer admin | active Rego, version, sha256, updated_at/by |
 | `PUT /v1/policy` | bearer owner | compile + embedded invariant tests → 422 diagnostics, else persisted version + atomic hot swap |
 | `POST /v1/policy/evaluate` | bearer operator | dry run with OPA trace, `matched_rules`, never cached |
@@ -112,6 +125,7 @@ verification is skipped only for an `https` URL on a loopback host). Example:
 Metrics: `ironmesh_auth_failures_total{reason}`, `ironmesh_authz_decisions_total{result,action}`,
 `ironmesh_revocation_apply_latency_seconds` and the contract alias
 `ironmesh_revocation_latency_seconds` (revoked_at → kick done), `ironmesh_revocations_total{source}`,
+`ironmesh_revocation_events_total{kind="revocation|device_release"}` (signed PKI events applied, duplicates excluded),
 `ironmesh_kick_total{result="ok|error|skipped"}`, `ironmesh_crl_poll_total{result}`, `ironmesh_registry_lookups_total{result}`.
 
 ## EMQX configuration

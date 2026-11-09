@@ -25,6 +25,9 @@ type Metrics struct {
 	RevocationLatency prometheus.Histogram
 	// Revocations counts revocations applied to the cache by source (event|crl|snapshot).
 	Revocations *prometheus.CounterVec
+	// RevocationEvents counts signed PKI events applied from POST /internal/v1/revocations, by
+	// kind (revocation|device_release); duplicates are not counted.
+	RevocationEvents *prometheus.CounterVec
 	// Kicks counts EMQX session kicks by result (ok|error|skipped; skipped = the live session already
 	// uses another certificate than the revoked serial).
 	Kicks *prometheus.CounterVec
@@ -73,6 +76,10 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name: "ironmesh_revocations_total",
 			Help: "Revocations applied to the in-memory cache, by source.",
 		}, []string{"source"}),
+		RevocationEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ironmesh_revocation_events_total",
+			Help: "Signed PKI events applied from the revocation push, by kind (revocation|device_release).",
+		}, []string{"kind"}),
 		Kicks: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ironmesh_kick_total",
 			Help: "EMQX session kick attempts, by result.",
@@ -100,7 +107,7 @@ func New(reg prometheus.Registerer) *Metrics {
 	}
 	reg.MustRegister(
 		m.AuthFailures, m.AuthnDecisions, m.AuthzDecisions, m.AuthzCache,
-		m.RevocationApplyLatency, m.RevocationLatency, m.Revocations, m.Kicks,
+		m.RevocationApplyLatency, m.RevocationLatency, m.Revocations, m.RevocationEvents, m.Kicks,
 		m.CRLPolls, m.CRLSerials, m.CRLLastSuccess, m.RegistryLookups, m.RevokedEntries,
 	)
 	return m

@@ -7,6 +7,12 @@
 // device_deny event flag) rejects every certificate of the device id. Every other revocation
 // (superseded on renewal, a single revoked serial, CRL entries) denies only its serial, which the
 // authn hook checks against the certificate presented at CONNECT.
+//
+// A device release (Release: the registry released a quarantined device) lifts the device-level
+// deny: every device-level entry of that device revoked at or before released_at stops applying,
+// including such entries that arrive after the release (out-of-order delivery). Serial-level
+// denies are never lifted, so the device is admitted again only with a newly enrolled
+// certificate, and a later quarantine (revoked_at after the release) denies it again.
 package revocation
 
 import (
@@ -27,8 +33,17 @@ const (
 	SourceEvent    = "event"
 	SourceCRL      = "crl"
 	SnapshotName   = "revocations.json"
-	snapshotFormat = 2
+	snapshotFormat = 3
 )
+
+// Release is an applied device_release event.
+type Release struct {
+	EventID    string    `json:"event_id"`
+	DeviceID   string    `json:"device_id"`
+	TenantID   string    `json:"tenant_id,omitempty"`
+	ReleasedAt time.Time `json:"released_at"`
+	AppliedAt  time.Time `json:"applied_at"`
+}
 
 // Entry is one revoked certificate (and, when known, the device that held it).
 type Entry struct {
@@ -51,9 +66,10 @@ type Entry struct {
 }
 
 type snapshot struct {
-	Format  int       `json:"format"`
-	SavedAt time.Time `json:"saved_at"`
-	Entries []Entry   `json:"entries"`
+	Format   int       `json:"format"`
+	SavedAt  time.Time `json:"saved_at"`
+	Entries  []Entry   `json:"entries"`
+	Releases []Release `json:"releases,omitempty"`
 }
 
 // Cache is a concurrency-safe revocation store indexed by event id, device id and serial.
@@ -62,6 +78,8 @@ type Cache struct {
 	entries  map[string]*Entry // by event id
 	byDevice map[string]*Entry
 	bySerial map[string]*Entry
+	releases map[string]*Release  // by event id
+	released map[string]time.Time // device id -> latest released_at
 	path     string
 	now      func() time.Time
 }
@@ -75,6 +93,8 @@ func NewCache(path string, now func() time.Time) *Cache {
 		entries:  make(map[string]*Entry),
 		byDevice: make(map[string]*Entry),
 		bySerial: make(map[string]*Entry),
+		releases: make(map[string]*Release),
+		released: make(map[string]time.Time),
 		path:     path,
 		now:      now,
 	}
@@ -105,6 +125,17 @@ func (c *Cache) Load() (int, error) {
 	legacy := snap.Format < 2
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Releases first, so device-level entries they lifted are not re-indexed.
+	for i := range snap.Releases {
+		r := snap.Releases[i]
+		if r.EventID == "" || r.DeviceID == "" || r.ReleasedAt.IsZero() {
+			continue
+		}
+		if _, dup := c.releases[r.EventID]; dup {
+			continue
+		}
+		c.indexRelease(&r)
+	}
 	n := 0
 	for i := range snap.Entries {
 		e := snap.Entries[i]
@@ -146,6 +177,9 @@ func (c *Cache) Upsert(e Entry) (bool, error) {
 	if _, dup := c.entries[e.EventID]; dup {
 		return false, nil
 	}
+	if _, dup := c.releases[e.EventID]; dup {
+		return false, nil
+	}
 	if e.DeviceID == "" && e.Serial != "" {
 		if _, known := c.bySerial[e.Serial]; known {
 			return false, nil
@@ -157,7 +191,8 @@ func (c *Cache) Upsert(e Entry) (bool, error) {
 
 func (c *Cache) index(e *Entry) {
 	c.entries[e.EventID] = e
-	if e.DeviceID != "" && e.DeviceDeny {
+	// A device-level deny revoked at or before the device's latest release no longer applies.
+	if e.DeviceID != "" && e.DeviceDeny && e.RevokedAt.After(c.released[e.DeviceID]) {
 		if cur, ok := c.byDevice[e.DeviceID]; !ok || !e.RevokedAt.Before(cur.RevokedAt) {
 			c.byDevice[e.DeviceID] = e
 		}
@@ -167,6 +202,74 @@ func (c *Cache) index(e *Entry) {
 			c.bySerial[e.Serial] = e
 		}
 	}
+}
+
+// Release applies a device_release event (see the package comment). It returns whether the event
+// was new and whether it removed the device's active device-level deny; err reports snapshot
+// persistence problems (the in-memory state is updated regardless).
+func (c *Cache) Release(r Release) (added, lifted bool, err error) {
+	if r.EventID == "" {
+		return false, false, errors.New("revocation: release without event id")
+	}
+	if r.DeviceID == "" || r.ReleasedAt.IsZero() {
+		return false, false, errors.New("revocation: release needs a device id and released_at")
+	}
+	if r.AppliedAt.IsZero() {
+		r.AppliedAt = c.now()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, dup := c.releases[r.EventID]; dup {
+		return false, false, nil
+	}
+	if _, dup := c.entries[r.EventID]; dup {
+		return false, false, nil
+	}
+	lifted = c.indexRelease(&r)
+	return true, lifted, c.saveLocked()
+}
+
+// indexRelease records r, advances the device's release watermark and drops the device-level deny
+// it covers. It reports whether a deny was dropped. The caller holds the write lock.
+func (c *Cache) indexRelease(r *Release) bool {
+	c.releases[r.EventID] = r
+	if r.ReleasedAt.After(c.released[r.DeviceID]) {
+		c.released[r.DeviceID] = r.ReleasedAt
+	}
+	cur, ok := c.byDevice[r.DeviceID]
+	if ok && !cur.RevokedAt.After(c.released[r.DeviceID]) {
+		delete(c.byDevice, r.DeviceID)
+		return true
+	}
+	return false
+}
+
+// ReleasedAt returns the latest released_at applied for the device (zero when never released).
+func (c *Cache) ReleasedAt(deviceID string) time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.released[deviceID]
+}
+
+// Releases returns a copy of the applied releases, oldest first.
+func (c *Cache) Releases() []Release {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.releaseListLocked()
+}
+
+func (c *Cache) releaseListLocked() []Release {
+	out := make([]Release, 0, len(c.releases))
+	for _, r := range c.releases {
+		out = append(out, *r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ReleasedAt.Equal(out[j].ReleasedAt) {
+			return out[i].ReleasedAt.Before(out[j].ReleasedAt)
+		}
+		return out[i].EventID < out[j].EventID
+	})
+	return out
 }
 
 // IsRevokedDevice reports whether the device id itself is deny-listed (a device-level revocation;
@@ -282,6 +385,7 @@ func (c *Cache) saveLocked() error {
 		snap.Entries = append(snap.Entries, *e)
 	}
 	sortEntries(snap.Entries)
+	snap.Releases = c.releaseListLocked()
 	raw, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return fmt.Errorf("revocation snapshot: encode: %w", err)
