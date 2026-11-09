@@ -3,11 +3,12 @@
 ``python -m ironmesh_ota.keytool init --out keyring.json [--mldsa]``
 ``python -m ironmesh_ota.keytool rotate --file keyring.json --algorithm Ed25519``
 ``python -m ironmesh_ota.keytool list --file keyring.json``
-``python -m ironmesh_ota.keytool tenant-key --tenant <uuid> --dir tenant-keys``
 
-The passphrase is read from ``OTA_SIGNING_PASSPHRASE`` (or ``OTA_TENANT_KEYS_PASSPHRASE`` for
-tenant keys); it is never accepted on the command line so it cannot leak into shell history.
-Production key rings are wrapped with KMS instead (``signing.kms_wrap_keyring``).
+The passphrase is read from ``OTA_SIGNING_PASSPHRASE``; it is never accepted on the command line
+so it cannot leak into shell history. Production key rings are wrapped with KMS instead
+(``signing.kms_wrap_keyring``). After a rotation the restarted service pushes the new public key
+set to the PKI tenant policy (``services/key_sync.py``). Tenant command keys are held and used
+only by the registry.
 """
 
 from __future__ import annotations
@@ -17,11 +18,6 @@ import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
-
-from ironmesh_wire import ids
 
 from . import signing
 
@@ -54,22 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     p_list = sub.add_parser("list", help="print key ids")
     p_list.add_argument("--file", type=Path, required=True)
-    p_tenant = sub.add_parser("tenant-key", help="create an encrypted tenant command key")
-    p_tenant.add_argument("--tenant", required=True)
-    p_tenant.add_argument("--dir", type=Path, required=True)
     args = parser.parse_args(argv)
-
-    if args.command == "tenant-key":
-        tenant = ids.validate_tenant_id(args.tenant)
-        key = ed25519.Ed25519PrivateKey.generate()
-        pem = key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.BestAvailableEncryption(_passphrase("OTA_TENANT_KEYS_PASSPHRASE")),
-        )
-        _write(args.dir / f"{tenant}.pem", pem)
-        print(f"wrote {args.dir / f'{tenant}.pem'}")
-        return 0
 
     passphrase = _passphrase("OTA_SIGNING_PASSPHRASE")
     if args.command == "init":

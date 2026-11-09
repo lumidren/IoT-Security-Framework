@@ -1,6 +1,11 @@
-"""Rollout engine: stage progression, OtaNotify publication, OtaStatus ingestion, automatic
-halts, timeouts and notify refreshes. Used by the API actions, the controller and the ingest
-path, always inside one tenant-scoped transaction with the campaign row locked."""
+"""Rollout engine: stage progression, OtaNotify requests, OtaStatus ingestion, automatic halts,
+timeouts and notify redelivery. Used by the API actions, the controller and the ingest path,
+always inside one tenant-scoped transaction with the campaign row locked.
+
+OtaNotify envelopes are signed and published by the registry, the only holder of the tenant
+command key (API_CONTRACT §1.12); this service queues the bodies and hands them over after the
+transaction commits. Retained notifies never need re-signing: receivers enforce only the
+future bound of the timestamp window for retainable types (WIRE_FORMAT §3.6 step 9)."""
 
 from __future__ import annotations
 
@@ -8,8 +13,6 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
-
-from opentelemetry import propagate
 
 from ironmesh_wire import OtaState, envelope, ids
 from ironmesh_wire.ids import TopicClass
@@ -35,6 +38,7 @@ from ..domain import (
 )
 from ..integrations.events import BusEvent
 from ..integrations.mqtt import OutboundMessage
+from ..integrations.registry import Downlink
 from ..models import CampaignOut, rfc3339
 from ..observability import get_logger
 from ..problems import not_found
@@ -161,7 +165,9 @@ class Rollout:
         *,
         verify: bool,
     ) -> list[CampaignDevice]:
-        """Sign one OtaNotify per device and queue it (retained) for publication after commit.
+        """Queue one OtaNotify per device for the registry to sign and publish (retained) after
+        the commit. Until the registry accepts it the device's ``last_notified_at`` is null, so
+        the controller's :meth:`redeliver` pass re-sends notifies that were not delivered.
 
         With ``verify`` the full image and every delta used are re-verified against their signed
         manifests first (``ArtifactVerificationError`` on any mismatch), so a tampered artifact
@@ -174,15 +180,11 @@ class Rollout:
             await self.fw.verify_firmware(fw)
             for delta in deltas.values():
                 await self.fw.verify_delta(fw, delta)
-        identity = await self.c.tenant_keys.identity(campaign.tenant_id)
         ttl = self.c.settings.download_url_ttl_s
         full_url = await self.c.store.download_url(fw.image_key, ttl)
         delta_urls = {
             b: await self.c.store.download_url(d.patch_key, ttl) for b, d in deltas.items()
         }
-        carrier: dict[str, str] = {}
-        propagate.inject(carrier)
-        props = tuple((k, v) for k, v in carrier.items() if k == "traceparent")
         updated: list[CampaignDevice] = []
         for dev in devices:
             chosen = (
@@ -196,17 +198,14 @@ class Rollout:
                 url=delta_urls[chosen.base_sha256] if chosen else full_url,
                 delta_from=chosen.base_sha256 if chosen else None,
             )
-            message = envelope.Message(
-                seq=self.c.sequencer.next(), ts=int(now.timestamp()), body=body
+            effects.notifies.append(
+                Downlink(campaign.tenant_id, campaign.id, dev.device_id, body, retain=True)
             )
-            payload = envelope.encode(message, identity)
-            topic = ids.build_topic(str(campaign.tenant_id), dev.device_id, TopicClass.OTA_NOTIFY)
-            effects.messages.append(OutboundMessage(topic, payload, True, 1, props))
             new = replace(
                 dev,
                 state=DeviceState.NOTIFIED if dev.state is DeviceState.PENDING else dev.state,
                 notified_at=dev.notified_at or now,
-                last_notified_at=now,
+                last_notified_at=None,  # set once the registry has accepted the notify
                 updated_at=now,
                 notify_count=dev.notify_count + 1,
                 delta_from=body.delta_from,
@@ -453,15 +452,32 @@ class Rollout:
         )
         return len(failed)
 
-    async def refresh(self, repo: TenantRepository, effects: Effects, campaign: Campaign) -> int:
-        """Re-sign retained notifies that devices have not acknowledged before they age past the
-        receivers' 300 s timestamp window."""
+    async def redeliver(
+        self,
+        repo: TenantRepository,
+        effects: Effects,
+        campaign: Campaign,
+        *,
+        withdrawn: bool = False,
+    ) -> int:
+        """Re-send notifies the registry has not accepted for ``OTA_NOTIFY_RETRY_S``.
+
+        With ``withdrawn`` (resume after a halt, which cleared the retained notifies) every
+        notified device that has not acknowledged is re-sent, delivered or not.
+        """
         now = self.c.clock()
-        before = now - timedelta(seconds=self.c.settings.notify_refresh_s)
-        candidates = await repo.find_campaign_devices(
-            campaign.id, states={DeviceState.NOTIFIED}, refresh_before=before
-        )
-        due = [d for d in candidates if not d.acknowledged]
+        if withdrawn:
+            candidates = await repo.find_campaign_devices(
+                campaign.id, states={DeviceState.NOTIFIED}
+            )
+        else:
+            candidates = await repo.find_campaign_devices(
+                campaign.id,
+                states={DeviceState.NOTIFIED},
+                undelivered_before=now - timedelta(seconds=self.c.settings.notify_retry_s),
+            )
+        queued = {n.device_id for n in effects.notifies if n.campaign_id == campaign.id}
+        due = [d for d in candidates if not d.acknowledged and d.device_id not in queued]
         if not due:
             return 0
         fw = await require_firmware(repo, campaign.firmware_id)
@@ -478,8 +494,8 @@ class Rollout:
             return
         if campaign.state is CampaignState.RUNNING:
             await self.advance(repo, effects, campaign)
-        if campaign.state in (CampaignState.RUNNING, CampaignState.PAUSED):
-            await self.refresh(repo, effects, campaign)
+        if campaign.state is CampaignState.RUNNING:
+            await self.redeliver(repo, effects, campaign)
 
     # --- status ingestion -----------------------------------------------------------------
     async def ingest(

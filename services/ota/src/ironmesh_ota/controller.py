@@ -2,7 +2,8 @@
 
 Every replica runs the loop, but only the holder of the Postgres advisory lock
 (:class:`~ironmesh_ota.integrations.leader.PostgresAdvisoryLock`) drives campaigns: it advances
-stages, publishes and refreshes notifies, applies device timeouts and automatic halts. API
+stages, requests and redelivers notifies, applies device timeouts and automatic halts, and
+pushes due firmware keys to the PKI (:class:`~ironmesh_ota.services.key_sync.FirmwareKeySync`). API
 actions and status ingestion run the same engine synchronously, so the controller only has to
 handle the passage of time.
 """
@@ -17,15 +18,19 @@ from collections import Counter
 from .container import Container, Effects, flush
 from .domain import CampaignState
 from .observability import get_logger
+from .services.key_sync import FirmwareKeySync
 from .services.rollout import Rollout
 
 log = get_logger("ironmesh.ota.controller")
 
 
 class RolloutController:
-    def __init__(self, container: Container, rollout: Rollout) -> None:
+    def __init__(
+        self, container: Container, rollout: Rollout, key_sync: FirmwareKeySync | None = None
+    ) -> None:
         self.c = container
         self.rollout = rollout
+        self.key_sync = key_sync or FirmwareKeySync(container)
         self.is_leader = False
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
@@ -56,7 +61,8 @@ class RolloutController:
                         for stage_states in (await repo.state_histogram(campaign.id)).values():
                             for state, n in stage_states.items():
                                 states[state.value] += n
-                    if effects.messages or (campaign.state, campaign.current_stage) != before:
+                    changed = (campaign.state, campaign.current_stage) != before
+                    if effects.notifies or effects.messages or changed:
                         await self.rollout.emit(repo, effects, campaign)
                 processed += 1
             except Exception:
@@ -67,6 +73,10 @@ class RolloutController:
                 )
                 continue
             await flush(self.c, effects)
+        try:
+            await self.key_sync.run_due()
+        except Exception:
+            log.exception("firmware key sync failed")
         self.c.metrics.campaign_devices.clear()
         for state_name, n in states.items():
             self.c.metrics.campaign_devices.labels(state=state_name).set(n)

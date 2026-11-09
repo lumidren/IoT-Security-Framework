@@ -403,7 +403,9 @@ class CampaignService:
             )
             await self.rollout.advance(repo, effects, campaign)
             if campaign.state is CampaignState.RUNNING:
-                await self.rollout.refresh(repo, effects, campaign)
+                await self.rollout.redeliver(
+                    repo, effects, campaign, withdrawn=previous is CampaignState.HALTED
+                )
             out = await self.rollout.emit(repo, effects, campaign)
         await flush(self.c, effects)
         return out
