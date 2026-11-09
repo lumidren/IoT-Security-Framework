@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func TestRunLifecycle(t *testing.T) {
 	}
 	tlsCert := tls.Certificate{Certificate: [][]byte{leaf.Raw, p.Services.Certificate().Raw}, PrivateKey: key}
 	tlsCfg := server.TLSConfig(tlsCert, server.ClientCAPool(p.Root.Certificate(), nil))
-	if tlsCfg.MinVersion != tls.VersionTLS12 || tlsCfg.ClientAuth != tls.VerifyClientCertIfGiven {
+	if tlsCfg.MinVersion != tls.VersionTLS13 || tlsCfg.ClientAuth != tls.VerifyClientCertIfGiven {
 		t.Fatal("tls config")
 	}
 	m, _ := crl.NewManager(p.Device, p.Store, crl.Options{Metrics: p.Metrics, Logger: p.Logger})
@@ -75,9 +76,18 @@ func TestRunLifecycle(t *testing.T) {
 		t.Fatalf("crl: %d", resp.StatusCode)
 	}
 	tlsClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: server.ClientCAPool(p.Root.Certificate()), MinVersion: tls.VersionTLS12}}}
-	if resp, _ := get(t, tlsClient, "https://"+addrs.MTLS+"/v1/ca/chain"); resp.StatusCode != http.StatusNotFound {
+	if resp, _ := get(t, tlsClient, "https://"+addrs.MTLS+"/v1/ca/chain"); resp.StatusCode != http.StatusNotFound || resp.TLS.Version != tls.VersionTLS13 {
 		t.Fatalf("mTLS listener without mgmt handler: %d", resp.StatusCode)
 	}
+	// T-30: a client limited to TLS 1.2 is refused during the handshake.
+	tls12 := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: server.ClientCAPool(p.Root.Certificate()), MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12}}}
+	if resp, err := tls12.Get("https://" + addrs.MTLS + "/v1/ca/chain"); err == nil {
+		resp.Body.Close()
+		t.Fatal("TLS 1.2 client accepted by the mTLS listener")
+	} else if !strings.Contains(err.Error(), "protocol version") {
+		t.Fatalf("TLS 1.2 rejection: unexpected error %v", err)
+	}
+	tls12.CloseIdleConnections()
 	cancel()
 	select {
 	case err := <-errCh:

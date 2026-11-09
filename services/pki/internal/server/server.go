@@ -93,25 +93,19 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// TLSConfig returns the mTLS listener configuration: TLS 1.2+, the server
+// TLSConfig returns the mTLS listener configuration: TLS 1.3 only (every
+// device stack and service supports it; THREAT_MODEL T-30), the server
 // certificate chain and optional client certificates verified against
 // clientCAs. Endpoints that need a client certificate enforce it themselves.
+// TLS 1.3 cipher suites are not configurable in Go and are all AEAD.
 func TLSConfig(serverCert tls.Certificate, clientCAs *x509.CertPool) *tls.Config {
 	return &tls.Config{
-		MinVersion:       tls.VersionTLS12,
+		MinVersion:       tls.VersionTLS13,
 		Certificates:     []tls.Certificate{serverCert},
 		ClientCAs:        clientCAs,
 		ClientAuth:       tls.VerifyClientCertIfGiven,
 		CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384},
-		CipherSuites: []uint16{
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
-		},
-		NextProtos: []string{"http/1.1"},
+		NextProtos:       []string{"http/1.1"},
 	}
 }
 
