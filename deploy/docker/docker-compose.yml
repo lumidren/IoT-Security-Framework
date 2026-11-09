@@ -10,9 +10,9 @@
 # where a component reads secrets from files (PostgreSQL, Grafana, TLS keys, the OTA signing
 # key ring, EMQX API keys) they are delivered as files instead.
 #
-# Start-up order: init-volumes -> postgres / redpanda -> migrations -> fleet-provision ->
-# pki-init -> pki -> policy -> emqx -> bridge (creates the Kafka topics) -> registry-seed ->
-# registry -> ota, anomaly -> console + keycloak -> seed -> fleet.
+# Start-up order: init-volumes -> postgres / redpanda -> redpanda-init (SASL users + ACLs) ->
+# migrations -> fleet-provision -> pki-init -> pki -> policy -> emqx -> bridge (creates the Kafka
+# topics) -> registry-seed -> registry -> ota, anomaly -> console + keycloak -> seed -> fleet.
 #
 # Key ownership (docs/API_CONTRACT.md section 5): the registry is the only holder of tenant
 # command keys and pushes the public key to the PKI tenant-policy API; the OTA service pushes its
@@ -151,11 +151,71 @@ services:
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health -X brokers=localhost:9092 | grep -Eq 'Healthy:.+true'"]
+      # Admin API only (9644): works before and after SASL is switched on by redpanda-init.
+      test: ["CMD-SHELL", "rpk cluster health -X admin.hosts=localhost:9644 | grep -Eq 'Healthy:.+true'"]
       interval: 5s
       timeout: 10s
       retries: 30
       start_period: 15s
+
+  # Kafka authentication and authorization (THREAT_MODEL T-72): SCRAM-SHA-512 users per service
+  # and ACLs limited to each service's topics and its own <svc>-* consumer groups (the same
+  # grants as the MSK IAM policies in deploy/terraform/aws/modules/iam). Users are created over
+  # the admin API (not exposed outside the compose network), then SASL is enforced cluster-wide
+  # (enable_sasl, which also turns on ACL authorization) and the ACLs are written as the `admin`
+  # superuser. Idempotent: re-runs update the passwords from .env.
+  redpanda-init:
+    <<: *oneshot
+    networks: [ironmesh]
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        export HOME=/tmp
+        admin=(-X admin.hosts=redpanda:9644)
+        kafka=(-X brokers=redpanda:9092 -X user=admin -X "pass=$${KAFKA_ADMIN_PASSWORD}" -X sasl.mechanism=SCRAM-SHA-512)
+        upsert() {
+          rpk security user create "$$1" -p "$$2" --mechanism SCRAM-SHA-512 "$${admin[@]}" >/dev/null 2>&1 ||
+            rpk security user update "$$1" --new-password "$$2" --mechanism SCRAM-SHA-512 "$${admin[@]}" >/dev/null
+        }
+        upsert admin "$${KAFKA_ADMIN_PASSWORD}"
+        upsert bridge "$${KAFKA_BRIDGE_PASSWORD}"
+        upsert registry "$${KAFKA_REGISTRY_PASSWORD}"
+        upsert ota "$${KAFKA_OTA_PASSWORD}"
+        upsert anomaly "$${KAFKA_ANOMALY_PASSWORD}"
+        rpk cluster config set superusers '["admin"]' "$${admin[@]}"
+        rpk cluster config set enable_sasl true "$${admin[@]}"
+        for _ in $$(seq 1 30); do rpk cluster info "$${kafka[@]}" >/dev/null 2>&1 && break; sleep 1; done
+        acl() { rpk security acl create "$$@" "$${kafka[@]}" >/dev/null; }
+        topics=(im.ingest im.auth im.alerts im.audit im.commands im.campaigns)
+        # Producers with idempotence enabled.
+        for u in bridge registry ota anomaly; do acl --allow-principal "User:$$u" --cluster --operation idempotent_write; done
+        # bridge: creates the six platform topics on boot; produces telemetry, auth events, audit.
+        for t in "$${topics[@]}"; do acl --allow-principal User:bridge --topic "$$t" --operation create,describe; done
+        for t in im.ingest im.auth im.audit; do acl --allow-principal User:bridge --topic "$$t" --operation write; done
+        # registry: consumes ingest/auth/alerts/audit/campaigns, produces audit and commands.
+        for t in im.ingest im.auth im.alerts im.audit im.campaigns; do acl --allow-principal User:registry --topic "$$t" --operation read,describe; done
+        for t in im.audit im.commands; do acl --allow-principal User:registry --topic "$$t" --operation write,describe; done
+        # ota: consumes ingest/commands, produces audit and campaigns.
+        for t in im.ingest im.commands; do acl --allow-principal User:ota --topic "$$t" --operation read,describe; done
+        for t in im.audit im.campaigns; do acl --allow-principal User:ota --topic "$$t" --operation write,describe; done
+        # anomaly: consumes ingest/auth/commands/audit, produces alerts and audit.
+        for t in im.ingest im.auth im.commands im.audit; do acl --allow-principal User:anomaly --topic "$$t" --operation read,describe; done
+        for t in im.alerts im.audit; do acl --allow-principal User:anomaly --topic "$$t" --operation write,describe; done
+        # Consumer groups: each service only its own <svc>-* groups.
+        for u in registry ota anomaly; do
+          acl --allow-principal "User:$$u" --group "$$u-" --resource-pattern-type prefixed --operation read,describe
+        done
+        echo "redpanda: SASL/SCRAM-SHA-512 enforced, users and ACLs in place"
+    environment:
+      KAFKA_ADMIN_PASSWORD: ${KAFKA_ADMIN_PASSWORD:?}
+      KAFKA_BRIDGE_PASSWORD: ${KAFKA_BRIDGE_PASSWORD:?}
+      KAFKA_REGISTRY_PASSWORD: ${KAFKA_REGISTRY_PASSWORD:?}
+      KAFKA_OTA_PASSWORD: ${KAFKA_OTA_PASSWORD:?}
+      KAFKA_ANOMALY_PASSWORD: ${KAFKA_ANOMALY_PASSWORD:?}
+    depends_on:
+      redpanda:
+        condition: service_healthy
 
   # ------------------------------------------------------------------------------------------
   # Development PKI (pkictl) and the virtual fleet identities
@@ -245,6 +305,8 @@ services:
       PKI_OPERATIONAL_CERT_TTL: 336h
       PKI_NONCE_TTL: 120s
       PKI_POLICY_URL: http://policy:8081
+      # One policy container: no DNS fan-out (Helm/k8s use the policy headless Service + dns).
+      PKI_POLICY_FANOUT: "off"
       PKI_POLICY_TOKEN: ${PKI_POLICY_TOKEN:?}
       PKI_POLICY_HMAC_KEY: ${PKI_POLICY_HMAC_KEY:?}
       # Lifecycle checks and the synchronous enrolled callback (bearer = the "pki" entry of
@@ -350,6 +412,35 @@ services:
       # equal the bridge's BRIDGE_EVENTS_TOKEN.
       EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__HEADERS__X-IRONMESH-HOOK-TOKEN: ${BRIDGE_EVENTS_TOKEN:?}
       EMQX_PROMETHEUS__ENABLE_BASIC_AUTH: "false"
+      # Management API / dashboard (T-76): the REST API that policy, registry and ota call shares
+      # the dashboard listener, so 18083 stays on the compose network only (no host port; see
+      # compose.override.example.yml for a loopback-only opt-in) and Swagger is off.
+      EMQX_DASHBOARD__SWAGGER_SUPPORT: "false"
+      # Per-client limits on the device listener (T-40), sized for telemetry every 10 s (see
+      # deploy/helm/ironmesh/values.yaml "EMQX 5"): 10 msg/s and 64KB/s per client (throttled, not
+      # dropped), 500 new connections/s; QoS 2 is refused (emqx.conf max_qos_allowed = 1) and
+      # mqtt.max_inflight = 32 comes from emqx.conf.
+      EMQX_LISTENERS__SSL__DEFAULT__MESSAGES_RATE: 10/s
+      EMQX_LISTENERS__SSL__DEFAULT__BYTES_RATE: 64KB/s
+      EMQX_LISTENERS__SSL__DEFAULT__MAX_CONN_RATE: 500/s
+      EMQX_MQTT__MAX_AWAITING_REL: "16"
+      # Internal service listener 8884 for svc-bridge and svc-registry (not published to the
+      # host): Services CA only, zone `internal` (inflight 1024 = BRIDGE_MAX_INFLIGHT), no
+      # per-client message rate, so fleet-wide downlinks from svc-registry are not throttled.
+      EMQX_LISTENERS__SSL__INTERNAL__ENABLE: "true"
+      EMQX_LISTENERS__SSL__INTERNAL__BIND: "0.0.0.0:8884"
+      EMQX_LISTENERS__SSL__INTERNAL__ZONE: internal
+      EMQX_LISTENERS__SSL__INTERNAL__ENABLE_AUTHN: quick_deny_anonymous
+      EMQX_LISTENERS__SSL__INTERNAL__MAX_CONNECTIONS: "1024"
+      EMQX_LISTENERS__SSL__INTERNAL__MAX_CONN_RATE: 100/s
+      EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__VERSIONS: "[tlsv1.3]"
+      EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__VERIFY: verify_peer
+      EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "true"
+      EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__CACERTFILE: /etc/ironmesh/emqx/ca.crt
+      EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__CERTFILE: /etc/ironmesh/emqx/broker.pem
+      EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__KEYFILE: /etc/ironmesh/emqx/broker.key
+      EMQX_ZONES__INTERNAL__MQTT__MAX_INFLIGHT: "1024"
+      EMQX_ZONES__INTERNAL__MQTT__MAX_AWAITING_REL: "100"
     volumes:
       - ../../services/policy/deploy/emqx/emqx.conf:/opt/emqx/etc/emqx.conf:ro
       - ../../services/policy/deploy/emqx/acl.conf:/opt/emqx/etc/acl.conf:ro
@@ -358,7 +449,6 @@ services:
       - emqx-log:/opt/emqx/log
     ports:
       - "${IRONMESH_DEVICE_BIND_ADDR:-127.0.0.1}:8883:8883"
-      - "${IRONMESH_BIND_ADDR:-127.0.0.1}:18083:18083"
     healthcheck:
       test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
       interval: 5s
@@ -381,7 +471,8 @@ services:
       <<: *otel-env
       OTEL_SERVICE_NAME: ironmesh-bridge
       BRIDGE_LISTEN: ":8082"
-      BRIDGE_MQTT_URL: ssl://emqx:8883
+      # EMQX internal service listener (Services CA only, no per-client device rate limit).
+      BRIDGE_MQTT_URL: ssl://emqx:8884
       BRIDGE_MQTT_CLIENT_ID: svc-bridge
       BRIDGE_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
       BRIDGE_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
@@ -391,7 +482,10 @@ services:
       BRIDGE_KAFKA_INGEST_TOPIC: im.ingest
       BRIDGE_KAFKA_AUTH_TOPIC: im.auth
       BRIDGE_KAFKA_TLS_ENABLED: "false"
-      BRIDGE_KAFKA_SASL_MECHANISM: none
+      # SCRAM user `bridge` (redpanda-init): write ingest/auth/audit, create the platform topics.
+      BRIDGE_KAFKA_SASL_MECHANISM: scram-sha-512
+      BRIDGE_KAFKA_SASL_USERNAME: bridge
+      BRIDGE_KAFKA_SASL_PASSWORD: ${KAFKA_BRIDGE_PASSWORD:?}
       # The bridge creates im.ingest, im.auth, im.alerts, im.audit, im.commands and im.campaigns
       # idempotently before it turns ready (this replaced the redpanda-init job).
       BRIDGE_KAFKA_TOPICS_CREATE: "true"
@@ -417,8 +511,8 @@ services:
     depends_on:
       emqx:
         condition: service_healthy
-      redpanda:
-        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
 
   registry-migrate:
     <<: *oneshot
@@ -472,7 +566,10 @@ services:
       REGISTRY_KAFKA_TOPIC_AUDIT: im.audit
       REGISTRY_KAFKA_TOPIC_COMMANDS: im.commands
       REGISTRY_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
-      REGISTRY_KAFKA_SASL_MECHANISM: none
+      # SCRAM user `registry` (redpanda-init); the registry matches the mechanism case-sensitively.
+      REGISTRY_KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+      REGISTRY_KAFKA_SASL_USERNAME: registry
+      REGISTRY_KAFKA_SASL_PASSWORD: ${KAFKA_REGISTRY_PASSWORD:?}
       REGISTRY_KAFKA_TLS_ENABLED: "false"
       # PKI management API over mTLS (svc-registry): PUT /v1/tenants/{t}/command-key + enrollment.
       REGISTRY_PKI_URL: https://pki:8443
@@ -484,8 +581,9 @@ services:
       REGISTRY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
       REGISTRY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
       REGISTRY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      # Downlink publisher on the EMQX internal service listener.
       REGISTRY_MQTT_HOST: emqx
-      REGISTRY_MQTT_PORT: "8883"
+      REGISTRY_MQTT_PORT: "8884"
       REGISTRY_MQTT_CLIENT_ID: svc-registry
       REGISTRY_KMS_BACKEND: local
       REGISTRY_KMS_LOCAL_KEK_FILE: /var/lib/ironmesh/registry/registry-kek.bin
@@ -622,6 +720,13 @@ services:
       OTA_KAFKA_TOPIC_AUDIT: im.audit
       OTA_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
       OTA_KAFKA_CONSUMER_GROUP: ota-status
+      # SCRAM user `ota` (redpanda-init). CODE GAP: the OTA Kafka clients (ingest.py,
+      # integrations/events.py) do not pass these settings to aiokafka yet; until they do, OTA's
+      # Kafka publish/consume fails against the SASL-only broker (events are logged and dropped;
+      # campaign delivery goes through the registry over HTTP and is unaffected).
+      OTA_KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+      OTA_KAFKA_SASL_USERNAME: ota
+      OTA_KAFKA_SASL_PASSWORD: ${KAFKA_OTA_PASSWORD:?}
       OTA_KAFKA_TLS_ENABLED: "false"
       OTA_CONTROLLER_ENABLED: "true"
       OTA_CONTROLLER_INTERVAL_S: "2"
@@ -673,6 +778,10 @@ services:
       ANOMALY_KAFKA_TOPIC_ALERTS: im.alerts
       ANOMALY_KAFKA_TOPIC_AUDIT: im.audit
       ANOMALY_KAFKA_TOPIC_COMMANDS: im.commands
+      # SCRAM user `anomaly` (redpanda-init).
+      ANOMALY_KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+      ANOMALY_KAFKA_SASL_USERNAME: anomaly
+      ANOMALY_KAFKA_SASL_PASSWORD: ${KAFKA_ANOMALY_PASSWORD:?}
       ANOMALY_KAFKA_TLS_ENABLED: "false"
       ANOMALY_REGISTRY_URL: http://registry:8000
       ANOMALY_POLICY_URL: http://policy:8081

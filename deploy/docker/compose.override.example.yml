@@ -40,6 +40,12 @@ services:
       - --stagger-ms
       - "50"
 
+  # EMQX dashboard / management API for local debugging. Loopback only, never IRONMESH_BIND_ADDR:
+  # the same listener serves the REST API that can kick, subscribe and reconfigure (T-76).
+  # emqx:
+  #   ports:
+  #     - "127.0.0.1:18083:18083"
+
   # Debug logging for the policy service.
   policy:
     environment:
