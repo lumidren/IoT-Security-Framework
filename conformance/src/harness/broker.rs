@@ -112,6 +112,8 @@ pub struct BrokerCerts {
     pub rogue_distinct: (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>),
     /// Anchors for client certificates (Root + Device CA).
     pub client_anchors: Vec<Vec<u8>>,
+    /// The `svc-registry` client certificate (Services CA) the downlink publisher connects with.
+    pub service_client: Option<Vec<u8>>,
 }
 
 impl BrokerCerts {
@@ -123,10 +125,30 @@ impl BrokerCerts {
             rogue: (pki.rogue_broker.chain(&pki.rogue), pki.rogue_broker.key()),
             rogue_distinct: (pki.rogue_distinct_broker.chain(&pki.rogue_distinct), pki.rogue_distinct_broker.key()),
             client_anchors: vec![pki.root.der.clone(), pki.device.der.clone()],
+            service_client: Some(pki.registry_client.der.clone()),
         }
     }
 }
-use super::policy::{AuthnRequest, AuthzRequest, ClientAttrs, PolicyClient};
+use super::policy::{AuthnDecision, AuthnRequest, AuthzRequest, ClientAttrs, PolicyClient};
+
+/// The authn request EMQX renders for a CONNECT on the mTLS listener, exactly as the
+/// `authentication.body` template of `services/policy/deploy/emqx/emqx.conf`: `username` = the
+/// certificate CN (`peer_cert_as_username = cn`), `cert_subject` in RFC 4514 form, `cert_pem` = the
+/// presented leaf certificate and `cert_serial` = its serial (`${client_attrs.cert_serial}`, set by
+/// `mqtt.client_attrs_init` from the TLS peer certificate - never from client-controlled fields).
+#[must_use]
+pub fn emqx_authn_request(client_id: &str, peerhost: &str, leaf_der: &[u8], facts: &pki::CertFacts) -> AuthnRequest {
+    let cn = facts.cn.clone().unwrap_or_default();
+    AuthnRequest {
+        clientid: client_id.to_owned(),
+        username: cn.clone(),
+        peerhost: peerhost.to_owned(),
+        cert_common_name: cn,
+        cert_subject: facts.subject.clone(),
+        cert_pem: Some(crate::util::pem("CERTIFICATE", leaf_der)),
+        cert_serial: Some(facts.serial_hex.clone()),
+    }
+}
 
 /// What the TLS listener presents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -379,6 +401,9 @@ struct Inner {
     stats: Arc<BrokerStats>,
     load_mode: AtomicBool,
     tap: OnceLock<mpsc::UnboundedSender<Tapped>>,
+    /// `svc-registry` client certificate and the session attributes its CONNECT was admitted with.
+    service_cert: Option<Vec<u8>>,
+    service_session: tokio::sync::Mutex<Option<ClientAttrs>>,
 }
 
 /// The running broker double.
@@ -503,6 +528,8 @@ impl Broker {
             stats: Arc::new(BrokerStats::default()),
             load_mode: AtomicBool::new(false),
             tap: OnceLock::new(),
+            service_cert: certs.service_client.clone(),
+            service_session: tokio::sync::Mutex::new(None),
         });
         let listener = net::bind(host, 0).await?;
         let addr = listener.local_addr()?;
@@ -691,18 +718,19 @@ impl Broker {
     /// # Errors
     /// Policy denial or transport failures towards the policy.
     pub async fn inject(&self, topic: &str, payload: Vec<u8>, retain: bool) -> Result<Vec<(String, u16)>> {
+        let attrs = self.service_session().await?;
         let allowed = self
             .inner
             .policy
             .authz(&AuthzRequest {
-                clientid: "svc-registry".into(),
-                username: "svc-registry".into(),
+                clientid: SERVICE_CLIENT.into(),
+                username: SERVICE_CLIENT.into(),
                 peerhost: "127.0.0.1".into(),
                 topic: topic.to_owned(),
                 action: "publish",
                 qos: 1,
                 retain,
-                attrs: ClientAttrs { tenant_id: String::new(), device_id: String::new(), kind: "service".into() },
+                attrs,
             })
             .await?;
         if !allowed {
@@ -710,7 +738,47 @@ impl Broker {
         }
         Ok(self.inner.route(topic, &payload, retain, true))
     }
+
+    /// The `svc-registry` session: its CONNECT is authenticated once by the policy authn hook with
+    /// the Services CA client certificate (`cert_pem` + `cert_serial`, issuer checked against
+    /// `POLICY_SERVICES_CA_FILE`), like the registry's long-lived MQTT connection to EMQX; later
+    /// publishes reuse the admitted session attributes.
+    ///
+    /// # Errors
+    /// The policy refusing the service identity, or a hook failure.
+    pub async fn service_session(&self) -> Result<ClientAttrs> {
+        let mut s = self.inner.service_session.lock().await;
+        if let Some(a) = s.as_ref() {
+            return Ok(a.clone());
+        }
+        let attrs = match &self.inner.service_cert {
+            Some(der) => {
+                let d = self.replay_connect_authn(SERVICE_CLIENT, der, "127.0.0.1").await?;
+                if !d.allow {
+                    return Err(anyhow!("the policy authn hook refused the svc-registry CONNECT (Services CA client certificate)"));
+                }
+                d.attrs.unwrap_or_else(|| ClientAttrs { kind: "service".into(), ..ClientAttrs::default() })
+            }
+            None => ClientAttrs { tenant_id: String::new(), device_id: String::new(), kind: "service".into() },
+        };
+        *s = Some(attrs.clone());
+        Ok(attrs)
+    }
+
+    /// Ask the policy authn hook what it decides for a CONNECT from `client_id` presenting the
+    /// certificate `leaf_der` from `peerhost` - the request EMQX would send for that TLS session
+    /// ([`emqx_authn_request`]). No session is opened.
+    ///
+    /// # Errors
+    /// Unparsable certificate or a hook failure.
+    pub async fn replay_connect_authn(&self, client_id: &str, leaf_der: &[u8], peerhost: &str) -> Result<AuthnDecision> {
+        let facts = pki::cert_facts(leaf_der)?;
+        self.inner.policy.authn(&emqx_authn_request(client_id, peerhost, leaf_der, &facts)).await
+    }
 }
+
+/// Client id (= CN) of the registry's downlink publisher.
+pub const SERVICE_CLIENT: &str = "svc-registry";
 
 impl Inner {
     fn record(&self, conn: u64, kind: ObsKind) {
@@ -921,23 +989,13 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
         let _ = wr.shutdown().await;
         return;
     }
-    let decision = match &facts {
-        Some(f) => {
+    let decision = match (&facts, &leaf) {
+        (Some(f), Some(der)) => {
             let t = Instant::now();
-            let r = inner
-                .policy
-                .authn(&AuthnRequest {
-                    clientid: client_id.clone(),
-                    username: cn.clone(),
-                    peerhost: peer.ip().to_string(),
-                    cert_common_name: cn.clone(),
-                    cert_subject: f.subject.clone(),
-                    cert_pem: leaf.as_ref().map(|d| crate::util::pem("CERTIFICATE", d)),
-                })
-                .await;
+            let r = inner.policy.authn(&emqx_authn_request(&client_id, &peer.ip().to_string(), der, f)).await;
             inner.hook_done("authn", t, r)
         }
-        None => None,
+        _ => None,
     };
     let Some(decision) = decision.filter(|d| d.allow) else {
         inner.stats.connects_denied.fetch_add(1, Ordering::Relaxed);

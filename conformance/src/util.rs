@@ -133,6 +133,24 @@ pub async fn wait_for<T>(timeout: Duration, mut f: impl FnMut() -> Option<T>) ->
     }
 }
 
+/// Poll the async `f` every 250 ms until it returns `Some` or `timeout` elapses.
+pub async fn wait_for_async<T, F, Fut>(timeout: Duration, mut f: F) -> Option<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(v) = f().await {
+            return Some(v);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// PEM-encode DER.
 #[must_use]
 pub fn pem(label: &str, der: &[u8]) -> String {

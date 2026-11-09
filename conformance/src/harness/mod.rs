@@ -12,6 +12,7 @@
 pub mod broker;
 pub mod downlink;
 pub mod est;
+pub mod jwt;
 pub mod keys;
 pub mod net;
 pub mod ota;
@@ -35,7 +36,7 @@ use est::{BundleSpec, EnrollRecord, EstServer};
 use keys::HarnessKeys;
 use ota::ArtifactServer;
 use pki::{DeviceCertSpec, TestPki};
-use policy::{PolicyClient, PolicyService, PolicySpawn, RevocationEvent};
+use policy::{PolicyClient, PolicyService, PolicySpawn, ReleaseEvent, RevocationEvent};
 use realpki::RealPki;
 use registry::{DeviceRecord, FakeRegistry};
 
@@ -113,6 +114,22 @@ pub struct RealAuthority {
     pub pki: tokio::sync::Mutex<RealPki>,
     /// Device endpoints.
     pub endpoints: DeviceEndpoints,
+    /// The tenant policy provisioned through the PKI tenant-policy API (`GET /v1/tenants/{t}/policy`).
+    pub tenant_policy: serde_json::Value,
+    /// Authorization probe of the PKI management API: (`svc-ota` writing the command key, first
+    /// use of a token, replay of the same token) HTTP statuses.
+    pub authz_probe: (u16, u16, u16),
+}
+
+/// How a certificate is revoked (what the PKI publisher's event says).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevokeScope {
+    /// One certificate (`POST /v1/certificates/{serial}/revoke`, `device_deny=false`). The policy
+    /// service still deny-lists the device for the reasons `keyCompromise` / `cessationOfOperation`.
+    Certificate {
+        /// RFC 5280 reason name.
+        reason: String,
+    },
 }
 
 /// The hermetic backend.
@@ -215,6 +232,8 @@ impl Cloud {
         registry.set_crl(pki.crl()?);
         let device_ca_file = o.run_dir.join("device-ca.pem");
         std::fs::write(&device_ca_file, crate::util::pem("CERTIFICATE", material.as_ref().map_or(&pki.device.der, |m| &m.device)))?;
+        let services_ca_file = o.run_dir.join("services-ca.pem");
+        std::fs::write(&services_ca_file, crate::util::pem("CERTIFICATE", material.as_ref().map_or(&pki.services.der, |m| &m.services)))?;
         // The policy service needs the broker's management API URL and the broker needs the policy
         // client: reserve the management port first, start the policy service, then the broker.
         let mgmt_port = reserve_port(&o.bind_host)?;
@@ -238,6 +257,7 @@ impl Cloud {
             registry_token: registry.token.clone(),
             crl_url,
             crl_issuer_file: device_ca_file,
+            services_ca_file: Some(services_ca_file),
             state_dir: o.run_dir.join("policy-state"),
             log_file: o.run_dir.join("policy.log"),
             extra_env: o.policy_env.clone(),
@@ -253,6 +273,7 @@ impl Cloud {
                 let mut c = BrokerCerts::hermetic(&pki);
                 c.normal = m.broker_identity();
                 c.client_anchors = vec![m.root.clone(), m.device.clone()];
+                c.service_client = Some(m.registry_client.leaf());
                 c
             }
             None => BrokerCerts::hermetic(&pki),
@@ -261,6 +282,11 @@ impl Cloud {
             Broker::start_with_mgmt(&o.bind_host, mgmt_port, certs, policy_client.clone(), DenyAction::Disconnect, emqx_key, emqx_secret)
                 .await?;
         let cloud_signer_pub = TenantSigner::new(&o.tenant_id, keys.tenant.clone()).public();
+        let fw_keys = vec![keys.firmware.verifying_key().to_bytes().to_vec()];
+        let artifacts = match &material {
+            Some(m) => ArtifactServer::start_with(&o.bind_host, &o.advertise_host, m.artifacts.rustls()).await?,
+            None => ArtifactServer::start(&o.bind_host, &o.advertise_host, &pki).await?,
+        };
         let authority = match (material, &o.real_pki) {
             (Some(m), Some((bin, pkictl))) => {
                 let wiring = realpki::Wiring {
@@ -277,6 +303,13 @@ impl Cloud {
                 };
                 let (mtls, plain) = pki_ports.unwrap_or((0, 0));
                 let real = RealPki::spawn_on(bin, pkictl, m, &wiring, mtls, plain).await.context("start the real PKI service")?;
+                // Tenant policy through the PKI tenant-policy API, as the owning services do, before any
+                // device enrolls: the bundles then carry the harness's command key and firmware key.
+                let tenant_policy = real
+                    .provision_tenant(&o.tenant_id, &cloud_signer_pub, &fw_keys)
+                    .await
+                    .context("provision the tenant policy through the PKI tenant-policy API")?;
+                let authz_probe = real.probe_authorization(&o.tenant_id).await.context("PKI management API authorization probe")?;
                 let ep = DeviceEndpoints {
                     est_host: o.advertise_host.clone(),
                     est_port: real.mtls_port,
@@ -288,7 +321,7 @@ impl Cloud {
                     est_pins_hex: vec![hex::encode(pki::spki_sha256(&real.material.services)?)],
                     bundle_pubkey_hex: hex::encode(real.material.bundle_pubkey),
                 };
-                Authority::Real(Box::new(RealAuthority { pki: tokio::sync::Mutex::new(real), endpoints: ep }))
+                Authority::Real(Box::new(RealAuthority { pki: tokio::sync::Mutex::new(real), endpoints: ep, tenant_policy, authz_probe }))
             }
             _ => Authority::Builtin(
                 EstServer::start(
@@ -299,7 +332,7 @@ impl Cloud {
                     o.tenant_id.clone(),
                     BundleSpec {
                         tenant_cmd_pubkey: cloud_signer_pub,
-                        fw_signing_pubkeys: vec![keys.firmware.verifying_key().to_bytes().to_vec()],
+                        fw_signing_pubkeys: fw_keys,
                         broker_host: o.advertise_host.clone(),
                         broker_port: broker.addr.port(),
                     },
@@ -307,7 +340,6 @@ impl Cloud {
                 .await?,
             ),
         };
-        let artifacts = ArtifactServer::start(&o.bind_host, &o.advertise_host, &pki).await?;
         Ok(Self::new(
             o.tenant_id.clone(),
             keys,
@@ -335,18 +367,71 @@ impl Cloud {
         }
     }
 
-    /// Why downlinks / firmware cannot be trusted by devices in this mode (`None`: they can).
+    /// Why downlinks / firmware cannot be trusted by devices in this mode (`None`: they can). With
+    /// the real PKI the tenant command key and firmware keys are provisioned through its
+    /// tenant-policy API at start-up, so its bundles carry them.
     #[must_use]
     pub fn bundle_limits(&self) -> Option<String> {
         match &self.backend {
-            Backend::Hermetic(h) if matches!(h.authority, Authority::Real(..)) => Some(
-                "the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys \
-                 (no API provisions a tenant policy), so devices must and do reject every downlink and update"
-                    .into(),
-            ),
             Backend::Stack(s) if !s.has_tenant_key() => Some("the stack's tenant command key is not configured (--stack-config)".into()),
             _ => None,
         }
+    }
+
+    /// Environment lines describing how the hardened services were wired and probed at start-up:
+    /// CA files and JWT settings of the policy service, the single-use check of its management
+    /// API, and with the real PKI the tenant policy it stores and its authorization probe.
+    pub async fn wiring_report(&self) -> Vec<(String, String)> {
+        let Backend::Hermetic(h) = &self.backend else { return Vec::new() };
+        let mut out = vec![(
+            "policy_wiring".to_string(),
+            "authn bodies carry cert_pem + cert_serial (emqx.conf template); POLICY_REQUIRE_CERT_SERIAL=true, POLICY_DEVICE_CA_FILE / \
+             POLICY_SERVICES_CA_FILE set, POLICY_JWT_PUBLIC_KEY_PEM + POLICY_JWT_SINGLE_USE=true; svc-registry authenticated with a \
+             Services CA client certificate"
+                .to_string(),
+        )];
+        match h.policy_client.replay_mgmt_token().await {
+            Ok((a, b)) => out.push((
+                "policy_mgmt_jwt_single_use".into(),
+                format!("GET /v1/revocations with one token twice -> {a} then {b} (want 200 then 401)"),
+            )),
+            Err(e) => out.push(("policy_mgmt_jwt_single_use".into(), format!("probe failed: {e:#}"))),
+        }
+        if let Authority::Real(ra) = &h.authority {
+            let (owner, first, replay) = ra.authz_probe;
+            out.push(("pki_tenant_policy".into(), format!("provisioned via the PKI tenant-policy API: {}", ra.tenant_policy)));
+            out.push((
+                "pki_mgmt_authorization".into(),
+                format!(
+                    "svc-ota PUT command-key -> {owner} (want 403); one operator token used twice -> {first} then {replay} (want 200 then 401)"
+                ),
+            ));
+            out.push(("pki_supersede_grace".into(), format!("{} s", realpki::SUPERSEDE_GRACE.as_secs())));
+        }
+        out
+    }
+
+    /// Base URL of the OTA artifact server (`ota.base_url` / download allowlist of the devices).
+    #[must_use]
+    pub fn artifact_base_url(&self) -> Option<String> {
+        match &self.backend {
+            Backend::Hermetic(h) => Some(h.artifacts.base_url()),
+            Backend::Stack(s) => s.artifact_base_url(),
+        }
+    }
+
+    /// Host of [`Cloud::artifact_base_url`].
+    #[must_use]
+    pub fn artifact_host(&self) -> Option<String> {
+        let url = self.artifact_base_url()?;
+        let rest = url.split_once("://").map_or(url.as_str(), |(_, r)| r);
+        let authority = rest.split('/').next().unwrap_or_default();
+        let host = if let Some(v6) = authority.strip_prefix('[') {
+            v6.split(']').next().unwrap_or_default()
+        } else {
+            authority.rsplit_once(':').map_or(authority, |(h, _)| h)
+        };
+        (!host.is_empty()).then(|| host.to_owned())
     }
 
     /// The hermetic backend, or [`Unsupported`].
@@ -440,6 +525,7 @@ impl Cloud {
                         bootstrap_serial_hex: bootstrap_serial_hex.into(),
                         assurance_level: None,
                         product: product.into(),
+                        certificates: Vec::new(),
                     },
                 );
                 Ok(())
@@ -448,18 +534,100 @@ impl Cloud {
         }
     }
 
-    /// Quarantine a device (registry lifecycle state).
+    /// Quarantine a device like the registry (`POST /v1/devices/{id}/quarantine`): the lifecycle
+    /// state change first, then the PKI revoke-all of the device's current certificates
+    /// (`device_deny=true` events: the policy service deny-lists the device id and kicks its
+    /// session). A device without operational certificates has nothing to revoke.
     ///
     /// # Errors
-    /// Registry failures.
+    /// Registry / PKI / policy failures.
     pub async fn quarantine(&self, device_id: &str) -> Result<()> {
         match &self.backend {
             Backend::Hermetic(h) => {
                 h.registry.set_state(device_id, registry::QUARANTINED);
+                match &h.authority {
+                    Authority::Builtin(est) => {
+                        let serials: Vec<String> =
+                            est.records(device_id).into_iter().filter_map(|r| r.issued_serial_hex).filter(|s| !est.is_revoked(s)).collect();
+                        for serial in serials {
+                            self.builtin_revoke(h, est, device_id, &serial, "cessationOfOperation", true).await?;
+                        }
+                    }
+                    Authority::Real(ra) => {
+                        ra.pki.lock().await.revoke_all(device_id, "cessationOfOperation").await?;
+                    }
+                }
                 Ok(())
             }
             Backend::Stack(s) => s.quarantine(device_id).await,
         }
+    }
+
+    /// Release a quarantined device (registry `POST /v1/devices/{id}/release`, API_CONTRACT §1.2):
+    /// the registry double moves it to `active` (`409` unless quarantined), then the PKI release
+    /// pushes the `device_release` event that lifts the policy service's device-level deny; the
+    /// revoked certificates stay revoked, so the device must re-enroll.
+    ///
+    /// # Errors
+    /// The registry refusing the release, or the PKI / policy rejecting the event.
+    pub async fn release_device(&self, device_id: &str) -> Result<()> {
+        let h = self.hermetic("releasing a device")?;
+        let r = net::http_request(
+            "POST",
+            &format!("{}/v1/devices/{device_id}/release", h.registry.url()),
+            &[("authorization", format!("Bearer {}", h.registry.token)), ("content-type", "application/json".into())],
+            br#"{"note":"conformance release"}"#.to_vec(),
+            None,
+            Duration::from_secs(5),
+        )
+        .await?;
+        if r.status != 200 {
+            return Err(anyhow!("registry release answered {}: {}", r.status, r.text()));
+        }
+        match &h.authority {
+            Authority::Builtin(_) => {
+                h.policy_client
+                    .publish_release(&ReleaseEvent {
+                        event_id: format!("conformance-{}", crate::util::uuid4()),
+                        event: "device_release".into(),
+                        device_id: device_id.to_owned(),
+                        tenant_id: self.tenant_id.clone(),
+                        released_at: policy::rfc3339_now()?,
+                    })
+                    .await?;
+            }
+            Authority::Real(ra) => {
+                ra.pki.lock().await.release(device_id, &self.tenant_id, "conformance release").await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// In-process authority: what the PKI's revoke does (store, CRL regenerated with the reason,
+    /// signed event with `device_deny` pushed to the real policy service).
+    async fn builtin_revoke(
+        &self,
+        h: &Hermetic,
+        est: &EstServer,
+        device_id: &str,
+        serial_hex: &str,
+        reason: &str,
+        device_deny: bool,
+    ) -> Result<()> {
+        let serial = hex::decode(serial_hex)?;
+        est.revoke(serial_hex);
+        h.registry.set_crl(h.pki.revoke_with_reason(&serial, crl_reason(reason))?);
+        let ev = RevocationEvent {
+            event_id: format!("conformance-{}", crate::util::uuid4()),
+            serial: serial_hex.to_owned(),
+            device_id: device_id.to_owned(),
+            tenant_id: self.tenant_id.clone(),
+            reason: reason.to_owned(),
+            revoked_at: policy::rfc3339_now()?,
+            device_deny,
+        };
+        h.policy_client.publish_revocation(&ev).await?;
+        Ok(())
     }
 
     fn builtin_est(&self, what: &str) -> Result<&EstServer> {
@@ -505,6 +673,28 @@ impl Cloud {
         }
     }
 
+    /// The real PKI's record of one certificate (`GET /v1/certificates/{serial}`: `status`,
+    /// `revocation.reason`, ...).
+    ///
+    /// # Errors
+    /// [`Unsupported`] without a real PKI.
+    pub async fn pki_certificate_record(&self, serial_hex: &str) -> Result<serde_json::Value> {
+        match &self.hermetic("the PKI management API")?.authority {
+            Authority::Real(ra) => ra.pki.lock().await.certificate_record(serial_hex).await,
+            Authority::Builtin(_) => Err(unsupported("the PKI management API needs the real PKI")),
+        }
+    }
+
+    /// Whether the enrollment authority revokes the previous certificate by itself after a
+    /// renewal (the real PKI's supersede-on-renewal, `PKI_SUPERSEDE_GRACE`), and after how long.
+    #[must_use]
+    pub fn supersedes_on_renewal(&self) -> Option<Duration> {
+        match &self.backend {
+            Backend::Hermetic(h) if matches!(h.authority, Authority::Real(..)) => Some(realpki::SUPERSEDE_GRACE),
+            _ => None,
+        }
+    }
+
     /// The PKI's records of a device (`GET /v1/devices/{id}/certificates`).
     ///
     /// # Errors
@@ -527,40 +717,44 @@ impl Cloud {
     /// # Errors
     /// The policy service / PKI rejecting the request.
     pub async fn revoke(&self, device_id: &str, serial_hex: &str) -> Result<RevokeTiming> {
+        self.revoke_with(device_id, serial_hex, &RevokeScope::Certificate { reason: "keyCompromise".into() }).await
+    }
+
+    /// Revoke one certificate with an explicit reason (`device_deny=false`, as the PKI's
+    /// single-certificate revoke sends it).
+    ///
+    /// # Errors
+    /// The policy service / PKI rejecting the request.
+    pub async fn revoke_with(&self, device_id: &str, serial_hex: &str, scope: &RevokeScope) -> Result<RevokeTiming> {
+        let RevokeScope::Certificate { reason } = scope;
         let started = Instant::now();
         match &self.backend {
             Backend::Hermetic(h) => match &h.authority {
                 Authority::Builtin(est) => {
-                    let serial = hex::decode(serial_hex)?;
-                    est.revoke(serial_hex);
-                    h.registry.set_crl(h.pki.revoke(&serial)?);
-                    let ev = RevocationEvent {
-                        event_id: format!("conformance-{}", crate::util::uuid4()),
-                        serial: serial_hex.to_owned(),
-                        device_id: device_id.to_owned(),
-                        tenant_id: self.tenant_id.clone(),
-                        reason: "keyCompromise".into(),
-                        revoked_at: policy::rfc3339_now()?,
-                    };
-                    h.policy_client.publish_revocation(&ev).await?;
+                    self.builtin_revoke(h, est, device_id, serial_hex, reason, false).await?;
                     Ok(RevokeTiming {
                         started,
                         acknowledged: Instant::now(),
-                        path: "harness PKI (CRL regenerated) -> signed POST /internal/v1/revocations (bearer + HMAC) -> real policy -> EMQX API kick".into(),
+                        path: format!(
+                            "harness PKI (CRL regenerated, reason {reason}) -> signed POST /internal/v1/revocations \
+                             (bearer + HMAC, device_deny=false) -> real policy -> EMQX API kick"
+                        ),
                     })
                 }
                 Authority::Real(ra) => {
-                    ra.pki.lock().await.revoke(serial_hex).await?;
+                    ra.pki.lock().await.revoke(serial_hex, reason).await?;
                     Ok(RevokeTiming {
                         started,
                         acknowledged: Instant::now(),
-                        path: "real PKI POST /v1/certificates/{serial}/revoke (ES256 JWT) -> PKI publisher -> real policy -> EMQX API kick"
-                            .into(),
+                        path: format!(
+                            "real PKI POST /v1/certificates/{{serial}}/revoke (reason {reason}, single-use ES256 JWT) -> outbox -> \
+                             PKI publisher (device_deny=false) -> real policy -> EMQX API kick"
+                        ),
                     })
                 }
             },
             Backend::Stack(s) => {
-                s.revoke(serial_hex).await?;
+                s.revoke(serial_hex, reason).await?;
                 Ok(RevokeTiming {
                     started,
                     acknowledged: Instant::now(),
@@ -637,6 +831,23 @@ impl Cloud {
             }
         }
         Ok(())
+    }
+}
+
+/// CRL reason code for an RFC 5280 reason name.
+#[must_use]
+pub fn crl_reason(name: &str) -> rcgen::RevocationReason {
+    use rcgen::RevocationReason as R;
+    match name {
+        "unspecified" => R::Unspecified,
+        "cACompromise" => R::CaCompromise,
+        "affiliationChanged" => R::AffiliationChanged,
+        "superseded" => R::Superseded,
+        "cessationOfOperation" => R::CessationOfOperation,
+        "certificateHold" => R::CertificateHold,
+        "privilegeWithdrawn" => R::PrivilegeWithdrawn,
+        "aACompromise" => R::AaCompromise,
+        _ => R::KeyCompromise,
     }
 }
 
