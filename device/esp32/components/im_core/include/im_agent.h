@@ -206,12 +206,6 @@ im_err_t im_agent_reboot(im_agent_t *a, int reason);
 /* Attestation header value (COSE bytes) for the CSR, signed by the current identity key. */
 im_err_t im_agent_attestation(im_agent_t *a, const uint8_t nonce[32], const uint8_t *csr_der,
                               size_t csr_len, uint8_t *out, size_t cap, size_t *out_len);
-/* Same, but signed for an explicit identity certificate serial (kid): the ATECC608B build
- * re-enrolls over TLS with the bootstrap certificate (slot 0), so the attestation kid must be
- * the bootstrap serial even when an operational certificate exists. */
-im_err_t im_agent_attestation_kid(im_agent_t *a, const uint8_t *kid, size_t kid_len,
-                                  const uint8_t nonce[32], const uint8_t *csr_der, size_t csr_len,
-                                  uint8_t *out, size_t cap, size_t *out_len);
 /* Successful (re-)enrollment: new serial/validity and the X-IronMesh-Bundle (may be NULL). */
 im_err_t im_agent_on_enrolled(im_agent_t *a, const uint8_t *serial, size_t serial_len,
                               uint64_t not_before, uint64_t not_after, const uint8_t *bundle,

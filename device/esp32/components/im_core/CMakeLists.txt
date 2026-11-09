@@ -2,7 +2,8 @@
 # The DUT dispatcher is only compiled into images that enable the test hook.
 set(srcs
     im_agent.c im_attest.c im_cbor.c im_cose.c im_delta.c im_envelope.c im_fields.c
-    im_hpke.c im_ids.c im_json.c im_manifest.c im_mqtt.c im_ota.c im_ringbuf.c im_util.c)
+    im_hpke.c im_ids.c im_json.c im_keyslot.c im_manifest.c im_mqtt.c im_ota.c im_ringbuf.c
+    im_util.c)
 if(CONFIG_IRONMESH_DUT_CONTROL)
     list(APPEND srcs im_dut.c)
 endif()

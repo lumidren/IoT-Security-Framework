@@ -658,15 +658,12 @@ im_err_t im_agent_enroll(im_agent_t *a, bool renew)
 im_err_t im_agent_attestation(im_agent_t *a, const uint8_t nonce[32], const uint8_t *csr_der,
                               size_t csr_len, uint8_t *out, size_t cap, size_t *out_len)
 {
-    const uint8_t *kid = a->provisioned ? a->kid : a->cfg.bootstrap_kid;
-    size_t kid_len = a->provisioned ? a->kid_len : a->cfg.bootstrap_kid_len;
-    return im_agent_attestation_kid(a, kid, kid_len, nonce, csr_der, csr_len, out, cap, out_len);
-}
-
-im_err_t im_agent_attestation_kid(im_agent_t *a, const uint8_t *kid, size_t kid_len,
-                                  const uint8_t nonce[32], const uint8_t *csr_der, size_t csr_len,
-                                  uint8_t *out, size_t cap, size_t *out_len)
-{
+    /* The attestation is signed by the TLS client key (contract section 3): the operational key
+     * while its certificate is valid (simplereenroll), the bootstrap key on first enrollment and
+     * after expiry (simpleenroll) - the same rule im_keyslot_plan() applies to key slots. */
+    bool op = a->provisioned && now_s(a) < a->cert_not_after;
+    const uint8_t *kid = op ? a->kid : a->cfg.bootstrap_kid;
+    size_t kid_len = op ? a->kid_len : a->cfg.bootstrap_kid_len;
     uint64_t seq;
     IM_TRY(next_seq(a, &seq));
     return im_attest_build(a->pf.identity, kid, kid_len, seq, now_s(a), nonce, csr_der, csr_len,
