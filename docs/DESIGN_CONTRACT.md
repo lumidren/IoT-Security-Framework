@@ -87,8 +87,12 @@ Attestation flow:
    returns the certs-only PKCS#7. The response also carries header `X-IronMesh-Bundle` with a
    base64 CBOR map `{1: tenant_cmd_pubkey(32 bytes Ed25519), 2: fw_signing_pubkeys([bstr]), 3:
    broker_host, 4: broker_port, 5: ca_pins([bstr sha256 of SPKI])}` signed as COSE_Sign1 by the
-   PKI's bundle key. Devices verify the bundle signature with the PKI bundle public key baked into
-   firmware at factory time.
+   PKI's bundle key: alg EdDSA (-8), protected header `{1: -8, 4: h'706b692d62756e646c65'}` (kid
+   is the bstr `"pki-bundle"`). Devices verify the bundle signature with the PKI bundle public key
+   baked into firmware at factory time. `tenant_cmd_pubkey` is an empty bstr while the tenant has no
+   command key yet; devices then reject every downlink until a later renewal delivers the key.
+   Because AWS KMS has no Ed25519, the bundle key (like the firmware signing key) is an Ed25519
+   seed held in Secrets Manager and wrapped by a symmetric KMS key that only the PKI role can use.
 
 ## 4. MQTT
 
@@ -153,7 +157,7 @@ the registry signs types 4, 5, 9 and the OTA service signs type 7 with the same 
 (`ironmesh_replay_rejected_total`). Devices persist `seq` before sending so a reboot never reuses one.
 
 Telemetry body (`type=1`): `{1: cpu_pct(float), 2: mem_pct, 3: net_rx_bytes, 4: net_tx_bytes,
-5: temp_c, 6: uptime_s, 7: auth_failures(uint), 8: fw_hash(bstr32), 9: fw_version(tstr),
+5: temp_c, 6: uptime_s, 7: auth_failures(uint, failed local logins since the previous report), 8: fw_hash(bstr32), 9: fw_version(tstr),
 10: proc_count(uint, Linux), 11: top_procs([tstr], Linux, max 10), 12: rssi(int, ESP32),
 13: free_heap(uint, ESP32), 14: lat(float, optional), 15: lon(float, optional)}`.
 
