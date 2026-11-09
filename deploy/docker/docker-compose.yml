@@ -328,7 +328,7 @@ services:
   # carries their health state for depends_on.
   policy-probe:
     <<: *hardened
-    image: curlimages/curl:8.11.1
+    image: curlimages/curl:8.23.0
     user: "100:101"
     command: ["sleep", "infinity"]
     healthcheck:
@@ -413,7 +413,7 @@ services:
 
   bridge-probe:
     <<: *hardened
-    image: curlimages/curl:8.11.1
+    image: curlimages/curl:8.23.0
     user: "100:101"
     command: ["sleep", "infinity"]
     healthcheck:
