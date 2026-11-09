@@ -94,6 +94,21 @@ hard-wired to ATECC slot 0 (the bootstrap key). esp-mqtt v5 runs over it with
 agent's backoff (1 s, x2, cap 300 s, full jitter). The EST client speaks HTTP/1.1 over the same
 transport.
 
+**EST is pinned like MQTT (threat model T-29).** Every EST request runs with `pin_required`: the
+server chain must contain a CA whose SPKI SHA-256 is pinned. The pin set is chosen by the pure
+im_core rule `im_est_pins_select()` / `im_agent_est_pins()` (host-tested in
+`host/core-tests/tests/util.rs` and `host/dut-shim/tests/conformance.rs`): the signed trust
+bundle's `ca_pins` once enrolled; before the first enrollment the factory-provisioned PKI CA pin
+(NVS `est_pins`, written by `tools/factory_provision.py --est-pin`, falling back to the SPKI of
+the CA certificate in `esp_secure_cert`); no pin at all fails closed with `tls_pin_mismatch`.
+Anchor candidates are the stored `/cacerts` blob **and** the factory CA, filtered by the pins, so
+an EST `/cacerts` response can never introduce an unpinned anchor.
+
+**Artifact host allowlist (T-60).** The core downloads an OtaNotify `url` only if it is `https`
+and its host is the signed bundle's broker host or `CONFIG_IRONMESH_OTA_HOST`
+(`im_agent_download_allowed()`); any other host is rejected before the platform is asked to
+fetch it, with `ota_state` error `download`.
+
 ### Key slots and renewal
 
 Slot 0 is the bootstrap key; slots 2 and 3 alternate as the operational key
@@ -119,6 +134,25 @@ of one header byte. That ack scheme is incompatible with ciphertext, so `storage
 flash-encrypted: records are ES256-signed envelopes (integrity and origin protected) and
 telemetry is not secret. 1 MiB = 2048 records on 8 MiB parts; use 4 MiB on 16 MiB modules for the
 contract's 10 000 messages.
+
+Why the ESP32 keeps the buffer in plaintext while the Linux agent encrypts it (threat model
+T-04/T-09): ESP32 flash encryption is transparent XTS-AES over 16/32-byte blocks keyed by
+address, so a partition flagged `encrypted` can only be written in whole encrypted blocks through
+`esp_partition_write`. The ring buffer's delivery ack is a single-byte 0xFF -> 0x00 NOR bit-clear
+in place (no erase, no read-modify-write of the slot); under flash encryption that byte would be
+ciphertext, the bit-clear would corrupt the whole 16-byte block, and every ack would need an
+erase cycle of a 4 KiB sector (wear and power-loss safety lost). What protects the records
+instead:
+
+* **Integrity / origin:** every record is a finished, ES256-signed COSE envelope; a modified
+  record fails signature verification at the receiver, and `seq` ordering stops reordering and
+  replay (T-09).
+* **Torn or corrupted records:** the per-record CRC-32 (already in the slot header) makes the
+  mount scan skip them, so they are never sent.
+* **Confidentiality:** not provided at rest. Anyone who dumps the `storage` partition of a
+  captured device can read buffered telemetry (residual risk recorded in T-04). A future option is
+  software AES-GCM of the record *payload* only (key in the encrypted NVS, header and ack byte left
+  in plaintext), as the Linux agent does with its at-rest key.
 
 ## Host test strategy (what is verified here)
 
