@@ -7,7 +7,8 @@
  *     trust bundle (contract section 4) - a broker under any other CA fails with
  *     tls_pin_mismatch BEFORE a single MQTT byte is sent (C-TLS-2),
  *   - the server certificate SAN must match the broker host (mbedtls_ssl_set_hostname),
- *   - the client key can be the ATECC608B slot 2 key (opaque pk from cryptoauthlib) - esp-tls'
+ *   - the client key is the current signing slot (ATECC608B operational slot 2/3, or bootstrap
+ *     slot 0 before enrollment / after expiry; opaque pk from cryptoauthlib) - esp-tls'
  *     secure-element hook is hard-wired to slot 0, which is the bootstrap key,
  *   - TLS 1.3 session tickets are kept in RAM and offered on reconnect (C-TLS-4).
  *
@@ -203,7 +204,7 @@ static int tls_connect(esp_transport_handle_t tr, const char *host, int port, in
     }
     if (im_esp_client_cert(&cert, &cert_len) != ESP_OK ||
         mbedtls_x509_crt_parse_der(&t->own, cert, cert_len) != 0 ||
-        im_esp_identity_pk(&t->key) != ESP_OK) {
+        im_esp_keystore_pk(im_esp_signing_slot(), &t->key) != ESP_OK) {
         s_last_failure = "cert_rejected";
         tls_free(t);
         return -1;

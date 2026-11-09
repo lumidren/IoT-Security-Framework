@@ -19,6 +19,7 @@
 #include "esp_transport.h"
 #include "im_agent.h"
 #include "im_crypto.h"
+#include "im_keyslot.h"
 #include "mbedtls/pk.h"
 
 #ifdef __cplusplus
@@ -28,35 +29,36 @@ extern "C" {
 /* ---- crypto provider (im_crypto_mbedtls.c) ----------------------------------------------- */
 esp_err_t im_esp_crypto_init(void);
 
-/* ---- identities ---------------------------------------------------------------------------- */
-/* ATECC608B: slot 0 bootstrap key (locked at the factory), slot 2 operational key. */
-esp_err_t im_esp_atecc_init(void);
-const im_identity_t *im_esp_atecc_identity(void);
-/* Generate a fresh operational key in slot 2 (atcab_genkey) for a new enrollment. */
-esp_err_t im_esp_atecc_new_operational(uint8_t pub[65]);
-/* After a successful enrollment: slot 2 becomes the identity; on failure fall back to slot 0. */
-void im_esp_atecc_commit(bool use_operational);
+/* ---- key store (identity_atecc.c or identity_nvs.c, selected by Kconfig) ------------------
+ * Slot numbers follow im_keyslot.h: 0 bootstrap, 2/3 alternating operational keys. ATECC608B:
+ * real chip slots (atecc_config.h); software: three keys in encrypted NVS. Private keys never
+ * leave the store (ATECC) / are only materialised inside mbedTLS contexts (software). */
+esp_err_t im_esp_keystore_init(void);
+/* The device identity for im_core: signs with im_esp_signing_slot(), ECDH with the active
+ * operational slot (config is wrapped to the current certificate key). */
+const im_identity_t *im_esp_keystore_identity(void);
+/* GenKey into slot (2 or 3) and return its public key. Never called on the active slot. */
+esp_err_t im_esp_keystore_genkey(uint8_t slot, uint8_t pub[65]);
+/* mbedTLS pk for a slot (ATECC: opaque, signs in the chip; software: zeroized on free). */
+esp_err_t im_esp_keystore_pk(uint8_t slot, mbedtls_pk_context *pk);
 
-/* Software key in encrypted NVS ("software" assurance, contract section 10). */
-esp_err_t im_esp_nvs_identity_init(void);
-const im_identity_t *im_esp_nvs_identity(void);
-esp_err_t im_esp_nvs_new_operational(uint8_t pub[65]);
-void im_esp_nvs_commit(bool use_operational);
-
-/* The active identity's TLS client key as an mbedTLS pk context (ATECC: opaque, signs in the
- * secure element; software: the decrypted NVS key, zeroized on free). */
-esp_err_t im_esp_identity_pk(mbedtls_pk_context *pk);
-/* The identity that a new CSR is generated for (pending until commit). */
-esp_err_t im_esp_identity_pending_pk(mbedtls_pk_context *pk);
-
-/* ---- persistent storage (platform_storage.c) -------------------------------------------- */
+/* ---- identity record + persistent storage (platform_storage.c) -------------------------- */
 esp_err_t im_esp_kv_init(im_kv_t *kv);          /* encrypted NVS namespace "ironmesh" */
 esp_err_t im_esp_storage_init(im_storage_t *st); /* "storage" partition (offline buffer) */
 
-/* Current certificate (DER) for TLS client auth: bootstrap from esp_secure_cert until the first
- * enrollment, then the operational cert stored in NVS. */
+/* Active operational slot from the identity record (0 = never enrolled). */
+uint8_t im_esp_active_slot(void);
+/* Slot that TLS client auth and the attestation use right now: the active operational slot
+ * while its certificate is valid, otherwise the bootstrap slot (im_keyslot_plan rule). */
+uint8_t im_esp_signing_slot(void);
+/* not_after of the operational certificate (0 when none). */
+uint64_t im_esp_op_not_after(void);
+/* Certificate (DER) matching im_esp_signing_slot(): operational or the esp_secure_cert
+ * bootstrap certificate. */
 esp_err_t im_esp_client_cert(const uint8_t **der, size_t *len);
-esp_err_t im_esp_store_operational_cert(const uint8_t *der, size_t len);
+/* Enrollment succeeded: write (new_slot, cert) as ONE NVS blob + commit, then flip the active
+ * slot in RAM. Until this returns, a power loss leaves the old slot/cert pair in force. */
+esp_err_t im_esp_commit_identity(uint8_t new_slot, const uint8_t *der, size_t len);
 esp_err_t im_esp_bootstrap_serial(uint8_t *serial, size_t cap, size_t *len);
 
 /* ---- TLS transport (im_tls.c) ---------------------------------------------------------- */

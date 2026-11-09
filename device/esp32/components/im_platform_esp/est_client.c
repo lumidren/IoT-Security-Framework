@@ -2,22 +2,26 @@
  * EST client (RFC 7030) with the IronMesh attestation (contract section 3):
  *   GET  /.well-known/est/cacerts                 -> CA certificates (pin candidates, NVS)
  *   GET  /.well-known/est/ironmesh/nonce          -> 32-byte single-use nonce
- *   new P-256 key in the secure element / encrypted NVS, PKCS#10 CSR (CN, OU, O, SAN URI)
- *   attestation = COSE_Sign1 type 10 built by im_core with the CURRENT identity key
+ *   new P-256 key in the INACTIVE operational slot, PKCS#10 CSR (CN, OU, O, SAN URI)
+ *   attestation = COSE_Sign1 type 10 built by im_core, signed by the TLS client key
  *   POST /.well-known/est/simple(re)enroll + X-IronMesh-Attestation -> PKCS#7 certs-only and
  *        X-IronMesh-Bundle (verified by im_core with the factory bundle key)
+ *   commit: (new slot, new cert) written as one NVS blob, then the active slot flips
+ *
+ * Slot plan (im_keyslot_plan, pure and host-tested): while the operational certificate is valid,
+ * TLS + attestation use the active operational slot (2 or 3) and simplereenroll; first
+ * enrollment and after expiry they use the bootstrap slot 0 + bootstrap cert and simpleenroll.
+ * The new key always goes to the slot that is not active, so a failure or power loss at any
+ * point before the commit leaves the old slot/cert pair valid.
  *
  * HTTP/1.1 is spoken over the IronMesh TLS transport (im_tls.c) rather than esp_http_client so
- * that the TLS client key can be the ATECC slot key; esp-tls only supports slot 0.
- * ATECC608B: one operational slot (HARDWARE_SETUP.md), so re-enrollment authenticates with the
- * bootstrap certificate + slot 0 (simpleenroll; accepted by the PKI for the same device) and the
- * attestation is signed by slot 0 with the bootstrap serial as kid. Software keys keep current
- * and new key side by side and use simplereenroll with the operational certificate.
+ * that the TLS client key can be an ATECC slot key; esp-tls only supports slot 0.
  *
  * NOT COMPILED HERE (ESP-IDF v5.3 + mbedTLS 3.6 x509write_csr / base64).
  */
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_log.h"
 #include "esp_random.h"
@@ -222,7 +226,7 @@ static int pkcs7_certs(const uint8_t *p, size_t n, mbedtls_x509_crt *chain)
     return -1;
 }
 
-static esp_err_t build_csr(im_agent_t *a, uint8_t *der, size_t cap, size_t *len)
+static esp_err_t build_csr(im_agent_t *a, uint8_t slot, uint8_t *der, size_t cap, size_t *len)
 {
     mbedtls_x509write_csr w;
     mbedtls_pk_context pk;
@@ -230,7 +234,7 @@ static esp_err_t build_csr(im_agent_t *a, uint8_t *der, size_t cap, size_t *len)
     char uri[128];
     mbedtls_x509_san_list san;
     int r;
-    if (im_esp_identity_pending_pk(&pk) != ESP_OK) {
+    if (im_esp_keystore_pk(slot, &pk) != ESP_OK) {
         return ESP_FAIL;
     }
     snprintf(subject, sizeof subject, "CN=%s,OU=%s,O=IronMesh", a->cfg.device_id, a->cfg.tenant_id);
@@ -259,20 +263,41 @@ static esp_err_t build_csr(im_agent_t *a, uint8_t *der, size_t cap, size_t *len)
     return r > 0 ? ESP_OK : ESP_FAIL;
 }
 
-static void commit(bool ok)
-{
-#if CONFIG_IRONMESH_SE_ATECC608
-    im_esp_atecc_commit(ok);
-#else
-    im_esp_nvs_commit(ok);
-#endif
-}
-
 static void fail(im_agent_t *a, int status, const char *reason)
 {
+    /* nothing to undo: the active slot and its certificate were never touched */
     ESP_LOGW(TAG, "enrollment failed: %d %s", status, reason);
-    commit(false);
     im_agent_on_enroll_failed(a, status, reason);
+}
+
+static void store_cacerts(const uint8_t *p7, size_t n)
+{
+    static uint8_t der_buf[4096];
+    mbedtls_x509_crt chain;
+    nvs_handle_t h;
+    size_t off = 0;
+    mbedtls_x509_crt_init(&chain);
+    if (pkcs7_certs(p7, n, &chain) == 0 && nvs_open("ironmesh", NVS_READWRITE, &h) == ESP_OK) {
+        for (mbedtls_x509_crt *c = &chain; c && c->raw.len && off + c->raw.len < sizeof der_buf;
+             c = c->next) {
+            memcpy(der_buf + off, c->raw.p, c->raw.len); /* DER concatenation */
+            off += c->raw.len;
+        }
+        (void)nvs_set_blob(h, "cacerts", der_buf, off);
+        (void)nvs_commit(h);
+        nvs_close(h);
+    }
+    mbedtls_x509_crt_free(&chain);
+}
+
+static int get(char *req, size_t cap, const char *path, http_resp_t *r)
+{
+    int len = snprintf(req, cap, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path,
+                       CONFIG_IRONMESH_EST_HOST);
+    if (len <= 0 || (size_t)len >= cap) {
+        return -1;
+    }
+    return http(req, (size_t)len, r) == ESP_OK ? 0 : -1;
 }
 
 esp_err_t im_esp_est_enroll(im_agent_t *a, bool renew)
@@ -292,57 +317,32 @@ esp_err_t im_esp_est_enroll(im_agent_t *a, bool renew)
     size_t att_len;
     size_t blen = 0;
     const char *v;
-    const char *op;
-    uint8_t kid[20];
-    size_t kid_len;
+    im_keyslot_plan_t plan;
     mbedtls_x509_crt chain;
     int len;
 
-#if CONFIG_IRONMESH_SE_ATECC608
-    /* authenticate with the bootstrap cert + slot 0 (see header comment) */
-    im_esp_atecc_commit(false);
-    op = "simpleenroll";
-    if (im_esp_bootstrap_serial(kid, sizeof kid, &kid_len) != ESP_OK) {
-        fail(a, 0, "no bootstrap certificate");
+    (void)renew; /* the plan decides: renewal is only possible while the cert is still valid */
+    if (im_keyslot_plan(im_esp_active_slot(), im_esp_op_not_after() != 0, (uint64_t)time(NULL),
+                        im_esp_op_not_after(), &plan) != IM_OK) {
+        fail(a, 0, "slot plan");
         return ESP_FAIL;
     }
-#else
-    op = renew ? "simplereenroll" : "simpleenroll";
-    if (renew) {
-        memcpy(kid, a->kid, a->kid_len);
-        kid_len = a->kid_len;
-    } else if (im_esp_bootstrap_serial(kid, sizeof kid, &kid_len) != ESP_OK) {
-        fail(a, 0, "no bootstrap certificate");
+    /* invariant the contract relies on: the TLS client key (im_esp_signing_slot, used by
+     * im_tls.c and by the identity that signs the attestation) is the plan's key */
+    if (im_esp_signing_slot() != plan.tls_slot) {
+        fail(a, 0, "slot mismatch");
         return ESP_FAIL;
     }
-#endif
+    ESP_LOGI(TAG, "%s: tls/attestation slot %u, new key slot %u",
+             plan.reenroll ? "simplereenroll" : "simpleenroll", plan.tls_slot, plan.new_slot);
+
     /* CA certificates (anchors / pin candidates for the broker) */
-    len = snprintf(req, sizeof req,
-                   "GET /.well-known/est/cacerts HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
-                   CONFIG_IRONMESH_EST_HOST);
-    if (http(req, (size_t)len, &r) == ESP_OK && r.status == 200 &&
+    if (get(req, sizeof req, "/.well-known/est/cacerts", &r) == 0 && r.status == 200 &&
         b64((const char *)r.body, r.body_len, p7, sizeof p7, &n) == 0) {
-        nvs_handle_t h;
-        mbedtls_x509_crt_init(&chain);
-        if (pkcs7_certs(p7, n, &chain) == 0 && nvs_open("ironmesh", NVS_READWRITE, &h) == ESP_OK) {
-            static uint8_t pem_buf[4096];
-            size_t off = 0;
-            for (mbedtls_x509_crt *c = &chain; c && c->raw.len && off + c->raw.len < sizeof pem_buf;
-                 c = c->next) {
-                memcpy(pem_buf + off, c->raw.p, c->raw.len); /* DER concatenation */
-                off += c->raw.len;
-            }
-            (void)nvs_set_blob(h, "cacerts", pem_buf, off);
-            (void)nvs_commit(h);
-            nvs_close(h);
-        }
-        mbedtls_x509_crt_free(&chain);
+        store_cacerts(p7, n);
     }
     /* nonce */
-    len = snprintf(req, sizeof req,
-                   "GET /.well-known/est/ironmesh/nonce HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
-                   CONFIG_IRONMESH_EST_HOST);
-    if (http(req, (size_t)len, &r) != ESP_OK) {
+    if (get(req, sizeof req, "/.well-known/est/ironmesh/nonce", &r) != 0) {
         fail(a, 0, "network");
         return ESP_FAIL;
     }
@@ -356,18 +356,13 @@ esp_err_t im_esp_est_enroll(im_agent_t *a, bool renew)
         fail(a, r.status, "bad nonce");
         return ESP_FAIL;
     }
-    /* fresh key + CSR + attestation by the current identity */
-#if CONFIG_IRONMESH_SE_ATECC608
-    if (im_esp_atecc_new_operational(pub) != ESP_OK) {
-#else
-    if (im_esp_nvs_new_operational(pub) != ESP_OK) {
-#endif
+    /* fresh key in the inactive slot, CSR for it, attestation by the TLS client key */
+    if (im_esp_keystore_genkey(plan.new_slot, pub) != ESP_OK) {
         fail(a, 0, "key generation");
         return ESP_FAIL;
     }
-    if (build_csr(a, csr, sizeof csr, &csr_len) != ESP_OK ||
-        im_agent_attestation_kid(a, kid, kid_len, nonce, csr, csr_len, att, sizeof att, &att_len) !=
-            IM_OK) {
+    if (build_csr(a, plan.new_slot, csr, sizeof csr, &csr_len) != ESP_OK ||
+        im_agent_attestation(a, nonce, csr, csr_len, att, sizeof att, &att_len) != IM_OK) {
         fail(a, 0, "csr/attestation");
         return ESP_FAIL;
     }
@@ -377,7 +372,8 @@ esp_err_t im_esp_est_enroll(im_agent_t *a, bool renew)
                    "POST /.well-known/est/%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n"
                    "Content-Type: application/pkcs10\r\nContent-Transfer-Encoding: base64\r\n"
                    "X-IronMesh-Attestation: %s\r\nContent-Length: %u\r\n\r\n%s",
-                   op, CONFIG_IRONMESH_EST_HOST, att_b64, (unsigned)strlen(csr_b64), csr_b64);
+                   plan.reenroll ? "simplereenroll" : "simpleenroll", CONFIG_IRONMESH_EST_HOST,
+                   att_b64, (unsigned)strlen(csr_b64), csr_b64);
     if (len <= 0 || (size_t)len >= sizeof req || http(req, (size_t)len, &r) != ESP_OK) {
         fail(a, 0, "network");
         return ESP_FAIL;
@@ -400,22 +396,32 @@ esp_err_t im_esp_est_enroll(im_agent_t *a, bool renew)
     if (v != NULL && b64(v, n, bundle, sizeof bundle, &blen) != 0) {
         blen = 0;
     }
-    /* leaf = the non-CA certificate */
+    /* leaf = the non-CA certificate; it must certify the key that was just generated */
     for (mbedtls_x509_crt *c = &chain; c != NULL && c->raw.len > 0; c = c->next) {
-        if (!c->MBEDTLS_PRIVATE(ca_istrue)) {
-            if (im_esp_store_operational_cert(c->raw.p, c->raw.len) != ESP_OK) {
-                break;
-            }
-            commit(true);
-            if (im_agent_on_enrolled(a, c->serial.p, c->serial.len, x509_unix(&c->valid_from),
-                                     x509_unix(&c->valid_to), blen ? bundle : NULL, blen) != IM_OK) {
-                ESP_LOGE(TAG, "agent refused the enrollment result (bundle signature?)");
-            }
-            mbedtls_x509_crt_free(&chain);
-            return ESP_OK;
+        uint8_t cert_pub[65];
+        size_t pl = 0;
+        if (c->MBEDTLS_PRIVATE(ca_istrue)) {
+            continue;
         }
+        if (mbedtls_ecp_point_write_binary(&mbedtls_pk_ec(c->pk)->MBEDTLS_PRIVATE(grp),
+                                           &mbedtls_pk_ec(c->pk)->MBEDTLS_PRIVATE(Q),
+                                           MBEDTLS_ECP_PF_UNCOMPRESSED, &pl, cert_pub,
+                                           sizeof cert_pub) != 0 ||
+            pl != 65 || memcmp(cert_pub, pub, 65) != 0) {
+            break;
+        }
+        /* THE commit point: slot index + certificate in one NVS write, then the flip */
+        if (im_esp_commit_identity(plan.new_slot, c->raw.p, c->raw.len) != ESP_OK) {
+            break;
+        }
+        if (im_agent_on_enrolled(a, c->serial.p, c->serial.len, x509_unix(&c->valid_from),
+                                 x509_unix(&c->valid_to), blen ? bundle : NULL, blen) != IM_OK) {
+            ESP_LOGE(TAG, "agent refused the enrollment result (bundle signature?)");
+        }
+        mbedtls_x509_crt_free(&chain);
+        return ESP_OK;
     }
     mbedtls_x509_crt_free(&chain);
-    fail(a, r.status, "no leaf certificate");
+    fail(a, r.status, "no usable leaf certificate");
     return ESP_FAIL;
 }

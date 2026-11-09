@@ -221,13 +221,10 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(e);
     ESP_ERROR_CHECK(im_esp_crypto_init());
-#if CONFIG_IRONMESH_SE_ATECC608
-    ESP_ERROR_CHECK(im_esp_atecc_init());
-    pf.identity = im_esp_atecc_identity();
-#else
-    ESP_ERROR_CHECK(im_esp_nvs_identity_init());
-    pf.identity = im_esp_nvs_identity();
-#endif
+    /* key store: ATECC608B or encrypted NVS (Kconfig); slots 0 / 2 / 3 per im_keyslot.h */
+    ESP_ERROR_CHECK(im_esp_keystore_init());
+    pf.identity = im_esp_keystore_identity();
+    /* loads the identity record (active slot + operational cert) before any key is used */
     ESP_ERROR_CHECK(im_esp_kv_init(&pf.kv));
     ESP_ERROR_CHECK(im_esp_storage_init(&pf.storage));
     ESP_ERROR_CHECK(im_esp_bootstrap_serial(s_bootstrap_kid, sizeof s_bootstrap_kid, &kid_len));
