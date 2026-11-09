@@ -221,7 +221,7 @@ allow if {
   then hot-swapped atomically and the decision cache is flushed.
 - **Revocation fast path.** PKI revoke → HMAC-signed push to the policy service → revocation cache
   → EMQX `DELETE /api/v5/clients/{id}`. In the conformance suite, with the real policy binary, the
-  broker drops the session within 14 ms (p95) of the revoke call. CRL polling every 5 s is the
+  broker drops the session within 16 ms (p95) of the revoke call. CRL polling every 5 s is the
   fallback.
 
 ### 6. Firmware updates
@@ -314,30 +314,43 @@ reject malformed input with the same error codes.
 
 ### Device conformance suite
 
-One suite drives every firmware target through the same 27 cases over a device-under-test control
+One suite drives every firmware target through the same 28 cases over a device-under-test control
 protocol. Access-control and revocation cases run against the **real policy service binary**. The
-broker double consults it exactly as EMQX would, and revocation travels the production path: a
-signed push to the policy service, then a session kick, then a refused reconnect. Full matrix:
+broker double consults it exactly as EMQX would, sending the client certificate on every CONNECT.
+Revocation travels the production path: a signed push to the policy service, then a session kick,
+then a refused reconnect. A second run uses the **real PKI binary** as the enrollment authority,
+with tenant keys provisioned through its API. Full matrix:
 [conformance/results/SUMMARY.md](conformance/results/SUMMARY.md).
 
-| Target | Passed | Failed | Not applicable |
-|---|---|---|---|
-| Linux agent (Rust) | 27 / 27 | 0 | 0 |
-| ESP32 protocol core (C, host build) | 26 / 26 | 0 | 1 (release-build test hook: compiled out by the prod profile) |
-| Both targets against the **real PKI binary** | 15 and 14 | 0 | Downlink and OTA cases (harness doesn't load tenant keys into the real PKI) |
+| Target | Hermetic cloud | Real PKI binary |
+|---|---|---|
+| Linux agent (Rust) | **28 / 28** pass | **27 / 27** pass, 1 n/a |
+| ESP32 protocol core (C, host build) | **27 / 27** pass, 1 n/a | **26 / 26** pass, 2 n/a |
 
-Covered cases include TLS 1.3 with ALPN, rejection of a rogue broker by pinning and of a TLS 1.2-only
-broker, session resumption, bounded backoff, attested enrollment, refusal for quarantined devices,
-manual and automatic certificate rotation, cross-device publish/subscribe denial, unsigned,
-tampered, untrusted-key and downgraded firmware rejection, health-check rollback, delta updates,
-replay, stale and forged command rejection, offline buffering, and encrypted config.
+- **Not applicable on the ESP32:** C-HOOK-1, the release-build test hook, which the prod profile
+  compiles out.
+- **Not applicable on the real PKI:** C-ROT-2, automatic rotation of short-lived certificates. The
+  PKI enforces a minimum certificate lifetime of 7 days, so the case can't run in the time available.
 
-**Revocation reaction time** (C-REV-1, 20 runs per target, budget < 10 s):
+Covered cases:
+- **Transport:** TLS 1.3 with ALPN; rejection of a rogue broker by pinning and of a TLS 1.2-only
+  broker; session resumption; bounded backoff.
+- **Identity:** attested enrollment; refusal for quarantined devices; manual and automatic
+  certificate rotation.
+- **Authorization:** cross-device publish and subscribe denial.
+- **Revocation:** a revoked serial is refused at CONNECT while the device's renewed certificate is
+  admitted (C-REV-2).
+- **Firmware:** unsigned, tampered, untrusted-key and downgraded images are rejected; health-check
+  rollback; delta updates.
+- **Messages:** replayed, stale and forged commands are rejected; offline buffering; encrypted
+  config.
+
+**Revocation reaction time** (C-REV-1, 20 runs per target and mode, budget < 10 s):
 
 | Target | Revoke → broker disconnect (p95) | Revoke → reconnect refused (p95, max) |
 |---|---|---|
-| Linux agent | 0.012 s | 0.017 s, 0.018 s |
-| ESP32 core | 0.014 s | 0.957 s, 1.000 s (bounded by the device's first reconnect backoff) |
+| Linux agent | 0.004 s (real PKI 0.013 s) | 0.018 s, 0.026 s (real PKI 0.018 s, 0.018 s) |
+| ESP32 core | 0.015 s (real PKI 0.016 s) | 0.999 s, 0.999 s (real PKI 0.898 s, 0.921 s), bounded by the device's first reconnect backoff |
 
 **Firmware tamper rejection**, measured on both targets:
 - Unsigned images are rejected before download.
@@ -357,13 +370,15 @@ conformance harness doubles.
 | Metric | Result |
 |---|---|
 | Devices enrolled and connected | **10,000 / 10,000**, 0 errors, 0 TLS failures, 0 policy denies |
-| Sustained telemetry accepted | **1,000.6 msg/s** (600,534 messages in 600 s) |
-| Publish → PUBACK latency | p50 **0.7 ms**, p95 7.2 ms, p99 128.6 ms |
-| Downlink command round trip | 500 / 500 acked, p50 2.0 ms, p99 30.3 ms |
-| Uplinks verified end to end | 672,424, **0 replay rejections**, every device's last `seq` accounted for |
-| Peak memory | 1.27 GiB total (fleet 687 MiB, harness 506 MiB, policy 117 MiB) |
+| Sustained telemetry accepted | **1,000.1 msg/s** (600,291 messages in 600 s) |
+| Publish → PUBACK latency | p50 **0.55 ms**, p95 1.16 ms, p99 **1.96 ms**, max 45.7 ms |
+| Downlink command round trip | 500 / 500 acked, p50 1.8 ms, p99 3.8 ms |
+| Uplinks verified end to end | 650,903, **0 replay rejections**, every device's last `seq` accounted for |
+| Peak memory | 1.21 GiB total (fleet 648 MiB, harness 520 MiB, policy 126 MiB) |
+| Cost of the certificate checks at CONNECT | about 0.11 ms per CONNECT inside the policy service |
 
-- **Tail latency:** the p99 comes from the broker waiting on its connection pool to the policy service.
+- **Build:** the run uses the final hardened policy service, which checks the client certificate's
+  issuer and serial on every CONNECT and accepts each service token only once.
 - **Not covered here:** the EMQX broker, Kafka and registry ingest. The nightly CI job load-tests them
   against the compose stack.
 
