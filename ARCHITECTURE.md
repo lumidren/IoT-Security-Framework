@@ -165,15 +165,15 @@ flowchart TB
 
 | Container        | Technology            | Ports and protocols                                                                 | Authenticates callers by                                                        | Owns                                                                                                   |
 |------------------|-----------------------|-------------------------------------------------------------------------------------|---------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|
-| `emqx`           | EMQX 5 (Erlang)       | 8883 MQTT 5 over TLS 1.3 only, ALPN `mqtt`, mTLS; 18083 HTTPS management (internal) | Client certificate chaining to Device CA or Services CA; `peer_cert_as_username = cn`; every CONNECT and every publish/subscribe delegated to `policy` | Sessions (7 d expiry, receive maximum 32), retained messages for `shadow/desired`, `ota/notify`, `config` |
-| `pki`            | Go                    | 8443 HTTPS mTLS: `/.well-known/est/*`, `/ocsp`, `/v1/*` management; 8444 HTTP: `/crl/device-ca.crl` | Device bootstrap or operational certificate on EST; Services CA certificate + ES256 service JWT on management API | CA issuance (`internal/ca`), attestation verification (`internal/attest`), nonces, certificates and revocations (`internal/store`), CRL, OCSP, revocation push |
-| `policy`         | Go                    | 8081 HTTPS (mTLS from EMQX and services): `/hooks/authn`, `/hooks/authz`, `/internal/v1/revocations`, `/v1/policy*`, `/v1/revocations` | mTLS Services CA; signed revocation events from PKI; OIDC bearer (roles) on `/v1/*` via the console proxy | Embedded Rego policy and its versions, revocation cache (persisted snapshot), lifecycle lookup cache, EMQX kick client |
+| `emqx`           | EMQX 5 (Erlang)       | 8883 MQTT 5 over TLS 1.3 only, ALPN `mqtt`, mTLS (devices; per-client 10 msg/s, 64 KB/s); 8884 internal service listener (TLS 1.3, Services CA only); 18083 plain-HTTP management API and dashboard (ClusterIP; NetworkPolicy admits policy, registry, ota and Prometheus) | Client certificate chaining to the Device CA (8883) or Services CA (8884); `peer_cert_as_username = cn`; every CONNECT (with `cert_pem`/`cert_serial`) and every publish/subscribe delegated to `policy` | Sessions (7 d expiry, receive maximum 32), retained messages for `shadow/desired`, `ota/notify`, `config` |
+| `pki`            | Go                    | 8443 HTTPS, TLS 1.3 only, optional client certificates: `/.well-known/est/*`, `/ocsp`, `/v1/*` management (revoke, revoke-all, device release, tenant policy); 8444 HTTP: `/crl/device-ca.crl` | Device bootstrap or operational certificate on EST; Services CA certificate and/or single-use ES256 service JWT (subject bound to the certificate when both are presented) on the management API | CA issuance (`internal/ca`), attestation verification (`internal/attest`), nonces, certificates, revocations, revocation outbox and tenant policy (`internal/store`), CRL, OCSP, outbox dispatcher with fan-out to every policy replica |
+| `policy`         | Go                    | 8081 plain HTTP in the shipped profiles (TLS 1.3 with optional Services CA client certificates when `POLICY_TLS_CERT_FILE` is set): `/emqx/authn`, `/emqx/authz`, `/internal/v1/revocations`, `/v1/policy*`, `/v1/revocations` | Shared hook token on the EMQX hooks; bearer token plus HMAC-signed body on revocation and release events from PKI; console OIDC token or single-use ES256 service JWT on `/v1/*` | Embedded Rego policy and its versions, revocation cache (persisted snapshot), lifecycle lookup cache, EMQX kick client |
 | `bridge`         | Go                    | 8082 HTTP metrics only; MQTT client to 8883; Kafka client to 9092                   | Connects to EMQX with Services CA certificate CN `svc-bridge`; SASL/SCRAM + TLS to Redpanda | Nothing durable: forwards raw COSE bytes with broker metadata to `im.ingest` and EMQX client events to `im.auth` |
-| `registry`       | Python 3.12, FastAPI  | 8000 HTTPS: `/v1/*`, `/v1/ws`, `/internal/v1/*`                                      | OIDC bearer or `imk_` API key on `/v1/*`; mTLS + service JWT on `/internal/v1/*` | Devices, lifecycle, groups, twin, commands, encrypted config, provisioning queue, fleet summary, audit, users and API keys; `registry` database |
+| `registry`       | Python 3.12, FastAPI  | 8000 HTTPS: `/v1/*`, `/v1/ws`, `/internal/v1/*`                                      | OIDC bearer or `imk_` API key on `/v1/*`; single-use ES256 service JWT or a per-caller static bearer token on `/internal/v1/*` (in-cluster HTTP in the shipped profiles) | Devices, lifecycle, groups, twin, commands, encrypted config, provisioning queue, fleet summary, audit, users and API keys; `registry` database |
 | `ota`            | Python 3.12, FastAPI  | 8001 HTTPS: `/v1/firmware*`, `/v1/campaigns*`, `/v1/signing-keys`, `/internal/v1/*`  | As registry                                                                     | Firmware records, signed manifests, delta patches, campaigns and stages; `ota` database; artifact store objects |
 | `anomaly`        | Python 3.12           | 8002 HTTPS: `/v1/alerts*`, `/v1/rules*`, `/v1/quarantine`, `/v1/settings`; Kafka consumer | As registry                                                                     | Rules, per-tenant Isolation Forest models, alerts, quarantine log, SIEM sink; `anomaly` database        |
 | `console`        | Next.js 15, TypeScript| 3000 HTTPS (behind 443): pages, `/api/proxy/<service>/*`, OIDC callback             | OIDC session cookie (httpOnly, SameSite=Strict); forwards the bearer token server-side | No business data; generated API client checked against each service's `/openapi.json` in CI            |
-| `redpanda`       | Redpanda              | 9092 Kafka protocol, TLS + SASL/SCRAM                                               | Per-service SASL principals and ACLs                                            | Topics `im.ingest`, `im.auth`, `im.alerts`, `im.audit`, `im.commands`                                   |
+| `redpanda`       | Redpanda              | 9092 Kafka protocol: SASL/SCRAM-SHA-512 without TLS in compose and the Kubernetes base; TLS + SCRAM or IAM on MSK | Per-service SASL principals, topic and consumer-group ACLs (`redpanda-init`; IAM on MSK) | Topics `im.ingest`, `im.auth`, `im.alerts`, `im.audit`, `im.commands`                                   |
 | `postgres`       | PostgreSQL 16         | 5432 TLS                                                                            | Per-service roles; application roles `NOBYPASSRLS`                              | Databases `registry`, `ota`, `pki`, `anomaly`                                                           |
 | `otel-collector` | OpenTelemetry         | 4317 OTLP gRPC                                                                      | Cluster-internal only                                                           | Traces and metrics export to Prometheus and the tracing backend                                         |
 | Artifact store   | S3 or MinIO           | HTTPS                                                                               | Pre-signed URLs issued by `ota`; bucket versioning and object lock              | `image.bin`, `manifest.cbor`, `manifest.sig`, delta patches                                             |
@@ -272,9 +272,10 @@ flowchart TB
 | `internal/ca/identity.go`, `ids.go` | Extract and validate device identity from a certificate (CN device id, OU tenant, SAN URN), verify chains with the right EKU                        | `ParseDeviceIdentity`, `VerifyChain`, `ValidateDeviceID`, `ValidateTenantID`, `DeviceURN`                      |
 | `internal/ca/serial.go`     | 128-bit CSPRNG serials and their canonical hex form (also the COSE `kid`)                                                                                   | `NewSerial`, `FormatSerial`, `ParseSerial`                                                                      |
 | `internal/kms`              | `Signer` abstraction over AWS KMS, SoftHSM (PKCS#11) and the development file backend; algorithms P-256, P-384, Ed25519                                    | `kms.Signer`, `awskms.Provider.Open`, `awskms.Signer.Sign`, `file.Provider.warn`                               |
-| `internal/store`            | `Store` interface with in-memory and Postgres implementations: certificates, revocations, single-use nonces, CRL numbers, per-tenant attestation policy    | `PutCertificate`, `ListCertificatesByDevice`, `AddRevocation`, `PutNonce`, `ConsumeNonce`, `DeleteExpiredNonces`, `NextCRLNumber`, `GetTenantPolicy` |
+| `internal/store`            | `Store` interface with in-memory and Postgres implementations: certificates, revocations, the revocation outbox (revocation and `device_release` events, leased claims), single-use nonces, CRL numbers, per-tenant policy; Postgres runs as the non-owner `pki_app` role under forced RLS (migration 0002) | `PutCertificate`, `ListCertificatesByDevice`, `AddRevocationWithEvent`, `AddOutboxEvent`, `ClaimOutbox`, `AckOutbox`, `ConsumeNonce`, `NextCRLNumber`, `GetTenantPolicy`, `PutTenantPolicy` |
 | `internal/ocsp/responder.go`| RFC 6960 responder signed by a delegated OCSP signer certificate                                                                                            | `ServeHTTP`                                                                                                     |
-| `internal/revocation`       | `Revoke` one serial or `RevokeDevice` (every valid serial of a device): store the revocation, trigger CRL regeneration and OCSP invalidation, publish the event; `HTTPPublisher` posts it to policy with a bearer token and an HMAC-SHA256 body signature, retrying until acknowledged | `Service.Revoke`, `Service.RevokeDevice`, `HTTPPublisher.Publish`, `Sign`, `VerifySignature`           |
+| `internal/revocation`       | `Revoke` one serial (serial-scoped event) or `RevokeDevice` (every valid serial, `device_deny` events): store the revocation and its event in the outbox in one transaction, regenerate the CRL, invalidate OCSP, make one inline delivery attempt; `Release` queues a `device_release` event. The `Dispatcher` retries pending events (backoff from 500 ms to 30 s, leased rows) until acknowledged; `HTTPPublisher` signs the body with HMAC-SHA256, sends the bearer token and, with `PKI_POLICY_FANOUT=dns`, delivers to every address behind the policy headless Service | `Service.Revoke`, `Service.RevokeDevice`, `Service.Release`, `Dispatcher.Run`, `HTTPPublisher.Publish`, `fanOut`, `Sign` |
+| `internal/mgmt`             | Management API: certificate lookup and revocation, `revoke-all`, device release (registry only) and the tenant-policy API with per-field owners (registry: command key and software-key policy; ota: firmware keys); service JWTs must carry `iat`/`exp`/`jti`, live at most 300 s, are single use per instance and, with a client certificate, must name the same service | `NewHandler`, `Authenticator.Identify`, `ReplayCache`, `releaseDevice`, `putCommandKey`, `VerifyES256` |
 | `internal/registry`         | Client for the registry's internal API: lifecycle lookup before issuance, assurance level and enrollment notification after issuance                        | `GetDevice`, `RecordAssurance`                                                                                  |
 | `internal/ceremony`, `internal/shamir` | Offline and factory ceremonies as code: Root CA initialisation with Shamir-split key shares (M-of-N), root recovery, intermediate and bundle-key initialisation, bootstrap and server certificate issuance, plus clients for revoke, CRL fetch and OCSP checks | `InitRoot`, `RecoverRoot`, `InitIntermediate`, `InitBundleKey`, `IssueBootstrap`, `IssueServer`, `shamir.Split`, `shamir.Combine` |
 
@@ -295,9 +296,14 @@ counted in `ironmesh_auth_failures_total`):
    quote signature, AK chain to `Policy.AKRoots`, PCR selection and digest allowlist, nonce as
    qualifying data; `atecc608` and `optee` cross-checked against the manufacture record.
 8. Issue the operational certificate (`ca.IssueOperational`), persist it (`store.PutCertificate`),
-   revoke the superseded serial, notify the registry (`POST /internal/v1/devices/{id}/enrolled`).
-9. Build and sign the bundle with the bundle key (`Bundler.BuildHeader`), return `certs-only` PKCS#7
-   (`EncodeCertsOnly`) plus `X-IronMesh-Bundle`.
+   build and sign the bundle with the bundle key (`Bundler.BuildHeader`).
+9. Report the enrollment synchronously to the registry (`POST /internal/v1/devices/{id}/enrolled`,
+   retried three times). If that fails, the new certificate is revoked (`cessationOfOperation`, not
+   pushed because it was never delivered) and the device gets `503` with `Retry-After`, so a device
+   is never active in the PKI while the registry does not know it.
+10. On a renewal, schedule the serial-scoped revocation of the previous certificate after
+    `PKI_SUPERSEDE_GRACE` (1 h, an in-memory timer; THREAT_MODEL T-13), then return `certs-only`
+    PKCS#7 (`EncodeCertsOnly`) plus `X-IronMesh-Bundle`.
 
 ### 3.2 Device agent (`device/agent-rs`)
 
@@ -550,9 +556,13 @@ sequenceDiagram
 
 Renewal starts at `notBefore + 50% lifetime` with up to 10% jitter and retries with exponential
 backoff (60 s base, 6 h cap) until expiry, after which the device falls back to bootstrap
-enrollment. The superseded serial is revoked when the device's first CONNECT with the new serial
-is observed or after a one hour grace, whichever comes first, so rotation never drops a live session
-and a cloned identity is evicted within the hour (THREAT_MODEL T-13).
+enrollment. The superseded serial is revoked after `PKI_SUPERSEDE_GRACE` (1 h) by a timer in the
+PKI process, with a serial-scoped event, so the renewed certificate keeps working and the old one
+is refused at CONNECT from then on; the timer is not persisted, so a PKI restart inside the grace
+leaves the old serial valid until it expires (THREAT_MODEL T-13). After the PKI reports the renewal,
+the registry queues a durable `publish_config` action that re-wraps the retained configuration to
+the new key (THREAT_MODEL T-48). The diagram below is simplified: the superseded serial is not
+revoked on the first CONNECT with the new serial, only when the grace timer fires.
 
 ```mermaid
 sequenceDiagram
@@ -596,9 +606,21 @@ sequenceDiagram
 
 ### 5.4 Revocation propagation (budget under 10 s)
 
-`POST /v1/certificates/{serial}/revoke` to broker disconnect. The push path is authoritative; the
-CRL poller in the policy service (`crlpoll.go`) reconciles every 60 s in case a push is lost, and
-`ironmesh_revocation_latency_seconds` is alerted above 10 s.
+Quarantine or decommission to broker disconnect. The registry commits the lifecycle transition and
+calls PKI `revoke-all`. The PKI writes each revocation and its policy event to the durable
+`revocation_outbox` in one transaction, makes one delivery attempt inline and leaves anything
+unacknowledged to the outbox dispatcher, which retries with backoff (500 ms doubling, capped at
+30 s; rows leased with `FOR UPDATE SKIP LOCKED`, so a restarted or second PKI replica resumes).
+With `PKI_POLICY_FANOUT=dns` every event goes to every ready policy replica behind the headless
+Service and counts as delivered only when each replica answered 2xx; `ironmesh_revocation_outbox_pending`
+shows what is still queued. Each policy replica verifies the HMAC, deduplicates by `event_id`,
+deny-lists the device id (`device_deny`, revoke-all) or only the serial (single-certificate and
+superseded revocations), persists its snapshot and kicks the session. At the next CONNECT the authn
+hook parses `cert_pem`, checks the issuer and refuses a revoked serial or device id, independently
+of the push; the CRL poller (`crlpoll.go`, every 5 s) feeds serial revocations into the same cache
+in case a push is lost, and `RevocationLatencyHigh` alerts when p99 exceeds 8 s. A release sends a
+`device_release` event through the same outbox; it lifts only the device-level deny, so the device
+must re-enrol (section 5.8).
 
 ```mermaid
 sequenceDiagram
@@ -608,47 +630,50 @@ sequenceDiagram
   participant REG as registry (8000)
   participant PKI as pki (8443)
   participant ST as pki store
-  participant POL as policy (8081)
-  participant CACHE as revocation cache
+  participant DSP as outbox dispatcher
+  participant POL as policy replicas (8081)
   participant BRK as emqx (18083 / 8883)
   participant DEV as Device
 
-  OPR->>CON: revoke certificate (step-up re-auth within 5 min)
-  CON->>REG: POST /api/proxy/registry -> /v1/devices/dev-.../decommission or revoke (bearer)
-  REG->>REG: lifecycle transition in one transaction, audit row, im.audit
-  REG->>PKI: POST /v1/certificates/serial/revoke (mTLS, service JWT aud pki)
-  PKI->>ST: AddRevocation(serial, reason, now) and outbox event in the same transaction
-  PKI->>PKI: schedule CRL regeneration (published within 60 s), OCSP answers revoked immediately
-  PKI->>POL: POST /internal/v1/revocations, signed Event (event_id, serial, device_id, tenant_id, reason, revoked_at)
-  POL->>POL: Service.Apply: validate, verify signature, dedupe by event_id
-  POL->>CACHE: Upsert(entry), persist snapshot
-  POL->>BRK: Kick(clientid) via management API, retried with backoff
+  OPR->>CON: quarantine or decommission (step-up re-auth within 300 s)
+  CON->>REG: POST /v1/devices/dev-.../quarantine (bearer, Origin checked)
+  REG->>REG: lifecycle transition in one transaction, audit row, pki_revoke_all action queued
+  REG->>PKI: POST /v1/devices/dev-.../revoke-all (mTLS, single-use service JWT aud pki)
+  PKI->>ST: AddRevocationWithEvent per valid serial (device_deny true), one transaction
+  PKI->>PKI: regenerate CRL, invalidate OCSP cache
+  PKI->>POL: inline attempt: POST /internal/v1/revocations to every replica (bearer, HMAC)
+  POL->>POL: verify HMAC, dedupe by event_id, deny-list device id, persist snapshot
+  POL-->>PKI: 202 accepted
+  PKI-->>REG: 200 (published, or publish_error with the event still queued)
+  POL->>BRK: Kick(clientid) via management API, retried, unkicked entries requeued
   BRK-->>DEV: DISCONNECT, TCP close
-  BRK-->>POL: 204
-  POL->>CACHE: MarkKicked(event_id)
-  POL->>POL: ObserveRevocationLatency(now - revoked_at)
-  POL-->>PKI: 200 (applied, kicked)
-  PKI-->>REG: 200
-  REG-->>CON: 200 DeviceDetail (cert status revoked)
-  CON-->>OPR: timeline shows revoke, WebSocket device.state_changed
+  loop until every replica acknowledged
+    DSP->>ST: ClaimOutbox (leased, FOR UPDATE SKIP LOCKED)
+    DSP->>POL: redeliver to replicas that have not acknowledged
+    POL-->>DSP: 202 (duplicate events are no-ops)
+    DSP->>ST: AckOutbox or RecordOutboxAttempt with backoff
+  end
   DEV->>BRK: reconnect with backoff, CONNECT (same certificate)
-  BRK->>POL: POST /hooks/authn
-  POL->>CACHE: IsRevokedSerial(serial)
-  CACHE-->>POL: true
+  BRK->>POL: POST /emqx/authn (cert_pem, cert_serial)
+  POL->>POL: issuer ok, serial or device id revoked, lifecycle quarantined
   POL-->>BRK: deny
   BRK-->>DEV: CONNACK 0x87 not authorized
-  DEV->>PKI: simplereenroll with revoked certificate
-  PKI-->>DEV: 403, certificate revoked
   DEV->>PKI: simpleenroll with bootstrap certificate
-  alt lifecycle decommissioned or quarantined
-    PKI-->>DEV: 403, lifecycle refuses enrollment
-  else lifecycle active (key compromise handled, device released)
-    PKI-->>DEV: new operational certificate (section 5.2)
+  PKI->>REG: lifecycle lookup
+  REG-->>PKI: quarantined or decommissioned
+  PKI-->>DEV: 403, lifecycle refuses enrollment
+  opt admin releases a quarantined device
+    OPR->>REG: POST /v1/devices/dev-.../release (step-up)
+    REG->>PKI: POST /v1/devices/dev-.../release (registry only)
+    PKI->>ST: AddOutboxEvent device_release
+    PKI->>POL: device_release to every replica, same bearer, HMAC and retries
+    POL->>POL: lift device-level denies revoked at or before released_at, serial denies stay
+    DEV->>PKI: bootstrap enrollment succeeds, new operational certificate (section 5.2)
   end
-  loop every 60 s, reconciliation
+  loop every 5 s, reconciliation
     POL->>PKI: GET /crl/device-ca.crl (8444)
     PKI-->>POL: signed CRL
-    POL->>CACHE: Upsert any serial missing from the cache
+    POL->>POL: apply any revoked serial missing from the cache
   end
 ```
 
@@ -821,10 +846,16 @@ sequenceDiagram
 
 ### 5.8 Anomaly detection to automatic quarantine
 
-Rules are deterministic; the Isolation Forest only auto-quarantines when its score exceeds the hard
-threshold and at least one rule corroborates (THREAT_MODEL T-68). A per-tenant circuit breaker caps
-automatic quarantines at 5% of the fleet per hour (T-69). Quarantine revokes every certificate of the
-device, denies it at CONNECT and kicks the live session (`docs/API_CONTRACT.md` section 1.2).
+Rules are deterministic and independent of the Isolation Forest. Auto-quarantine is off by default
+per tenant and, when enabled, requires CRITICAL severity; it does not require a corroborating rule
+(THREAT_MODEL T-68). A circuit breaker caps automatic quarantines at an absolute 10 per hour by
+default (T-69). Quarantine revokes every certificate of the device with `device_deny` events that
+reach every policy replica through the PKI outbox (section 5.4), denies it at CONNECT and kicks the
+live session. Release goes back through the PKI: the registry calls `POST /v1/devices/{id}/release`,
+which queues a `device_release` event that lifts the device-level deny on every replica while the
+revoked serials stay revoked, so the device must re-enrol; if the PKI is unreachable the release is
+retried from the registry action outbox (`docs/API_CONTRACT.md` section 1.2). The diagram predates
+the release event and the outbox and shows the earlier simplified flow.
 
 ```mermaid
 sequenceDiagram
@@ -890,19 +921,19 @@ a string in a payload, a client id, or broker metadata.
 | DF-01 | Factory provisioning                                   | Station -> device                           | TB-3         | Wired link on the factory network, one-time mode        | Bootstrap certificate (public); key generated in the SE and never exported | Identity material                                |
 | DF-02 | EST enrollment and rotation                            | Device -> pki 8443                          | TB-2, TB-4   | TLS 1.3 mTLS, Services CA SPKI pin, SAN match           | COSE_Sign1 attestation by the current identity key; nonce; CSR hash binding | Device identity, firmware hash and version       |
 | DF-03 | Bundle                                                 | pki -> device (EST response header)          | TB-2         | Same TLS session as DF-02                               | COSE_Sign1 by the PKI bundle key, verified with the baked-in public key    | Trust configuration (public)                     |
-| DF-04 | CONNECT authentication                                 | emqx -> policy `/hooks/authn`                | TB-5         | mTLS with Services CA certificates                       | EMQX forwards the verified certificate fields; policy derives `client_attrs`, checks client id = CN, revocation cache, lifecycle | Session identity                                 |
-| DF-05 | Publish and subscribe authorization                    | emqx -> policy `/hooks/authz`                | TB-5         | mTLS                                                     | `client_attrs` from DF-04 plus topic, action, QoS, retain; OPA decision cached 60 s | Authorization decision                           |
+| DF-04 | CONNECT authentication                                 | emqx -> policy `/emqx/authn`                 | TB-5         | In-cluster HTTP with the shared hook token (TLS 1.3 only when `POLICY_TLS_CERT_FILE` is set; the charts do not set it) | EMQX forwards the verified certificate fields plus `cert_pem`/`cert_serial`; policy checks issuer and CN, denies a revoked serial or device id and a CONNECT without a serial (`POLICY_REQUIRE_CERT_SERIAL`), checks client id = CN and lifecycle (cached 30 s), derives `client_attrs` | Session identity                                 |
+| DF-05 | Publish and subscribe authorization                    | emqx -> policy `/emqx/authz`                 | TB-5         | As DF-04                                                 | `client_attrs` from DF-04 plus topic, action, QoS, retain; the policy decision cache (`POLICY_AUTHZ_CACHE_TTL`) and the EMQX authorization cache both live 10 s; revocation and quarantine act by kick, not by cache expiry | Authorization decision                           |
 | DF-06 | Telemetry, events, shadow reported, acks, OTA status   | Device -> emqx -> bridge                     | TB-2, TB-5   | TLS 1.3 mTLS; shared subscription under `svc-bridge`     | COSE_Sign1 ES256 (`kid` = serial), `seq`, `ts`; confidentiality rests on TLS only | Tenant-confidential operational data             |
 | DF-07 | Ingest stream                                          | bridge -> redpanda -> registry, ota, anomaly | TB-6         | TLS + SASL/SCRAM, per-principal ACLs                     | Raw COSE bytes preserved; every consumer re-verifies signature and `seq`    | Tenant-confidential                              |
 | DF-08 | Commands, desired shadow, OTA notify                   | registry or ota -> emqx -> device            | TB-2, TB-5   | TLS 1.3 mTLS; publisher identity `svc-registry`          | COSE_Sign1 EdDSA by the tenant key; `seq` per tenant key; nonce and `expires_at` on commands | Actuation                                        |
-| DF-09 | Device configuration                                   | registry -> emqx (retained) -> device        | TB-2, TB-5   | TLS 1.3 mTLS                                             | COSE_Encrypt0: HPKE DHKEM(P-256) to the device certificate key wraps a fresh AES-256-GCM key; re-wrapped on rotation | Secrets (Wi-Fi credentials, tenant tokens)        |
+| DF-09 | Device configuration                                   | registry -> emqx (retained) -> device        | TB-2, TB-5   | TLS 1.3 mTLS                                             | COSE_Encrypt0: HPKE DHKEM(P-256) to the device certificate key wraps a fresh AES-256-GCM content key; re-wrapped to the new key and republished retained through a durable `publish_config` action whenever the PKI reports an enrollment or renewal; not re-wrapped or cleared on revocation alone (THREAT_MODEL T-48) | Secrets (Wi-Fi credentials, tenant tokens)        |
 | DF-10 | Firmware download                                      | Device -> artifact store                     | TB-2         | TLS, host allowlist, no redirects, no client certificate | COSE_Sign (Ed25519 + optional ML-DSA-65) manifest and `image_sha256` make integrity independent of the source | Firmware (integrity-critical, not secret)        |
-| DF-11 | Revocation push                                        | pki -> policy `/internal/v1/revocations`     | TB-7         | In-cluster HTTP + bearer token (no mTLS)                 | HMAC-SHA256 over the body (`services/pki/internal/revocation/publisher.go:74 (Sign)`, verified by `services/policy/internal/revocation/service.go:283 (validSignature)`), `event_id` dedupe | Security state                                   |
-| DF-12 | Lifecycle lookup                                       | policy -> registry `/internal/v1/devices/{id}/lifecycle` | TB-7 | mTLS + ES256 service JWT `aud=registry`                 | Response bound to the requested device id (`ErrInconsistent`), cached with TTL, invalidated on transitions | Security state                                   |
-| DF-13 | Service REST calls                                     | registry <-> pki, anomaly -> registry, pki -> registry | TB-7 | mTLS + ES256 service JWT (`aud`, `iss`, 5 min, `jti`)   | JSON bodies validated against OpenAPI; RFC 9457 problems                   | Mixed                                            |
-| DF-14 | Console to services                                    | Browser -> console proxy -> service          | TB-9         | HTTPS; httpOnly SameSite=Strict session cookie; proxy adds the bearer token server-side | Tenant from the token claim; RLS in Postgres; `X-IronMesh-Tenant` only for `platform_admin` | Tenant operational data                          |
+| DF-11 | Revocation and release push                            | pki (outbox dispatcher) -> every policy replica `/internal/v1/revocations` | TB-7 | In-cluster HTTP + bearer token (no mTLS), DNS fan-out over the policy headless Service | HMAC-SHA256 over the body (`services/pki/internal/revocation/publisher.go:186 (Sign)`, verified by `services/policy/internal/revocation/service.go:404 (validSignature)`), `event_id` dedupe; durable outbox, retried until every replica acknowledged (`services/pki/internal/revocation/outbox.go:67 (Dispatcher)`) | Security state                                   |
+| DF-12 | Lifecycle lookup                                       | policy -> registry `/internal/v1/devices/{id}/lifecycle` | TB-7 | In-cluster HTTP + per-caller bearer token (`POLICY_REGISTRY_TOKEN`) | Response bound to the requested device id (`ErrInconsistent`), cached 30 s, 2 s timeout, fail-closed | Security state                                   |
+| DF-13 | Service REST calls                                     | registry, ota, anomaly -> pki; ota, anomaly -> registry; registry -> ota; pki, policy -> registry | TB-7 | mTLS toward `pki` (TLS 1.3); in-cluster HTTP toward registry, ota and policy | ES256 service JWTs minted fresh per request (random `jti`, 60 s); receivers (PKI, policy, registry, OTA) require `iat`/`exp`/`jti`, cap `exp - iat` at 300 s, accept each `jti` once per instance and check `aud` and the caller allow list; PKI and policy bind `sub` to a presented Services CA certificate. The registry and OTA also accept static per-caller bearer tokens (PKI, policy, anomaly and OTA use them toward the registry; THREAT_MODEL T-50). JSON validated, RFC 9457 problems | Mixed                                            |
+| DF-14 | Console to services                                    | Browser -> console proxy -> service          | TB-9         | HTTPS; httpOnly SameSite=Strict session cookie (`__Host-` and Secure over HTTPS); per-request nonce CSP (`'strict-dynamic'`, no inline scripts); mutations refused unless `Origin`/`Referer` is the console's own; proxy adds the bearer token server-side and requires a sign-in no older than 300 s for quarantine, release, decommission, config, policy, API-key, role, tenant-setting and campaign start/halt/rollback actions | Tenant from the token claim; RLS in Postgres; `X-IronMesh-Tenant` only for `platform_admin` | Tenant operational data                          |
 | DF-15 | Live updates                                           | registry `/v1/ws` -> browser (via console)   | TB-9         | WSS with a 60 s single-use ticket                        | Notification frames only; no secrets; telemetry sampled 1/s/device         | Tenant operational data                          |
-| DF-16 | Alerts and audit export                                | anomaly -> SIEM                              | TB-7 egress  | TLS to an allowlisted host; credentials from the secret store | `Alert` and `AuditEvent` JSON; also durable in `im.alerts`, `im.audit`      | Security events (device and tenant identifiers)  |
+| DF-16 | Alerts and audit export                                | anomaly -> SIEM                              | TB-7 egress  | TLS (syslog with certificate verification, HMAC-signed webhooks); egress in prod is open to any address on 443 for `anomaly`, not an allowlist (THREAT_MODEL T-71); credentials from the secret store | `Alert` and `AuditEvent` JSON; also durable in `im.alerts`, `im.audit`      | Security events (device and tenant identifiers)  |
 | DF-17 | Signing operations                                     | pki, registry, ota -> KMS                    | TB-10        | Provider API with workload identity (IRSA) or PKCS#11    | Only `Sign` and `GetPublicKey`; key policies per key class; every call logged | Key usage                                        |
 
 Trust boundary notes:
@@ -919,9 +950,11 @@ Trust boundary notes:
 * Postgres row-level security is the last line of tenant isolation; the application sets
   `ironmesh.tenant_id` from the verified token on every transaction and connects with a role that
   cannot bypass the policy.
-* Private keys exist in exactly two kinds of places: secure elements on devices and KMS/HSM in the
-  cloud. No service process ever holds a CA, bundle, tenant or firmware private key in memory
-  except the explicitly non-production `file` KMS backend.
+* CA private keys exist only in KMS/HSM (or the explicitly non-production `file` backend), and device
+  keys only in secure elements (or the software backend, tenant opt-in). Three Ed25519 keys that KMS
+  cannot hold are used in process: the PKI bundle key (seed loaded from Secrets Manager at start),
+  the tenant command keys (KMS-wrapped seeds unwrapped by the registry, their only holder) and the
+  OTA firmware signing key ring (THREAT_MODEL T-44, T-64).
 
 ## 7. Deployment view
 
@@ -935,8 +968,8 @@ Trust boundary notes:
 | Relational data      | Single `postgres` container, four databases            | Postgres operator or managed service                                               | Amazon RDS for PostgreSQL, `storage_encrypted`, private subnets (`modules/rds`)                         |
 | Streaming            | `redpanda`                                            | Redpanda operator                                                                   | Kafka-compatible managed cluster (`module "msk"`), TLS + SCRAM                                          |
 | Artifacts            | MinIO                                                  | MinIO or cloud object storage                                                      | S3 with versioning, object lock, SSE-KMS, access logging and cross-region replica (`modules/s3`)        |
-| Compute              | Docker Compose services                                | Helm chart `deploy/helm/ironmesh`; `cosign verify` runs before each deploy (`scripts/ci/deploy_helm.sh`); image digests are not pinned and there is no admission policy yet (`THREAT_MODEL.md` T-67) | EKS with managed node groups, launch template with encrypted gp3 volumes, IRSA (`modules/eks`, `modules/eks-addons`) |
-| Network policy       | Single host, no segmentation                           | `NetworkPolicy` per service: 18083 reachable only from policy, 5432 only from service pods, egress allowlists | Security groups plus the same NetworkPolicies                                                          |
+| Compute              | Docker Compose services                                | Helm chart `deploy/helm/ironmesh`; release tags are resolved to digests, verified with `cosign verify` and deployed by digest (`scripts/ci/deploy_helm.sh`); in prod a Kyverno `verifyImages` ClusterPolicy (Enforce) admits only signed, SBOM-attested IronMesh images and pins them to the verified digest (`THREAT_MODEL.md` T-67) | EKS with managed node groups, launch template with encrypted gp3 volumes, IRSA (`modules/eks`, `modules/eks-addons`) |
+| Network policy       | Single host, no segmentation                           | `NetworkPolicy` per service: 18083 (EMQX management API) only from policy, registry, ota and Prometheus, 8884 only from bridge and registry, 5432 only from service pods; per-service egress (OIDC and SIEM egress still open on 443) | Security groups plus the same NetworkPolicies                                                          |
 | Observability        | `otel-collector`, Prometheus, Grafana (`observability/`) | kube-prometheus stack, OTLP to the collector                                       | CloudWatch Container Insights and OTLP (`module "observability"`)                                      |
 | Identity provider    | Keycloak development realm                             | Tenant OIDC provider                                                                | Tenant OIDC provider                                                                                   |
 
