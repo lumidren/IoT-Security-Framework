@@ -3,9 +3,13 @@ package postgres
 import (
 	"context"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/store"
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/store/storetest"
@@ -78,4 +82,76 @@ func TestPostgresConformance(t *testing.T) {
 		}
 		return s
 	})
+}
+
+func TestPoolConfig(t *testing.T) {
+	t.Parallel()
+	called := false
+	cfg, err := PoolConfig("postgres://pki_app@db:5432/pki?sslmode=require", Options{
+		MaxConns:      4,
+		BeforeConnect: func(context.Context, *pgx.ConnConfig) error { called = true; return nil },
+	})
+	if err != nil || cfg.MaxConns != 4 || cfg.MinConns != 1 || cfg.BeforeConnect == nil {
+		t.Fatalf("pool config %+v %v", cfg, err)
+	}
+	_ = cfg.BeforeConnect(context.Background(), cfg.ConnConfig)
+	if !called {
+		t.Fatal("hook not installed")
+	}
+	if cfg, err := PoolConfig("postgres://db/pki", Options{}); err != nil || cfg.MaxConns != 16 || cfg.BeforeConnect != nil {
+		t.Fatalf("defaults %+v %v", cfg, err)
+	}
+	if _, err := OpenWithOptions(context.Background(), "::bad", Options{}); err == nil {
+		t.Fatal("bad DSN accepted")
+	}
+	if err := MigrateURL(context.Background(), "::bad", Options{}); err == nil {
+		t.Fatal("bad migration DSN accepted")
+	}
+}
+
+// TestForceRLSCoversEveryPolicyTable checks that the RLS migration forces row-level security on
+// every table that has a tenant_isolation policy and grants the runtime role only what the store
+// needs.
+func TestForceRLSCoversEveryPolicyTable(t *testing.T) {
+	t.Parallel()
+	ms, err := LoadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all strings.Builder
+	var force string
+	for _, m := range ms {
+		all.WriteString(m.SQL)
+		if strings.Contains(m.SQL, "FORCE ROW LEVEL SECURITY") {
+			force = m.SQL
+		}
+	}
+	if force == "" {
+		t.Fatal("no migration forces row-level security")
+	}
+	policyTables := regexp.MustCompile(`CREATE POLICY \w+ ON (\w+)`).FindAllStringSubmatch(all.String(), -1)
+	if len(policyTables) == 0 {
+		t.Fatal("no policies found")
+	}
+	list := regexp.MustCompile(`FOREACH t IN ARRAY ARRAY\[([^\]]+)\]`).FindStringSubmatch(force)
+	if list == nil {
+		t.Fatal("FORCE table list not found")
+	}
+	for _, m := range policyTables {
+		if !strings.Contains(list[1], "'"+m[1]+"'") {
+			t.Errorf("table %s has a policy but RLS is not forced", m[1])
+		}
+	}
+	for _, want := range []string{
+		"CREATE ROLE pki_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS",
+		"GRANT SELECT, INSERT ON certificates TO pki_app",
+		"GRANT SELECT, INSERT ON revocations TO pki_app",
+		"GRANT SELECT, INSERT, DELETE ON nonces TO pki_app",
+		"GRANT SELECT, INSERT, UPDATE ON tenant_policies TO pki_app",
+		"GRANT SELECT, UPDATE ON crl_counter TO pki_app",
+	} {
+		if !strings.Contains(force, want) {
+			t.Errorf("migration lacks %q", want)
+		}
+	}
 }

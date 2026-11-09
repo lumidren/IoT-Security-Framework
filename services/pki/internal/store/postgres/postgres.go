@@ -24,15 +24,50 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// Options tune OpenWithOptions.
+type Options struct {
+	// Migrate applies the embedded migrations after connecting. It must be
+	// false when the DSN uses the non-owner runtime role (pki_app), which
+	// cannot create or alter tables; run MigrateURL with the owner DSN first.
+	Migrate bool
+	// BeforeConnect runs before every new connection, e.g. to inject an RDS
+	// IAM authentication token as the password.
+	BeforeConnect func(context.Context, *pgx.ConnConfig) error
+	// MaxConns overrides the pool size (default 16).
+	MaxConns int32
+}
+
 // Open connects to url, applies migrations and returns the store.
 func Open(ctx context.Context, url string) (*Store, error) {
+	return OpenWithOptions(ctx, url, Options{Migrate: true})
+}
+
+// PoolConfig parses url into a pool configuration with the service defaults
+// and the hooks of opts.
+func PoolConfig(url string, opts Options) (*pgxpool.Config, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: parse database url: %w", err)
 	}
 	cfg.MaxConns = 16
+	if opts.MaxConns > 0 {
+		cfg.MaxConns = opts.MaxConns
+	}
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = time.Hour
+	// An IAM token only has to be valid when a connection is established, so
+	// the hook mints one per new connection and pool lifetimes stay as is.
+	cfg.BeforeConnect = opts.BeforeConnect
+	return cfg, nil
+}
+
+// OpenWithOptions connects to url and returns the store, applying the
+// migrations only when opts.Migrate is set.
+func OpenWithOptions(ctx context.Context, url string, opts Options) (*Store, error) {
+	cfg, err := PoolConfig(url, opts)
+	if err != nil {
+		return nil, err
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: connect: %w", err)
@@ -42,11 +77,25 @@ func Open(ctx context.Context, url string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
-	if err := s.Migrate(ctx); err != nil {
-		pool.Close()
-		return nil, err
+	if opts.Migrate {
+		if err := s.Migrate(ctx); err != nil {
+			pool.Close()
+			return nil, err
+		}
 	}
 	return s, nil
+}
+
+// MigrateURL connects with url (the schema owner, PKI_MIGRATION_DATABASE_URL),
+// applies the pending migrations and disconnects.
+func MigrateURL(ctx context.Context, url string, opts Options) error {
+	opts.Migrate = true
+	opts.MaxConns = 2
+	s, err := OpenWithOptions(ctx, url, opts)
+	if err != nil {
+		return err
+	}
+	return s.Close()
 }
 
 // NewFromPool wraps an existing pool without running migrations.
