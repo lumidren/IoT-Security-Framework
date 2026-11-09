@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/sasl"
 )
 
 // Header is a Kafka record header.
@@ -38,7 +39,9 @@ type KafkaConfig struct {
 	Brokers  []string
 	ClientID string
 	TLS      *tls.Config
-	Logger   *slog.Logger
+	// SASL authenticates every broker connection (NewSASLMechanism); nil disables SASL.
+	SASL   sasl.Mechanism
+	Logger *slog.Logger
 	// DeliveryTimeout bounds retries of one record (default 30s).
 	DeliveryTimeout time.Duration
 	// Linger batches records for up to this long (default 5ms).
@@ -76,6 +79,9 @@ func NewKafkaProducer(cfg KafkaConfig) (*KafkaProducer, error) {
 	}
 	if cfg.TLS != nil {
 		opts = append(opts, kgo.DialTLSConfig(cfg.TLS))
+	}
+	if cfg.SASL != nil {
+		opts = append(opts, kgo.SASL(cfg.SASL))
 	}
 	if cfg.Logger != nil {
 		opts = append(opts, kgo.WithLogger(&slogKgoLogger{log: cfg.Logger}))
