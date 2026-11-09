@@ -1,0 +1,779 @@
+# IronMesh CI: path-filtered quality gates for every component (pull requests and main).
+#
+# Third-party actions are pinned by full commit SHA (version in the trailing comment); the few
+# pinned by tag are listed in the integration report. Each job declares least-privilege
+# permissions; the workflow default is read-only.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GO_VERSION_FILE: go.work
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "24"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      python: ${{ steps.filter.outputs.python }}
+      agent: ${{ steps.filter.outputs.agent }}
+      esp32: ${{ steps.filter.outputs.esp32 }}
+      console: ${{ steps.filter.outputs.console }}
+      conformance: ${{ steps.filter.outputs.conformance }}
+      docs: ${{ steps.filter.outputs.docs }}
+      infra: ${{ steps.filter.outputs.infra }}
+      compose: ${{ steps.filter.outputs.compose }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          filters: |
+            ci: &ci
+              - '.github/workflows/ci.yml'
+              - 'scripts/ci/**'
+            go:
+              - *ci
+              - 'go.work'
+              - 'go.work.sum'
+              - 'services/pki/**'
+              - 'services/policy/**'
+              - 'services/bridge/**'
+            python:
+              - *ci
+              - 'libs/python/**'
+              - 'services/registry/**'
+              - 'services/ota/**'
+              - 'services/anomaly/**'
+              - 'device/common/vectors/**'
+            agent:
+              - *ci
+              - 'device/agent-rs/**'
+              - 'device/common/**'
+            esp32:
+              - *ci
+              - 'device/esp32/**'
+              - 'device/common/**'
+            console:
+              - *ci
+              - 'console/**'
+            conformance:
+              - *ci
+              - 'conformance/**'
+              - 'device/agent-rs/**'
+              - 'device/esp32/**'
+              - 'device/common/**'
+            docs:
+              - *ci
+              - '**/*.md'
+              - 'scripts/resolve_threat_refs.py'
+              - 'docs/**'
+            infra:
+              - *ci
+              - 'deploy/**'
+              - 'observability/**'
+              - 'services/*/internal/config/**'
+              - 'services/registry/app/settings.py'
+              - 'services/ota/src/ironmesh_ota/settings.py'
+              - 'services/anomaly/src/ironmesh_anomaly/config.py'
+              - 'console/src/lib/**'
+              - 'console/src/auth.ts'
+            compose:
+              - *ci
+              - 'deploy/docker/**'
+              - 'scripts/demo/**'
+              - 'services/policy/deploy/emqx/**'
+
+  # ------------------------------------------------------------------------------------------
+  # Go services: pki, policy, bridge
+  # ------------------------------------------------------------------------------------------
+  go:
+    name: go (${{ matrix.service }})
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [pki, policy, bridge]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pki_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    env:
+      # Used by services/pki/internal/store/postgres tests only (other services ignore it).
+      PKI_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/pki_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version-file: services/${{ matrix.service }}/go.mod
+          cache-dependency-path: services/${{ matrix.service }}/go.sum
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "${unformatted}" ]; then echo "::error::gofmt needed:"; echo "${unformatted}"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint v2
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
+          "$(go env GOPATH)/bin/golangci-lint" run --timeout 5m ./...
+      - name: go test (race, coverage)
+        run: go test ./... -race -covermode=atomic -coverprofile=coverage.out
+      - name: coverage gate (internal packages >= 90 %)
+        run: python3 ../../scripts/ci/go_coverage_gate.py coverage.out --min 90 --include /internal/ --exclude /internal/testutil/ --exclude /storetest/
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        if: always()
+        with:
+          name: go-coverage-${{ matrix.service }}
+          path: services/${{ matrix.service }}/coverage.out
+          retention-days: 7
+
+  rego:
+    name: rego policy tests
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: services/policy
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version-file: services/policy/go.mod
+          cache-dependency-path: services/policy/go.sum
+      # policy/rego/mqtt_acl_test.rego runs through the OPA Go test runner (README "Development").
+      - name: embedded Rego invariant suite
+        run: go test ./internal/engine/... ./internal/hooks/... ./policy/... -run 'Rego|Invariant' -v -count=1
+
+  # ------------------------------------------------------------------------------------------
+  # Python services and the wire library
+  # ------------------------------------------------------------------------------------------
+  python:
+    name: python (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ironmesh-wire
+            dir: libs/python/ironmesh-wire
+            install: -e "libs/python/ironmesh-wire[dev]" bandit
+            src: src
+            cov: ironmesh_wire
+            min: 95
+            db: postgres
+          - name: registry
+            dir: services/registry
+            install: -e libs/python/ironmesh-wire -e "services/registry[dev]"
+            src: app
+            cov: app
+            min: 90
+            db: registry_test
+          - name: ota
+            dir: services/ota
+            install: -e libs/python/ironmesh-wire -e "services/ota[dev]"
+            src: src
+            cov: ironmesh_ota
+            min: 90
+            db: postgres
+          - name: anomaly
+            dir: services/anomaly
+            install: -e libs/python/ironmesh-wire -e "services/anomaly[dev]"
+            src: src
+            cov: ironmesh_anomaly
+            min: 90
+            db: postgres
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ${{ matrix.db }}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      # The test database variable each suite reads (owner / superuser DSNs on the service container).
+      REGISTRY_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/registry_test
+      OTA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      IRONMESH_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: ${{ matrix.dir }}/pyproject.toml
+      - name: install
+        run: python -m pip install ${{ matrix.install }}
+      - name: ruff
+        working-directory: ${{ matrix.dir }}
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+      - name: mypy --strict
+        working-directory: ${{ matrix.dir }}
+        run: python -m mypy --strict
+      - name: bandit
+        working-directory: ${{ matrix.dir }}
+        run: python -m bandit -q -c pyproject.toml -r ${{ matrix.src }}
+      - name: pytest (coverage >= ${{ matrix.min }} %)
+        working-directory: ${{ matrix.dir }}
+        run: python -m pytest --cov=${{ matrix.cov }} --cov-report=term-missing --cov-report=xml --cov-fail-under=${{ matrix.min }}
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        if: always()
+        with:
+          name: python-coverage-${{ matrix.name }}
+          path: ${{ matrix.dir }}/coverage.xml
+          retention-days: 7
+
+  # ------------------------------------------------------------------------------------------
+  # Rust Linux agent + fleet simulator (device/agent-rs)
+  # ------------------------------------------------------------------------------------------
+  rust-agent:
+    name: rust agent
+    needs: changes
+    if: needs.changes.outputs.agent == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: device/agent-rs
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # rust-toolchain.toml pins the channel and components; rustup installs them on first use.
+      - name: toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          workspaces: device/agent-rs
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-audit
+      - name: cargo fmt
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --features dut-control -- -D warnings
+      - name: "cargo test (release build, C-HOOK-1: no control channel)"
+        run: cargo test --locked
+      - name: cargo test (dut-control)
+        run: cargo test --locked --features dut-control
+      - name: cargo llvm-cov (lines >= 85 %)
+        run: cargo llvm-cov --locked --features dut-control --fail-under-lines 85 --lcov --output-path lcov.info
+      - name: cargo audit
+        run: cargo audit --deny warnings
+      - name: TPM feature (tss-esapi)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends libtss2-dev pkg-config
+          cargo check --locked --features tpm --all-targets
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        if: always()
+        with:
+          name: agent-rs-lcov
+          path: device/agent-rs/lcov.info
+          retention-days: 7
+
+  # ------------------------------------------------------------------------------------------
+  # ESP32 firmware: host core tests, ESP-IDF builds, production config gate
+  # ------------------------------------------------------------------------------------------
+  esp32-host:
+    name: esp32 host core tests
+    needs: changes
+    if: needs.changes.outputs.esp32 == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: toolchain
+        working-directory: device/esp32/host
+        run: rustup show active-toolchain || rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          workspaces: device/esp32/host
+      - name: cargo fmt
+        working-directory: device/esp32/host
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        working-directory: device/esp32/host
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test (C protocol core built with cc)
+        working-directory: device/esp32/host
+        run: cargo test --locked
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: production profile gate (sdkconfig defaults)
+        run: python device/esp32/tools/check_prod_config.py
+
+  esp32-idf:
+    name: esp-idf build (${{ matrix.profile }})
+    needs: changes
+    if: needs.changes.outputs.esp32 == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    container:
+      image: espressif/idf:v5.3.2
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [dev, prod]
+    defaults:
+      run:
+        shell: bash
+        working-directory: device/esp32
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: build
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          source "${IDF_PATH}/export.sh"
+          if [ "${PROFILE}" = prod ]; then
+            # CI-only throwaway Secure Boot v2 key: proves the prod profile builds and signs.
+            # Release images are signed with the release key (release.yml, environment secret).
+            espsecure.py generate_signing_key --version 2 --scheme rsa3072 secure_boot_signing_key.pem
+          fi
+          idf.py -B "build-${PROFILE}" -DSDKCONFIG="build-${PROFILE}/sdkconfig" \
+            -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.${PROFILE}" build
+          rm -f secure_boot_signing_key.pem
+      - name: production profile gate (generated sdkconfig)
+        if: matrix.profile == 'prod'
+        run: python3 tools/check_prod_config.py --sdkconfig build-prod/sdkconfig
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: esp32-${{ matrix.profile }}-build
+          path: |
+            device/esp32/build-${{ matrix.profile }}/*.bin
+            device/esp32/build-${{ matrix.profile }}/sdkconfig
+          retention-days: 7
+
+  # ------------------------------------------------------------------------------------------
+  # Console (steps from console/ci/github-workflow-console.yml)
+  # ------------------------------------------------------------------------------------------
+  console:
+    name: console verify
+    needs: changes
+    if: needs.changes.outputs.console == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  console-e2e:
+    name: console e2e (Playwright + axe)
+    needs: [changes, console]
+    if: needs.changes.outputs.console == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          CI: "true"
+          NEXT_TELEMETRY_DISABLED: "1"
+          AUTH_SECRET: ${{ secrets.CONSOLE_E2E_AUTH_SECRET || 'ci-only-secret-not-for-production-0123456789' }}
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        if: failure()
+        with:
+          name: playwright-report
+          path: console/playwright-report
+          retention-days: 7
+
+  console-lighthouse:
+    name: console Lighthouse CI
+    needs: [changes, console]
+    if: needs.changes.outputs.console == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+      - run: npm run build:mock
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+      - run: npm run lhci
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          AUTH_SECRET: ${{ secrets.CONSOLE_E2E_AUTH_SECRET || 'ci-only-secret-not-for-production-0123456789' }}
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        if: always()
+        with:
+          name: lighthouse-report
+          path: console/.lighthouseci
+          retention-days: 7
+
+  # ------------------------------------------------------------------------------------------
+  # Conformance suite, hermetic mode (no hardware, no compose stack)
+  # ------------------------------------------------------------------------------------------
+  conformance:
+    name: conformance (${{ matrix.dut }})
+    needs: changes
+    if: needs.changes.outputs.conformance == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dut: agent-rs
+            crate: device/agent-rs
+            # Debug build with the control channel + a release build for C-HOOK-1.
+            build: cargo build --locked --features dut-control --bin ironmesh-agent && cargo build --locked --release --bin ironmesh-agent
+            dut_args: --dut-bin device/agent-rs/target/debug/ironmesh-agent --release-bin device/agent-rs/target/release/ironmesh-agent
+          - dut: esp32-host
+            crate: device/esp32/host
+            build: cargo build --locked -p im-dut-shim
+            dut_args: --dut-bin device/esp32/host/target/debug/im-dut-shim
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          workspaces: |
+            ${{ matrix.crate }}
+            conformance
+      - name: build DUT
+        working-directory: ${{ matrix.crate }}
+        run: |
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal
+          ${{ matrix.build }}
+      - name: conformance suite (hermetic cloud)
+        env:
+          DUT: ${{ matrix.dut }}
+          DUT_ARGS: ${{ matrix.dut_args }}
+        run: |
+          if [ ! -f conformance/src/main.rs ]; then
+            echo "::warning::conformance/src/main.rs (ironmesh-conformance CLI) is not in the repository yet; suite skipped"
+            exit 0
+          fi
+          mkdir -p reports
+          # shellcheck disable=SC2086 # DUT_ARGS is a flag list
+          cargo run --locked --release --manifest-path conformance/Cargo.toml --bin ironmesh-conformance -- \
+            --dut "${DUT}" ${DUT_ARGS} --junit "reports/conformance-${DUT}.xml"
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        if: always()
+        with:
+          name: conformance-${{ matrix.dut }}
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ------------------------------------------------------------------------------------------
+  # Fuzz smoke: every cargo-fuzz target for 60 s with the committed corpus
+  # ------------------------------------------------------------------------------------------
+  fuzz-smoke:
+    name: fuzz smoke (${{ matrix.crate }})
+    needs: changes
+    if: needs.changes.outputs.agent == 'true' || needs.changes.outputs.esp32 == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [device/agent-rs, device/esp32/host]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: run every target for 60 s
+        working-directory: ${{ matrix.crate }}
+        run: |
+          status=0
+          for target in $(cargo +nightly fuzz list); do
+            mkdir -p "fuzz/corpus/${target}" "fuzz/artifacts/${target}"
+            echo "::group::${target}"
+            if ! cargo +nightly fuzz run "${target}" "fuzz/corpus/${target}" -- \
+                -max_total_time=60 -max_len=16384 -print_final_stats=1; then
+              echo "::error::fuzz target ${target} found a crash"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${status}"
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        if: failure()
+        with:
+          name: fuzz-crashes-${{ strategy.job-index }}
+          path: ${{ matrix.crate }}/fuzz/artifacts/
+          retention-days: 30
+
+  # ------------------------------------------------------------------------------------------
+  # Documentation
+  # ------------------------------------------------------------------------------------------
+  docs:
+    name: docs
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: threat model references
+        run: python scripts/resolve_threat_refs.py --strict
+      - name: markdown link check
+        uses: lycheeverse/lychee-action@7cd0af4c74a61395d455af97419279d86aafaede # v2.0.2
+        with:
+          args: >-
+            --no-progress --offline --include-fragments
+            --exclude-path node_modules --exclude-path target --exclude-path .venv
+            './**/*.md'
+          fail: true
+
+  # ------------------------------------------------------------------------------------------
+  # Infrastructure as code, manifests, observability, env-var contract
+  # ------------------------------------------------------------------------------------------
+  infra:
+    name: infra
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      KUBECONFORM_IMAGE: ghcr.io/yannh/kubeconform:v0.6.7
+      TFLINT_IMAGE: ghcr.io/terraform-linters/tflint:v0.54.0
+      PROMETHEUS_IMAGE: prom/prometheus:v3.1.0
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: python tooling
+        run: python -m pip install pyyaml checkov
+      - name: env-var contract (compose, Helm, Kustomize vs settings modules)
+        run: python scripts/ci/check_env_contract.py
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
+      - name: terraform fmt
+        run: terraform fmt -check -recursive deploy/terraform
+      - name: terraform validate
+        run: |
+          for dir in deploy/terraform/aws deploy/terraform/aws/bootstrap; do
+            terraform -chdir="${dir}" init -backend=false -input=false
+            terraform -chdir="${dir}" validate
+          done
+      - name: tflint
+        run: |
+          docker run --rm -v "${PWD}:/data" -w /data/deploy/terraform/aws "${TFLINT_IMAGE}" --init
+          docker run --rm -v "${PWD}:/data" -w /data/deploy/terraform/aws "${TFLINT_IMAGE}" --recursive --format compact
+      - name: checkov (terraform, kubernetes, dockerfiles)
+        run: |
+          checkov --quiet --compact -d deploy/terraform --framework terraform
+          # deploy/k8s is a throw-away dev stack (single-node Postgres/Redpanda); findings are
+          # reported, the gate is the Helm chart (rendered below) and Terraform.
+          checkov --quiet --compact -d deploy/k8s --framework kubernetes --soft-fail
+          checkov --quiet --compact --framework dockerfile \
+            -f services/pki/Dockerfile -f services/policy/Dockerfile -f services/bridge/Dockerfile \
+            -f services/registry/Dockerfile -f services/ota/Dockerfile -f services/anomaly/Dockerfile \
+            -f console/Dockerfile -f deploy/docker/pki-init/Dockerfile
+      - uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        with:
+          version: v3.16.3
+      - name: helm lint + template | kubeconform
+        run: |
+          helm repo add emqx https://repos.emqx.io/charts
+          helm repo add redpanda https://charts.redpanda.com
+          helm dependency update deploy/helm/ironmesh
+          mkdir -p rendered
+          for env in "" staging prod; do
+            args=(-f deploy/helm/ironmesh/values.yaml)
+            [ -n "${env}" ] && args+=(-f "deploy/helm/ironmesh/values-${env}.yaml")
+            helm lint deploy/helm/ironmesh --kube-version 1.31.0 "${args[@]}"
+            helm template ironmesh deploy/helm/ironmesh -n ironmesh --kube-version 1.31.0 "${args[@]}" > "rendered/helm-${env:-default}.yaml"
+          done
+          docker run --rm -v "${PWD}/rendered:/rendered:ro" "${KUBECONFORM_IMAGE}" \
+            -strict -summary -ignore-missing-schemas -kubernetes-version 1.31.0 /rendered
+      - uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
+        with:
+          version: v1.31.4
+      - name: kustomize | kubeconform
+        run: |
+          kubectl kustomize deploy/k8s/overlays/dev > rendered/kustomize-dev.yaml
+          docker run --rm -v "${PWD}/rendered:/rendered:ro" "${KUBECONFORM_IMAGE}" \
+            -strict -summary -ignore-missing-schemas -kubernetes-version 1.31.0 /rendered/kustomize-dev.yaml
+      - name: promtool check rules
+        run: |
+          docker run --rm --entrypoint promtool -v "${PWD}/observability/prometheus:/p:ro" "${PROMETHEUS_IMAGE}" check rules /p/rules/ironmesh.rules.yml
+          docker run --rm --entrypoint promtool -v "${PWD}/deploy/helm/ironmesh/rules:/p:ro" "${PROMETHEUS_IMAGE}" check rules /p/ironmesh.rules.yml
+      - name: Grafana dashboards + rules copy
+        run: python scripts/ci/check_observability.py
+
+  # ------------------------------------------------------------------------------------------
+  # Compose stack definition
+  # ------------------------------------------------------------------------------------------
+  compose:
+    name: compose config
+    needs: changes
+    if: needs.changes.outputs.compose == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: docker compose config
+        run: |
+          sed 's/__GENERATE__/ci-placeholder-0123456789abcdef/' deploy/docker/.env.example > deploy/docker/.env
+          docker compose --project-directory deploy/docker -f deploy/docker/docker-compose.yml config --quiet
+          docker compose --project-directory deploy/docker -f deploy/docker/docker-compose.yml \
+            -f deploy/docker/compose.override.example.yml config --quiet
+          docker compose --project-directory deploy/docker -f deploy/docker/docker-compose.yml --profile tools config --services
+      - name: shell scripts
+        run: |
+          bash -n scripts/demo/quickstart.sh
+          sh -n deploy/docker/pki-init/pki-init.sh
+          bash -n deploy/docker/postgres/10-ironmesh.sh
+          shellcheck scripts/demo/quickstart.sh deploy/docker/pki-init/pki-init.sh deploy/docker/postgres/10-ironmesh.sh
+      - name: demo driver
+        run: python3 -m py_compile scripts/demo/demo.py
+
+  # Single required status check for branch protection.
+  ci-ok:
+    name: ci ok
+    if: always()
+    needs: [changes, go, rego, python, rust-agent, esp32-host, esp32-idf, console, console-e2e, console-lighthouse, conformance, fuzz-smoke, docs, infra, compose]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: all required jobs passed or were skipped
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "${RESULTS}"
+          if echo "${RESULTS}" | grep -Eq '"(failure|cancelled)"'; then exit 1; fi
