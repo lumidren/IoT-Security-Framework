@@ -17,7 +17,7 @@ path = "src/lib.rs"
 fuzz = []
 
 [dependencies]
-p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+p256 = { version = "0.14", features = ["ecdsa", "ecdh"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 sha2 = "0.10"
 hkdf = "0.12"
