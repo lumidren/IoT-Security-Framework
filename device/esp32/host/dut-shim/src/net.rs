@@ -77,7 +77,14 @@ impl Link for SimLink {
 
 /// Map a transport error string to the DUT `connect_failed.reason` vocabulary.
 pub fn classify(err: &str) -> &'static str {
-    if err.contains("tls_pin_mismatch") || err.contains("UnknownIssuer") || err.contains("pin") {
+    // A broker certificate that does not chain to a pinned anchor surfaces either as
+    // UnknownIssuer or, when a rogue CA reuses the pinned CA's subject name, as a chain signature
+    // failure ("invalid peer certificate: BadSignature"). Both are pin mismatches.
+    let bad_chain = err.contains("invalid peer certificate")
+        && !err.contains("Expired")
+        && !err.contains("Revoked")
+        && !err.contains("NotValidYet");
+    if err.contains("tls_pin_mismatch") || err.contains("UnknownIssuer") || err.contains("pin") || bad_chain {
         "tls_pin_mismatch"
     } else if err.contains("timed out") || err.contains("timeout") {
         "timeout"
@@ -515,6 +522,8 @@ mod tests {
     #[test]
     fn error_classification() {
         assert_eq!(classify("tls: invalid peer certificate: UnknownIssuer"), "tls_pin_mismatch");
+        assert_eq!(classify("tls: invalid peer certificate: BadSignature"), "tls_pin_mismatch");
+        assert_eq!(classify("tls: invalid peer certificate: Expired"), "tls_handshake");
         assert_eq!(classify("tls: received fatal alert: ProtocolVersion"), "tls_handshake");
         assert_eq!(classify("network: connection refused"), "network");
         assert_eq!(classify("network: operation timed out"), "timeout");
