@@ -515,6 +515,57 @@ class CommandKey(BaseModel):
     public_key_hex: str
 
 
+MAX_RESOLVE_ITEMS = 100_000
+HexStr = Annotated[str, StringConstraints(pattern=r"^(?:[0-9a-fA-F]{2})*$")]
+
+
+class ResolveInput(Strict):
+    """``POST /internal/v1/tenants/{tenant}/devices/resolve`` (OTA campaign targeting)."""
+
+    groups: list[Slug] = Field(default_factory=list, max_length=1000)
+    tags: dict[TagKey, TagValue] = Field(default_factory=dict, max_length=64)
+    device_ids: list[Annotated[str, StringConstraints(max_length=64)]] = Field(
+        default_factory=list, max_length=MAX_RESOLVE_ITEMS
+    )
+    states: list[DeviceStateT] | None = None
+
+
+class ResolvedDevice(BaseModel):
+    device_id: str
+    product: str
+    state: DeviceStateT
+    fw_version: str | None
+    fw_hash_hex: str | None
+    connected: bool
+
+
+class ResolveResult(BaseModel):
+    items: list[ResolvedDevice]
+
+
+class OtaNotifyJson(Strict):
+    """DESIGN_CONTRACT §5 OtaNotify body with the ``bstr`` fields hex-encoded."""
+
+    campaign_id: Annotated[str, StringConstraints(min_length=36, max_length=36)]
+    manifest: Annotated[HexStr, StringConstraints(min_length=2, max_length=2 * 256 * 1024)]
+    url: Annotated[str, StringConstraints(min_length=1, max_length=2048)]
+    delta_from: Annotated[HexStr, StringConstraints(min_length=64, max_length=64)] | None = None
+
+
+class DownlinkInput(Strict):
+    """``POST /internal/v1/tenants/{tenant}/devices/{id}/downlink``; OTA may only send
+    ``ota_notify``."""
+
+    type: Literal["ota_notify"]
+    body: dict[str, Any]
+    retain: bool
+
+
+class DownlinkResult(BaseModel):
+    seq: int
+    published_at: datetime
+
+
 class Health(BaseModel):
     status: str
     checks: dict[str, bool] = Field(default_factory=dict)

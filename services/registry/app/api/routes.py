@@ -19,7 +19,7 @@ from .. import models as m
 from ..auth import Principal
 from ..domain import AuditFilter, DeviceFilter
 from ..problems import unprocessable
-from ..services import admin, commands, config, devices, twin
+from ..services import admin, commands, config, devices, downlinks, twin
 from ..ws import Connection, frame, heartbeat
 from .deps import get_ctx, internal, require
 
@@ -708,7 +708,9 @@ async def ws(websocket: WebSocket, ticket: str | None = None) -> None:
     operation_id="internalGetLifecycle",
 )
 async def internal_lifecycle(
-    request: Request, device_id: DevicePath, p: Principal = Depends(internal("policy"))
+    request: Request,
+    device_id: DevicePath,
+    p: Principal = Depends(internal("policy", "anomaly")),
 ) -> m.Lifecycle:
     return await devices.lifecycle(get_ctx(request), p, device_id)
 
@@ -770,6 +772,35 @@ async def internal_assurance(
 ) -> Response:
     await devices.record_assurance(get_ctx(request), p, tenant_id, device_id, body.assurance_level)
     return Response(status_code=204)
+
+
+@internal_v1.post(
+    "/tenants/{tenant_id}/devices/resolve",
+    response_model=m.ResolveResult,
+    operation_id="internalResolveDevices",
+)
+async def internal_resolve(
+    request: Request,
+    tenant_id: str,
+    body: m.ResolveInput,
+    p: Principal = Depends(internal("ota")),
+) -> m.ResolveResult:
+    return await downlinks.resolve(get_ctx(request), p, tenant_id, body)
+
+
+@internal_v1.post(
+    "/tenants/{tenant_id}/devices/{device_id}/downlink",
+    response_model=m.DownlinkResult,
+    operation_id="internalDeviceDownlink",
+)
+async def internal_downlink(
+    request: Request,
+    tenant_id: str,
+    device_id: DevicePath,
+    body: m.DownlinkInput,
+    p: Principal = Depends(internal("ota")),
+) -> m.DownlinkResult:
+    return await downlinks.ota_notify(get_ctx(request), p, tenant_id, device_id, body)
 
 
 # ------------------------------------------------------------------------------------------------

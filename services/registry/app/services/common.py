@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime
 
 from ironmesh_wire import WireError, envelope, ids
+from ironmesh_wire.constants import MessageType
 from ironmesh_wire.ids import TopicClass
 
 from .. import models as m
@@ -85,14 +86,40 @@ def epoch(at: datetime) -> int:
     return int(at.astimezone(UTC).timestamp())
 
 
+def seq_floor(msg_type: MessageType, at: datetime) -> int:
+    """Lower bound for the next ``seq`` of a downlink replay stream.
+
+    Until the registry became the only signer, the OTA service signed OtaNotify (type 7) with
+    sequence numbers taken from a wall-clock microsecond counter. Devices that accepted one of
+    those keep that value as the last ``seq`` of their ``<kid>/7`` stream, so the type-7 stream
+    stays on that scheme (``max(last + 1, now_us)``) and is never behind a value OTA issued.
+    """
+    if msg_type is MessageType.OTA_NOTIFY:
+        return int(at.astimezone(UTC).timestamp() * 1_000_000)
+    return 0
+
+
+async def sign_downlink_seq(
+    u: Unit, device_id: str, body: envelope.Body, nonce: bytes | None = None
+) -> tuple[bytes, int]:
+    """Sign a cloud->device envelope with the tenant command key.
+
+    ``seq`` comes from the device's replay stream for the body's message type
+    (WIRE_FORMAT §3.6 step 11: ``"<tenant kid>/<type>"``). Returns the bytes and the ``seq``.
+    """
+    keys = await u.app.keyring.keys(u.tx)
+    now = u.now()
+    seq = await u.tx.next_downlink_seq(device_id, int(body.TYPE), seq_floor(body.TYPE, now))
+    message = envelope.Message(seq=seq, ts=epoch(now), body=body, nonce=nonce)
+    try:
+        return envelope.encode(message, keys.identity(u.tenant_id)), seq
+    except WireError as exc:
+        raise unprocessable(f"payload cannot be encoded on the wire: {exc.code}") from exc
+
+
 async def sign_downlink(
     u: Unit, device_id: str, body: envelope.Body, nonce: bytes | None = None
 ) -> bytes:
-    """Sign a cloud->device envelope with the tenant command key and a fresh per-device seq."""
-    keys = await u.app.keyring.keys(u.tx)
-    seq = await u.tx.next_downlink_seq(device_id)
-    message = envelope.Message(seq=seq, ts=epoch(u.now()), body=body, nonce=nonce)
-    try:
-        return envelope.encode(message, keys.identity(u.tenant_id))
-    except WireError as exc:
-        raise unprocessable(f"payload cannot be encoded on the wire: {exc.code}") from exc
+    """:func:`sign_downlink_seq` without the sequence number."""
+    wire, _ = await sign_downlink_seq(u, device_id, body, nonce)
+    return wire
