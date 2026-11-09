@@ -19,10 +19,13 @@ from decimal import Decimal
 from typing import Any, TypeVar
 
 from sqlalchemy import (
+    BigInteger,
     ColumnElement,
     Table,
     Text,
     and_,
+    any_,
+    bindparam,
     cast,
     delete,
     exists,
@@ -35,6 +38,7 @@ from sqlalchemy import (
     tuple_,
     update,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
@@ -215,16 +219,64 @@ class SqlTenantTx:
         )
         return [_rec(DeviceRecord, r) for r in rows]
 
-    async def next_downlink_seq(self, device_id: str) -> int:
-        row = await self._one(
-            update(t.devices)
-            .where(self._mine(t.devices), t.devices.c.id == device_id)
-            .values(downlink_seq=t.devices.c.downlink_seq + 1)
-            .returning(t.devices.c.downlink_seq)
+    async def resolve_targets(
+        self,
+        groups: list[str],
+        tags: dict[str, str],
+        device_ids: list[str],
+        states: list[str] | None,
+        limit: int,
+    ) -> list[DeviceRecord]:
+        d, m = t.devices, t.group_members
+        # Arrays are bound as one parameter each (= ANY($n)), so 100 000 ids stay within the
+        # protocol's bind-parameter limit.
+        selectors: list[ColumnElement[bool]] = []
+        if groups:
+            members = select(m.c.device_id).where(
+                self._mine(m), m.c.slug == any_(bindparam("groups", groups, ARRAY(Text)))
+            )
+            selectors.append(d.c.id.in_(members))
+        if device_ids:
+            selectors.append(d.c.id == any_(bindparam("device_ids", device_ids, ARRAY(Text))))
+        if tags:
+            selectors.append(d.c.tags.contains(tags))
+        if not selectors:
+            return []
+        conds: list[ColumnElement[bool]] = [self._mine(d), or_(*selectors)]
+        if states is not None:
+            conds.append(d.c.state == any_(bindparam("states", states, ARRAY(Text))))
+        cols = (
+            d.c.tenant_id,
+            d.c.id,
+            d.c.product,
+            d.c.hw_revision,
+            d.c.state,
+            d.c.created_at,
+            d.c.fw_version,
+            d.c.fw_hash_hex,
+            d.c.connected,
         )
+        rows = await self._all(select(*cols).where(*conds).order_by(d.c.id).limit(limit))
+        return [_rec(DeviceRecord, r) for r in rows]
+
+    async def next_downlink_seq(self, device_id: str, msg_type: int, floor: int = 0) -> int:
+        d, s = t.devices, t.downlink_sequences
+        row = await self._one(select(d.c.downlink_seq).where(self._mine(d), d.c.id == device_id))
         if row is None:
             raise KeyError(device_id)
-        return int(row["downlink_seq"])
+        ins = pg_insert(s).values(
+            device_id=device_id,
+            msg_type=msg_type,
+            tenant_id=self.tenant_id,
+            last_seq=max(int(row["downlink_seq"]) + 1, floor),
+        )
+        stmt = ins.on_conflict_do_update(
+            index_elements=[s.c.device_id, s.c.msg_type],
+            set_={"last_seq": func.greatest(s.c.last_seq + 1, literal(floor, BigInteger))},
+        ).returning(s.c.last_seq)
+        out = await self._one(stmt)
+        assert out is not None
+        return int(out["last_seq"])
 
     async def device_groups(self, device_ids: list[str]) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {d: [] for d in device_ids}

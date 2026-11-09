@@ -71,6 +71,7 @@ class MemoryState:
     timeline: list[TimelineRecord] = field(default_factory=list)
     telemetry: list[TelemetryRecord] = field(default_factory=list)
     replay: dict[tuple[str, str], tuple[str, int]] = field(default_factory=dict)
+    downlink_seqs: dict[tuple[str, int], int] = field(default_factory=dict)
     alerts: dict[str, AlertRecord] = field(default_factory=dict)
     audit: dict[str, list[AuditRecord]] = field(default_factory=dict)
     audit_heads: dict[str, tuple[int, bytes]] = field(default_factory=dict)
@@ -165,12 +166,36 @@ class MemoryTenantTx:
         )
         return [_c(d) for d in rows if self._matches(d, flt)][:limit]
 
-    async def next_downlink_seq(self, device_id: str) -> int:
+    async def resolve_targets(
+        self,
+        groups: list[str],
+        tags: dict[str, str],
+        device_ids: list[str],
+        states: list[str] | None,
+        limit: int,
+    ) -> list[DeviceRecord]:
+        wanted_groups, wanted_ids = set(groups), set(device_ids)
+        out: list[DeviceRecord] = []
+        for d in sorted(self.s.devices.values(), key=lambda d: d.id):
+            if not self._mine(d.tenant_id) or (states is not None and d.state not in states):
+                continue
+            in_group = any((self.tenant_id, slug, d.id) in self.s.members for slug in wanted_groups)
+            by_tags = bool(tags) and all(d.tags.get(k) == v for k, v in tags.items())
+            if in_group or d.id in wanted_ids or by_tags:
+                out.append(_c(d))
+                if len(out) >= limit:
+                    break
+        return out
+
+    async def next_downlink_seq(self, device_id: str, msg_type: int, floor: int = 0) -> int:
         rec = self._device(device_id)
         if rec is None:
             raise KeyError(device_id)
-        rec.downlink_seq += 1
-        return rec.downlink_seq
+        key = (device_id, msg_type)
+        last = self.s.downlink_seqs.get(key, rec.downlink_seq)
+        value = max(last + 1, floor)
+        self.s.downlink_seqs[key] = value
+        return value
 
     async def device_groups(self, device_ids: list[str]) -> dict[str, list[str]]:
         wanted = set(device_ids)

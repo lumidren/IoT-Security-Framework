@@ -70,7 +70,24 @@ class TenantTx(Protocol):
     async def list_devices(
         self, flt: DeviceFilter, after_id: str | None, limit: int
     ) -> list[DeviceRecord]: ...
-    async def next_downlink_seq(self, device_id: str) -> int: ...
+    async def resolve_targets(
+        self,
+        groups: list[str],
+        tags: dict[str, str],
+        device_ids: list[str],
+        states: list[str] | None,
+        limit: int,
+    ) -> list[DeviceRecord]:
+        """Devices in any of ``groups``, **or** listed in ``device_ids``, **or** carrying every
+        tag in ``tags`` (an empty selector matches nothing), optionally restricted to
+        ``states``; ordered by id, at most ``limit`` rows."""
+        ...
+
+    async def next_downlink_seq(self, device_id: str, msg_type: int, floor: int = 0) -> int:
+        """Next ``seq`` of the device's downlink replay stream for ``msg_type``:
+        ``max(last + 1, floor)``. A new stream starts above the legacy per-device counter."""
+        ...
+
     async def device_groups(self, device_ids: list[str]) -> dict[str, list[str]]: ...
     async def open_alert_counts(self, device_ids: list[str]) -> dict[str, int]: ...
     async def list_provisioning(

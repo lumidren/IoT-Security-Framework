@@ -1,8 +1,9 @@
-"""SQLAlchemy Core table definitions mirroring ``migrations/versions/0001_initial.py``."""
+"""SQLAlchemy Core table definitions mirroring ``migrations/versions/``."""
 
 from __future__ import annotations
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     LargeBinary,
     MetaData,
     Numeric,
+    SmallInteger,
     Table,
     Text,
 )
@@ -203,6 +205,15 @@ device_replay = Table(
     Column("direction", Text, primary_key=True),
     _uuid("tenant_id", nullable=False),
     Column("last_seq", Numeric(20, 0), nullable=False),
+)
+
+downlink_sequences = Table(  # migrations/versions/0002_downlink_sequences.py
+    "downlink_sequences",
+    metadata,
+    Column("device_id", Text, primary_key=True),
+    Column("msg_type", SmallInteger, primary_key=True),
+    _uuid("tenant_id", nullable=False),
+    Column("last_seq", BigInteger, nullable=False),
 )
 
 alerts = Table(
