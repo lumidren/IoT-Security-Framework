@@ -1,0 +1,67 @@
+[Unit]
+Description=IronMesh device agent
+Documentation=https://github.com/lumidren/IoT-Security-Framework/tree/main/device/agent-rs
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target tpm2-abrmd.service
+# A failed start of a freshly updated slot triggers the A/B rollback hook.
+OnFailure=ironmesh-rollback.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ironmesh-agent --config /etc/ironmesh/agent.toml
+Restart=always
+RestartSec=5
+User=ironmesh
+Group=ironmesh
+SupplementaryGroups=tss
+Environment=RUST_BACKTRACE=0
+# State lives only below /var/lib/ironmesh (identity, state, slots); config is read-only.
+StateDirectory=ironmesh
+StateDirectoryMode=0700
+ConfigurationDirectory=ironmesh
+LogsDirectory=ironmesh
+UMask=0077
+
+# --- Sandboxing ---
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ironmesh
+ReadOnlyPaths=/etc/ironmesh
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=no
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tee0 rw
+DevicePolicy=closed
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=all
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+# Reading /var/log/auth.log for auth_failures telemetry (group adm on Debian) is optional:
+# SupplementaryGroups=tss adm
+MemoryMax=128M
+TasksMax=64
+LimitNOFILE=1024
+WatchdogSec=0
+
+[Install]
+WantedBy=multi-user.target

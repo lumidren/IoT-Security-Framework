@@ -1,0 +1,22 @@
+[Unit]
+Description=IronMesh A/B rollback (abandon a pending slot that failed to start)
+Documentation=https://github.com/lumidren/IoT-Security-Framework/tree/main/device/agent-rs
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ironmesh-agent --config /etc/ironmesh/agent.toml --rollback
+# With boot_control = "fw_setenv" this rewrites the U-Boot environment and reboots into the
+# previous slot; with the file-based boot control the next agent start reports rolled_back.
+ExecStartPost=/bin/systemctl --no-block reboot
+User=root
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ironmesh /boot /dev
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_BOOT
+SystemCallArchitectures=native

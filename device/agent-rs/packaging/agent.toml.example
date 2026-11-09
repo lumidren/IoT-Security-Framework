@@ -1,0 +1,44 @@
+# /etc/ironmesh/agent.toml - every key can be overridden with IRONMESH_<SECTION>_<KEY>.
+
+[identity]
+dir = "/var/lib/ironmesh/identity"
+backend = "tpm"                    # software | tpm | optee
+machine_secret = "/var/lib/ironmesh/identity/machine-secret"   # software backend only (0600)
+use_keyring = false                # software backend + cargo feature `keyring`
+tpm_tcti = "device:/dev/tpmrm0"
+tpm_primary_handle = 0x81000101
+ak_cert = "/var/lib/ironmesh/ak.crt"
+
+[pki]
+est_host = "pki.example.com"
+est_port = 8443
+ca_bundle = "/etc/ironmesh/ca-bundle.pem"      # factory: Root CA + Services CA
+est_pins = ["<hex sha256 of the Services CA SubjectPublicKeyInfo>"]
+bundle_pubkey = "<hex Ed25519 PKI bundle key, baked in at the factory>"
+timeout_s = 30
+
+[mqtt]
+keep_alive_s = 60
+connect_timeout_s = 20
+ack_timeout_s = 30
+
+[telemetry]
+interval_s = 30
+auth_log = "/var/log/auth.log"
+
+[ota]
+slots_dir = "/var/lib/ironmesh/slots"
+boot_control = "fw_setenv"         # file | fw_setenv
+product = "gateway-rpi"
+pq_required = false                # or IRONMESH_PQ_REQUIRED=1
+health_timeout_s = 120
+max_boot_attempts = 3
+allowed_hosts = ["artifacts.example.com"]
+max_image_size = 1073741824
+reboot_command = ["systemctl", "reboot"]
+
+[agent]
+state_dir = "/var/lib/ironmesh/state"
+buffer_capacity = 10000
+seq_block = 1
+log_level = "info"
