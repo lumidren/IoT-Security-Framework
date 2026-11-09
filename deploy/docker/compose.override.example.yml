@@ -1,0 +1,50 @@
+# Optional local overrides. Copy to deploy/docker/compose.override.yml (git-ignored is
+# recommended) and pass it explicitly:
+#
+#   docker compose -f deploy/docker/docker-compose.yml -f deploy/docker/compose.override.yml up -d
+#
+# Examples below; delete what you do not need.
+
+services:
+  # Use an external OIDC provider instead of the bundled Keycloak realm. Tokens must carry
+  # aud=ironmesh-api and the tenant_id / role claims (docs/API_CONTRACT.md section 0).
+  # console:
+  #   environment:
+  #     CONSOLE_OIDC_ISSUER: https://idp.example.com/realms/ironmesh
+  #     CONSOLE_OIDC_CLIENT_ID: ironmesh-console
+  # registry:
+  #   environment:
+  #     REGISTRY_OIDC_ISSUER: https://idp.example.com/realms/ironmesh
+  #     REGISTRY_OIDC_JWKS_URL: ""
+  # ota:
+  #   environment:
+  #     OTA_OIDC_ISSUER: https://idp.example.com/realms/ironmesh
+  #     OTA_OIDC_JWKS_URL: ""
+  # anomaly:
+  #   environment:
+  #     ANOMALY_OIDC_ISSUER: https://idp.example.com/realms/ironmesh
+  #     ANOMALY_OIDC_JWKS_URL: ""
+
+  # Smaller fleet for laptops.
+  fleet:
+    command:
+      - run
+      - --dir
+      - /fleet
+      - --config
+      - /fleet/fleet.toml
+      - --count
+      - "100"
+      - --anomalous
+      - "1"
+      - --stagger-ms
+      - "50"
+
+  # Debug logging for the policy service.
+  policy:
+    environment:
+      POLICY_LOG_LEVEL: debug
+
+  # Pull published images instead of building locally (set IRONMESH_TAG in .env to a release).
+  # pki:
+  #   pull_policy: always

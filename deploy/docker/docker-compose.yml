@@ -1,0 +1,996 @@
+# IronMesh local stack (DESIGN_CONTRACT.md section 7, ARCHITECTURE.md section 7 "Local compose").
+#
+#   cp deploy/docker/.env.example deploy/docker/.env   # or: scripts/demo/quickstart.sh (generates secrets)
+#   docker compose -f deploy/docker/docker-compose.yml up -d --wait
+#
+# Every environment variable below uses the exact name read by the service's settings module
+# (services/*/internal/config, services/*/settings.py / config.py, console/src/lib/env.ts,
+# console/src/auth.ts); scripts/ci/check_env_contract.py enforces that in CI. Secrets are
+# interpolated from the git-ignored .env (generated with random values by the quickstart);
+# where a component reads secrets from files (PostgreSQL, Grafana, TLS keys, OTA key rings,
+# EMQX API keys) they are delivered as files instead.
+#
+# Start-up order: init-volumes -> postgres / redpanda -> migrations, topics -> fleet-provision ->
+# pki-init -> pki -> policy -> emqx -> bridge, registry -> ota, anomaly -> console + keycloak ->
+# registry-seed -> seed -> fleet.
+
+name: ironmesh
+
+x-hardened: &hardened
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  networks: [ironmesh]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+# One-shot jobs; services that need the network add `networks: [ironmesh]` themselves.
+x-oneshot: &oneshot
+  restart: "no"
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
+x-python-healthcheck: &python-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 30
+  start_period: 30s
+
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=ironmesh,deployment.environment=local
+
+services:
+  # ------------------------------------------------------------------------------------------
+  # Volume ownership (the only container with capabilities; exits immediately).
+  # ------------------------------------------------------------------------------------------
+  init-volumes:
+    image: busybox:1.37.0-musl
+    restart: "no"
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    network_mode: none
+    command:
+      - sh
+      - -ec
+      - |
+        for d in /v/*; do chown 10001:10001 "$$d"; chmod 0750 "$$d"; done
+        chown -R 10001:10001 /v/fleet /v/pki-data
+        # Static busybox for one-shot jobs on distroless images (fleet-provision's guard).
+        cp /bin/busybox /v/tools/busybox
+        chown 0:0 /v/tools /v/tools/busybox
+        chmod 0755 /v/tools
+        chmod 0555 /v/tools/busybox
+        echo "volumes ready"
+    volumes:
+      - pki-data:/v/pki-data
+      - trust:/v/trust
+      - tls-pki:/v/tls-pki
+      - tls-policy:/v/tls-policy
+      - tls-bridge:/v/tls-bridge
+      - tls-registry:/v/tls-registry
+      - tls-ota:/v/tls-ota
+      - tls-anomaly:/v/tls-anomaly
+      - tls-emqx:/v/tls-emqx
+      - fleet-data:/v/fleet
+      - policy-state:/v/policy-state
+      - registry-data:/v/registry-data
+      - ota-data:/v/ota-data
+      - ota-keys:/v/ota-keys
+      - anomaly-data:/v/anomaly-data
+      - tools:/v/tools
+
+  # ------------------------------------------------------------------------------------------
+  # Data plane infrastructure
+  # ------------------------------------------------------------------------------------------
+  postgres:
+    <<: *hardened
+    image: postgres:16
+    user: "999:999"
+    read_only: false
+    environment:
+      POSTGRES_USER: ironmesh_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust
+    secrets:
+      - postgres_admin_password
+      - pki_db_owner_password
+      - pki_db_password
+      - registry_db_owner_password
+      - registry_db_password
+      - ota_db_owner_password
+      - ota_db_password
+      - anomaly_db_owner_password
+      - anomaly_db_password
+      - backup_db_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/10-ironmesh.sh:/docker-entrypoint-initdb.d/10-ironmesh.sh:ro
+    healthcheck:
+      # TCP on purpose: during initdb the entrypoint's temporary server listens on the socket only,
+      # so this turns healthy once the init scripts have finished and the real server is up.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "ironmesh_admin", "-d", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  redpanda:
+    <<: *hardened
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    read_only: false
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health -X brokers=localhost:9092 | grep -Eq 'Healthy:.+true'"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+
+  redpanda-init:
+    <<: *oneshot
+    networks: [ironmesh]
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        for t in im.ingest im.auth im.alerts im.audit im.commands im.campaigns; do
+          rpk topic create "$$t" -X brokers=redpanda:9092 -p 3 -r 1 \
+            || rpk topic describe "$$t" -X brokers=redpanda:9092 >/dev/null
+        done
+        rpk topic list -X brokers=redpanda:9092
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------------------------------
+  # Development PKI (pkictl) and the virtual fleet identities
+  # ------------------------------------------------------------------------------------------
+  fleet-provision:
+    <<: *oneshot
+    image: ghcr.io/lumidren/ironmesh-fleet:${IRONMESH_TAG:-dev}
+    build:
+      context: ../../device/agent-rs
+      dockerfile: Dockerfile
+    user: "10001:10001"
+    network_mode: none
+    # The fleet image is distroless; a static busybox from the tools volume provides the guard
+    # that keeps re-runs from regenerating identities whose bootstrap certificates exist.
+    entrypoint: ["/opt/tools/busybox", "sh", "-ec"]
+    command:
+      - |
+        if [ -f /fleet/fleet.json ]; then echo "fleet already provisioned"; exit 0; fi
+        /usr/local/bin/ironmesh-fleet provision --out /fleet --count "$$IRONMESH_FLEET_COUNT" --tenant "$$IRONMESH_TENANT_ID"
+    environment:
+      IRONMESH_FLEET_COUNT: ${IRONMESH_FLEET_COUNT:-500}
+      IRONMESH_TENANT_ID: ${IRONMESH_TENANT_ID:?set IRONMESH_TENANT_ID in .env}
+    volumes:
+      - fleet-data:/fleet
+      - tools:/opt/tools:ro
+    depends_on:
+      init-volumes:
+        condition: service_completed_successfully
+
+  pki-init:
+    <<: *oneshot
+    image: ghcr.io/lumidren/ironmesh-pki-init:${IRONMESH_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/pki-init/Dockerfile
+    user: "10001:10001"
+    network_mode: none
+    environment:
+      PKI_FILE_KMS_PASSPHRASE: ${PKI_FILE_KMS_PASSPHRASE:?}
+      PKI_CA_DIR: /pki-data
+      PKI_PUBLIC_BASE_URL: http://pki:8444
+      IRONMESH_TENANT_ID: ${IRONMESH_TENANT_ID:?}
+      IRONMESH_EMQX_EXTRA_SANS: ${IRONMESH_EMQX_EXTRA_SANS:-}
+      IRONMESH_PKI_EXTRA_SANS: ${IRONMESH_PKI_EXTRA_SANS:-}
+      IRONMESH_FLEET_TELEMETRY_INTERVAL_S: ${IRONMESH_FLEET_TELEMETRY_INTERVAL_S:-10}
+      IRONMESH_FLEET_PRODUCT: fleet-sim
+      EMQX_POLICY_API_SECRET: ${EMQX_POLICY_API_SECRET:?}
+      EMQX_REGISTRY_API_SECRET: ${EMQX_REGISTRY_API_SECRET:?}
+      EMQX_OTA_API_SECRET: ${EMQX_OTA_API_SECRET:?}
+    volumes:
+      - pki-data:/pki-data
+      - trust:/trust
+      - tls-pki:/tls/pki
+      - tls-policy:/tls/policy
+      - tls-bridge:/tls/bridge
+      - tls-registry:/tls/registry
+      - tls-ota:/tls/ota
+      - tls-anomaly:/tls/anomaly
+      - tls-emqx:/tls/emqx
+      - fleet-data:/fleet
+    depends_on:
+      fleet-provision:
+        condition: service_completed_successfully
+
+  # ------------------------------------------------------------------------------------------
+  # IronMesh services
+  # ------------------------------------------------------------------------------------------
+  pki:
+    <<: *hardened
+    image: ghcr.io/lumidren/ironmesh-pki:${IRONMESH_TAG:-dev}
+    build:
+      context: ../../services/pki
+    user: "10001:10001"
+    environment:
+      PKI_ENV: development
+      PKI_LISTEN_MTLS: ":8443"
+      PKI_LISTEN_PLAIN: ":8444"
+      # The pki service applies its embedded migrations at start with this DSN, so it connects
+      # as the schema owner (no separate migration DSN exists yet; see deploy/docker/README.md).
+      PKI_DATABASE_URL: postgres://pki_owner:${PKI_DB_OWNER_PASSWORD:?}@postgres:5432/pki?sslmode=disable
+      PKI_KMS: file
+      PKI_FILE_KMS_PASSPHRASE: ${PKI_FILE_KMS_PASSPHRASE:?}
+      PKI_CA_DIR: /pki-data
+      PKI_OPERATIONAL_CERT_TTL: 336h
+      PKI_NONCE_TTL: 120s
+      PKI_POLICY_URL: http://policy:8081
+      PKI_POLICY_TOKEN: ${PKI_POLICY_TOKEN:?}
+      PKI_POLICY_HMAC_KEY: ${PKI_POLICY_HMAC_KEY:?}
+      PKI_REGISTRY_URL: http://registry:8000
+      PKI_REGISTRY_TOKEN: ${PKI_REGISTRY_TOKEN:?}
+      PKI_PUBLIC_BASE_URL: http://pki:8444
+      PKI_SERVER_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      PKI_SERVER_KEY_FILE: /etc/ironmesh/tls/tls.key
+      PKI_MGMT_ALLOWED_CNS: svc-registry,svc-policy,svc-console,svc-anomaly,svc-ota
+      PKI_MGMT_JWT_PUBLIC_KEY_FILE: /etc/ironmesh/trust/service-pubkeys/jwt-signers.pem
+      PKI_DEFAULT_ALLOW_SOFTWARE_KEYS: "true"
+      # Broker host advertised in the trust bundle (HIL runner: mqtt.ironmesh.local).
+      PKI_BROKER_HOST: ${IRONMESH_BROKER_HOST:-emqx}
+      PKI_BROKER_PORT: "8883"
+      PKI_LOG_LEVEL: info
+      PKI_SHUTDOWN_TIMEOUT: 15s
+    volumes:
+      - pki-data:/pki-data:ro
+      - tls-pki:/etc/ironmesh/tls:ro
+      - trust:/etc/ironmesh/trust:ro
+    ports:
+      - "${IRONMESH_DEVICE_BIND_ADDR:-127.0.0.1}:8443:8443"
+      - "${IRONMESH_DEVICE_BIND_ADDR:-127.0.0.1}:8444:8444"
+    healthcheck:
+      # Distroless image: pkictl (shipped next to pki) fetches the CRL from the plain listener,
+      # which is only served once the service is ready.
+      test: ["CMD", "/usr/local/bin/pkictl", "crl", "--url", "http://127.0.0.1:8444/crl/device-ca.crl"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pki-init:
+        condition: service_completed_successfully
+
+  policy:
+    <<: *hardened
+    image: ghcr.io/lumidren/ironmesh-policy:${IRONMESH_TAG:-dev}
+    build:
+      context: ../../services/policy
+    user: "10001:10001"
+    environment:
+      POLICY_LISTEN: ":8081"
+      POLICY_EMQX_API_URL: http://emqx:18083
+      POLICY_EMQX_API_KEY: policy
+      POLICY_EMQX_API_SECRET: ${EMQX_POLICY_API_SECRET:?}
+      POLICY_PKI_CRL_URL: http://pki:8444/crl/device-ca.crl
+      POLICY_CRL_POLL_INTERVAL: 5s
+      POLICY_CRL_ISSUER_CERT_FILE: /etc/ironmesh/trust/device-ca.crt
+      POLICY_PKI_HMAC_SECRET: ${PKI_POLICY_HMAC_KEY:?}
+      POLICY_PKI_TOKEN: ${PKI_POLICY_TOKEN:?}
+      POLICY_REGISTRY_URL: http://registry:8000
+      POLICY_REGISTRY_TOKEN: ${POLICY_REGISTRY_TOKEN:?}
+      POLICY_REGISTRY_FAIL_OPEN: "false"
+      POLICY_REGISTRY_TIMEOUT: 2s
+      POLICY_REGISTRY_CACHE_TTL: 30s
+      POLICY_SERVICE_CIDRS: 172.28.0.0/16,127.0.0.0/8
+      POLICY_STATE_DIR: /var/lib/ironmesh/policy
+      POLICY_HOOK_TOKEN: ${POLICY_HOOK_TOKEN:?}
+      POLICY_AUTHZ_CACHE_TTL: 10s
+      POLICY_LOG_LEVEL: info
+      POLICY_SHUTDOWN_TIMEOUT: 10s
+    volumes:
+      - policy-state:/var/lib/ironmesh/policy
+      - trust:/etc/ironmesh/trust:ro
+    depends_on:
+      pki:
+        condition: service_healthy
+
+  # The policy and bridge images are distroless without any HTTP client, so a probe sidecar
+  # carries their health state for depends_on.
+  policy-probe:
+    <<: *hardened
+    image: curlimages/curl:8.11.1
+    user: "100:101"
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://policy:8081/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+    depends_on:
+      policy:
+        condition: service_started
+
+  emqx:
+    <<: *hardened
+    image: ${EMQX_IMAGE:-emqx/emqx:5.8.9}
+    read_only: false
+    group_add: ["10001"]
+    environment:
+      EMQX_NODE__COOKIE: ${EMQX_NODE_COOKIE:?}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:?}
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /etc/ironmesh/emqx/ca-chain.pem
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /etc/ironmesh/emqx/broker.pem
+      EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /etc/ironmesh/emqx/broker.key
+      EMQX_API_KEY__BOOTSTRAP_FILE: /etc/ironmesh/emqx/api-keys.txt
+      EMQX_AUTHENTICATION__1__HEADERS__X-IRONMESH-HOOK-TOKEN: ${POLICY_HOOK_TOKEN:?}
+      EMQX_AUTHORIZATION__SOURCES__1__HEADERS__X-IRONMESH-HOOK-TOKEN: ${POLICY_HOOK_TOKEN:?}
+      EMQX_PROMETHEUS__ENABLE_BASIC_AUTH: "false"
+    volumes:
+      - ../../services/policy/deploy/emqx/emqx.conf:/opt/emqx/etc/emqx.conf:ro
+      - ../../services/policy/deploy/emqx/acl.conf:/opt/emqx/etc/acl.conf:ro
+      - tls-emqx:/etc/ironmesh/emqx:ro
+      - emqx-data:/opt/emqx/data
+      - emqx-log:/opt/emqx/log
+    ports:
+      - "${IRONMESH_DEVICE_BIND_ADDR:-127.0.0.1}:8883:8883"
+      - "${IRONMESH_BIND_ADDR:-127.0.0.1}:18083:18083"
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    depends_on:
+      policy-probe:
+        condition: service_healthy
+      pki-init:
+        condition: service_completed_successfully
+
+  bridge:
+    <<: *hardened
+    image: ghcr.io/lumidren/ironmesh-bridge:${IRONMESH_TAG:-dev}
+    build:
+      context: ../../services/bridge
+    user: "10001:10001"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: ironmesh-bridge
+      BRIDGE_LISTEN: ":8082"
+      BRIDGE_MQTT_URL: ssl://emqx:8883
+      BRIDGE_MQTT_CLIENT_ID: svc-bridge
+      BRIDGE_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      BRIDGE_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      BRIDGE_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      BRIDGE_TLS_SERVER_NAME: emqx
+      BRIDGE_KAFKA_BROKERS: redpanda:9092
+      BRIDGE_KAFKA_INGEST_TOPIC: im.ingest
+      BRIDGE_KAFKA_AUTH_TOPIC: im.auth
+      BRIDGE_KAFKA_TLS: "false"
+      BRIDGE_MAX_INFLIGHT: "1024"
+      BRIDGE_EVENTS_TOKEN: ${BRIDGE_EVENTS_TOKEN:?}
+      BRIDGE_MQTT_KEEPALIVE: 60s
+      BRIDGE_MQTT_SESSION_EXPIRY: 168h
+      BRIDGE_LOG_LEVEL: info
+      BRIDGE_SHUTDOWN_TIMEOUT: 15s
+    volumes:
+      - tls-bridge:/etc/ironmesh/tls:ro
+    depends_on:
+      emqx:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+
+  bridge-probe:
+    <<: *hardened
+    image: curlimages/curl:8.11.1
+    user: "100:101"
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://bridge:8082/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+    depends_on:
+      bridge:
+        condition: service_started
+
+  registry-migrate:
+    <<: *oneshot
+    networks: [ironmesh]
+    image: ghcr.io/lumidren/ironmesh-registry:${IRONMESH_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: services/registry/Dockerfile
+    user: "10001:10001"
+    working_dir: /srv
+    command: ["alembic", "-c", "/srv/alembic.ini", "upgrade", "head"]
+    environment:
+      REGISTRY_MIGRATION_DATABASE_URL: postgresql+asyncpg://registry_owner:${REGISTRY_DB_OWNER_PASSWORD:?}@postgres:5432/registry
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  registry:
+    <<: *hardened
+    image: ghcr.io/lumidren/ironmesh-registry:${IRONMESH_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: services/registry/Dockerfile
+    user: "10001:10001"
+    environment: &registry-env
+      <<: *otel-env
+      OTEL_SERVICE_NAME: ironmesh-registry
+      REGISTRY_ENVIRONMENT: dev
+      REGISTRY_LISTEN_PORT: "8000"
+      REGISTRY_LOG_LEVEL: info
+      REGISTRY_LOG_FORMAT: json
+      REGISTRY_PUBLIC_BASE_URL: http://localhost:8000
+      REGISTRY_DB_HOST: postgres
+      REGISTRY_DB_PORT: "5432"
+      REGISTRY_DB_NAME: registry
+      REGISTRY_DB_USER: registry_app
+      REGISTRY_DB_PASSWORD: ${REGISTRY_DB_PASSWORD:?}
+      REGISTRY_OIDC_ISSUER: http://localhost:8180/realms/ironmesh
+      REGISTRY_OIDC_AUDIENCE: ironmesh-api
+      REGISTRY_OIDC_JWKS_URL: http://console:8180/realms/ironmesh/protocol/openid-connect/certs
+      REGISTRY_INTERNAL_TOKENS: '{"pki": "${PKI_REGISTRY_TOKEN:?}", "policy": "${POLICY_REGISTRY_TOKEN:?}", "anomaly": "${ANOMALY_INTERNAL_TOKEN:?}"}'
+      REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE: /etc/ironmesh/tls/tls.key
+      REGISTRY_KAFKA_BROKERS: redpanda:9092
+      REGISTRY_KAFKA_CONSUMER_GROUP: registry-ingest
+      REGISTRY_KAFKA_TOPIC_INGEST: im.ingest
+      REGISTRY_KAFKA_TOPIC_AUTH: im.auth
+      REGISTRY_KAFKA_TOPIC_ALERTS: im.alerts
+      REGISTRY_KAFKA_TOPIC_AUDIT: im.audit
+      REGISTRY_KAFKA_TOPIC_COMMANDS: im.commands
+      REGISTRY_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
+      REGISTRY_KAFKA_SASL_MECHANISM: none
+      REGISTRY_KAFKA_TLS_ENABLED: "false"
+      REGISTRY_PKI_URL: https://pki:8443
+      REGISTRY_POLICY_URL: http://policy:8081
+      REGISTRY_OTA_URL: http://ota:8001
+      REGISTRY_EMQX_API_URL: http://emqx:18083
+      REGISTRY_EMQX_API_KEY: registry
+      REGISTRY_EMQX_API_SECRET: ${EMQX_REGISTRY_API_SECRET:?}
+      REGISTRY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      REGISTRY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      REGISTRY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      REGISTRY_MQTT_HOST: emqx
+      REGISTRY_MQTT_PORT: "8883"
+      REGISTRY_MQTT_CLIENT_ID: svc-registry
+      REGISTRY_KMS_BACKEND: local
+      REGISTRY_KMS_LOCAL_KEK_FILE: /var/lib/ironmesh/registry/registry-kek.bin
+    volumes:
+      - tls-registry:/etc/ironmesh/tls:ro
+      - registry-data:/var/lib/ironmesh/registry
+    ports:
+      - "${IRONMESH_BIND_ADDR:-127.0.0.1}:8000:8000"
+    healthcheck:
+      <<: *python-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
+    depends_on:
+      registry-migrate:
+        condition: service_completed_successfully
+      redpanda-init:
+        condition: service_completed_successfully
+      emqx:
+        condition: service_healthy
+
+  registry-seed:
+    <<: *oneshot
+    networks: [ironmesh]
+    image: ghcr.io/lumidren/ironmesh-registry:${IRONMESH_TAG:-dev}
+    user: "10001:10001"
+    working_dir: /srv
+    environment:
+      <<: *registry-env
+    command:
+      - python
+      - -m
+      - app.seed
+      - --tenant
+      - ${IRONMESH_TENANT_ID:?}
+      - --devices
+      - ${IRONMESH_SEED_DEVICES:-25}
+      - --owner-sub
+      - ${IRONMESH_DEMO_USER_ID:?}
+      - --owner-email
+      - ${IRONMESH_DEMO_USER:-demo}@ironmesh.local
+    volumes:
+      - tls-registry:/etc/ironmesh/tls:ro
+      - registry-data:/var/lib/ironmesh/registry
+    depends_on:
+      registry:
+        condition: service_healthy
+
+  ota-migrate:
+    <<: *oneshot
+    networks: [ironmesh]
+    image: ghcr.io/lumidren/ironmesh-ota:${IRONMESH_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: services/ota/Dockerfile
+    user: "10001:10001"
+    entrypoint: ["python", "-m", "ironmesh_ota.migrate"]
+    environment:
+      OTA_MIGRATION_DATABASE_URL: postgresql+asyncpg://ota_owner:${OTA_DB_OWNER_PASSWORD:?}@postgres:5432/ota
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ota-init:
+    <<: *oneshot
+    image: ghcr.io/lumidren/ironmesh-ota:${IRONMESH_TAG:-dev}
+    user: "10001:10001"
+    network_mode: none
+    entrypoint: ["sh", "-ec"]
+    command:
+      - |
+        mkdir -p /keys/tenant-keys
+        [ -f /keys/keyring.json ] || python -m ironmesh_ota.keytool init --out /keys/keyring.json
+        [ -f "/keys/tenant-keys/$$IRONMESH_TENANT_ID.pem" ] || python -m ironmesh_ota.keytool tenant-key --tenant "$$IRONMESH_TENANT_ID" --dir /keys/tenant-keys
+        python -m ironmesh_ota.keytool list --file /keys/keyring.json
+    environment:
+      IRONMESH_TENANT_ID: ${IRONMESH_TENANT_ID:?}
+      OTA_SIGNING_PASSPHRASE: ${OTA_SIGNING_PASSPHRASE:?}
+      OTA_TENANT_KEYS_PASSPHRASE: ${OTA_TENANT_KEYS_PASSPHRASE:?}
+    volumes:
+      - ota-keys:/keys
+    depends_on:
+      init-volumes:
+        condition: service_completed_successfully
+
+  ota:
+    <<: *hardened
+    image: ghcr.io/lumidren/ironmesh-ota:${IRONMESH_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: services/ota/Dockerfile
+    user: "10001:10001"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: ironmesh-ota
+      OTA_ENV: dev
+      OTA_LISTEN_PORT: "8001"
+      OTA_LOG_LEVEL: info
+      OTA_LOG_FORMAT: json
+      OTA_PUBLIC_BASE_URL: http://ota:8001
+      OTA_DB_HOST: postgres
+      OTA_DB_PORT: "5432"
+      OTA_DB_NAME: ota
+      OTA_DB_USER: ota_app
+      OTA_DB_PASSWORD: ${OTA_DB_PASSWORD:?}
+      OTA_ARTIFACT_STORE: filesystem
+      OTA_ARTIFACT_PATH: /var/lib/ironmesh/ota/artifacts
+      OTA_DOWNLOAD_HMAC_SECRET: ${OTA_DOWNLOAD_HMAC_SECRET:?}
+      OTA_SIGNING_PROVIDER: file
+      OTA_SIGNING_KEYRING_FILE: /var/lib/ironmesh/ota-keys/keyring.json
+      OTA_SIGNING_PASSPHRASE: ${OTA_SIGNING_PASSPHRASE:?}
+      OTA_SIGNING_KEY_ID: fw-ed25519-dev
+      OTA_PQ_SIGNING_ENABLED: "false"
+      OTA_TENANT_KEYS_PROVIDER: file
+      OTA_TENANT_KEYS_DIR: /var/lib/ironmesh/ota-keys/tenant-keys
+      OTA_TENANT_KEYS_PASSPHRASE: ${OTA_TENANT_KEYS_PASSPHRASE:?}
+      OTA_OIDC_ISSUER: http://localhost:8180/realms/ironmesh
+      OTA_OIDC_AUDIENCE: ironmesh-api
+      OTA_OIDC_JWKS_URL: http://console:8180/realms/ironmesh/protocol/openid-connect/certs
+      OTA_INTERNAL_TOKEN: ${OTA_INTERNAL_TOKEN:?}
+      OTA_SERVICE_PUBLIC_KEYS_DIR: /etc/ironmesh/trust/service-pubkeys
+      OTA_REGISTRY_URL: http://registry:8000
+      OTA_PKI_URL: https://pki:8443
+      OTA_EMQX_API_URL: http://emqx:18083
+      OTA_EMQX_API_KEY: ota
+      OTA_EMQX_API_SECRET: ${EMQX_OTA_API_SECRET:?}
+      OTA_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      OTA_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      OTA_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      OTA_KAFKA_BROKERS: redpanda:9092
+      OTA_KAFKA_TOPIC_INGEST: im.ingest
+      OTA_KAFKA_TOPIC_COMMANDS: im.commands
+      OTA_KAFKA_TOPIC_AUDIT: im.audit
+      OTA_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
+      OTA_KAFKA_CONSUMER_GROUP: ota-status
+      OTA_KAFKA_TLS_ENABLED: "false"
+      OTA_CONTROLLER_ENABLED: "true"
+      OTA_CONTROLLER_INTERVAL_S: "2"
+      OTA_DEVICE_TIMEOUT_S: "600"
+      OTA_OTEL_ENABLED: "true"
+      OTA_OTEL_ENDPOINT: http://otel-collector:4317
+    volumes:
+      - ota-data:/var/lib/ironmesh/ota
+      - ota-keys:/var/lib/ironmesh/ota-keys:ro
+      - tls-ota:/etc/ironmesh/tls:ro
+      - trust:/etc/ironmesh/trust:ro
+    healthcheck:
+      <<: *python-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/readyz', timeout=3)"]
+    depends_on:
+      ota-migrate:
+        condition: service_completed_successfully
+      ota-init:
+        condition: service_completed_successfully
+      registry:
+        condition: service_healthy
+
+  anomaly:
+    <<: *hardened
+    image: ghcr.io/lumidren/ironmesh-anomaly:${IRONMESH_TAG:-dev}
+    build:
+      context: ../..
+      dockerfile: services/anomaly/Dockerfile
+    user: "10001:10001"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: ironmesh-anomaly
+      ANOMALY_ENVIRONMENT: dev
+      ANOMALY_LISTEN_PORT: "8002"
+      ANOMALY_LOG_LEVEL: info
+      ANOMALY_LOG_FORMAT: json
+      ANOMALY_DB_HOST: postgres
+      ANOMALY_DB_PORT: "5432"
+      ANOMALY_DB_NAME: anomaly
+      ANOMALY_DB_USER: anomaly_app
+      ANOMALY_DB_PASSWORD: ${ANOMALY_DB_PASSWORD:?}
+      ANOMALY_DATABASE_MIGRATE_URL: postgresql://anomaly_owner:${ANOMALY_DB_OWNER_PASSWORD:?}@postgres:5432/anomaly
+      ANOMALY_KAFKA_BROKERS: redpanda:9092
+      ANOMALY_KAFKA_CONSUMER_GROUP: anomaly-engine
+      ANOMALY_KAFKA_TOPIC_INGEST: im.ingest
+      ANOMALY_KAFKA_TOPIC_AUTH: im.auth
+      ANOMALY_KAFKA_TOPIC_ALERTS: im.alerts
+      ANOMALY_KAFKA_TOPIC_AUDIT: im.audit
+      ANOMALY_KAFKA_TOPIC_COMMANDS: im.commands
+      ANOMALY_KAFKA_TLS_ENABLED: "false"
+      ANOMALY_REGISTRY_URL: http://registry:8000
+      ANOMALY_POLICY_URL: http://policy:8081
+      ANOMALY_OTA_URL: http://ota:8001
+      ANOMALY_PKI_URL: https://pki:8443
+      ANOMALY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      ANOMALY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
+      ANOMALY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      ANOMALY_INTERNAL_TOKEN: ${ANOMALY_INTERNAL_TOKEN:?}
+      # Demo posture: auto-quarantine on (dry-run is the chart default, SECURITY.md).
+      ANOMALY_AUTO_QUARANTINE: "true"
+      ANOMALY_QUARANTINE_MIN_SEVERITY: high
+      ANOMALY_MODEL_DIR: /var/lib/ironmesh/anomaly/models
+      ANOMALY_OIDC_ISSUER: http://localhost:8180/realms/ironmesh
+      ANOMALY_OIDC_AUDIENCE: ironmesh-api
+      ANOMALY_OIDC_JWKS_URL: http://console:8180/realms/ironmesh/protocol/openid-connect/certs
+      ANOMALY_SIEM_WEBHOOK_SECRET: ${ANOMALY_SIEM_WEBHOOK_SECRET:?}
+    volumes:
+      - anomaly-data:/var/lib/ironmesh/anomaly
+      - tls-anomaly:/etc/ironmesh/tls:ro
+    healthcheck:
+      <<: *python-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/readyz', timeout=3)"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      pki:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+
+  console:
+    <<: *hardened
+    image: ghcr.io/lumidren/ironmesh-console:${IRONMESH_TAG:-dev}
+    build:
+      context: ../../console
+      args:
+        NEXT_PUBLIC_APP_URL: http://localhost:3000
+        NEXT_PUBLIC_ENVIRONMENT: local
+        NEXT_PUBLIC_WS_URL: ws://localhost:8000/v1/ws
+        NEXT_PUBLIC_MOCK_API: "false"
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /app/.next/cache:size=256m,mode=1777
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      AUTH_SECRET: ${AUTH_SECRET:?}
+      AUTH_TRUST_HOST: "true"
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_ENVIRONMENT: local
+      # Keycloak shares this container's network namespace, so the issuer URL the browser uses
+      # (http://localhost:8180) also resolves server-side for Auth.js discovery.
+      CONSOLE_OIDC_ISSUER: http://localhost:8180/realms/ironmesh
+      CONSOLE_OIDC_CLIENT_ID: ironmesh-console
+      CONSOLE_OIDC_CLIENT_SECRET: ${CONSOLE_OIDC_CLIENT_SECRET:?}
+      CONSOLE_REGISTRY_URL: http://registry:8000
+      CONSOLE_OTA_URL: http://ota:8001
+      CONSOLE_ANOMALY_URL: http://anomaly:8002
+      CONSOLE_POLICY_URL: http://policy:8081
+    ports:
+      - "${IRONMESH_BIND_ADDR:-127.0.0.1}:3000:3000"
+      - "${IRONMESH_BIND_ADDR:-127.0.0.1}:8180:8180"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    depends_on:
+      registry:
+        condition: service_healthy
+      ota:
+        condition: service_healthy
+      anomaly:
+        condition: service_healthy
+
+  # Local OIDC provider with a static demo user (realm import: keycloak/ironmesh-realm.json).
+  keycloak:
+    restart: unless-stopped
+    image: quay.io/keycloak/keycloak:26.0.7
+    network_mode: "service:console"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: "8180"
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?}
+      # Placeholders resolved inside the realm import file.
+      IRONMESH_TENANT_ID: ${IRONMESH_TENANT_ID:?}
+      IRONMESH_DEMO_USER: ${IRONMESH_DEMO_USER:-demo}
+      IRONMESH_DEMO_USER_ID: ${IRONMESH_DEMO_USER_ID:?}
+      IRONMESH_DEMO_PASSWORD: ${IRONMESH_DEMO_PASSWORD:?}
+      CONSOLE_OIDC_CLIENT_SECRET: ${CONSOLE_OIDC_CLIENT_SECRET:?}
+    volumes:
+      - ./keycloak/ironmesh-realm.json:/opt/keycloak/data/import/ironmesh-realm.json:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"UP"' <&3
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    depends_on:
+      console:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------------------------------
+  # Demo seeding and the virtual fleet
+  # ------------------------------------------------------------------------------------------
+  seed:
+    <<: *oneshot
+    networks: [ironmesh]
+    image: ghcr.io/lumidren/ironmesh-ota:${IRONMESH_TAG:-dev}
+    user: "10001:10001"
+    entrypoint: ["python", "/demo/demo.py"]
+    command: ["seed"]
+    environment: &demo-env
+      IRONMESH_TENANT_ID: ${IRONMESH_TENANT_ID:?}
+      IRONMESH_DEMO_USER: ${IRONMESH_DEMO_USER:-demo}
+      IRONMESH_DEMO_PASSWORD: ${IRONMESH_DEMO_PASSWORD:?}
+      IRONMESH_TOKEN_URL: http://console:8180/realms/ironmesh/protocol/openid-connect/token
+      IRONMESH_REGISTRY_URL: http://registry:8000
+      IRONMESH_OTA_URL: http://ota:8001
+      IRONMESH_ANOMALY_URL: http://anomaly:8002
+      IRONMESH_FLEET_DIR: /fleet
+      IRONMESH_FLEET_PRODUCT: fleet-sim
+      IRONMESH_PKI_DSN: postgresql://pki_owner:${PKI_DB_OWNER_PASSWORD:?}@postgres:5432/pki
+      IRONMESH_TENANT_KEY_FILE: /keys/tenant-keys/${IRONMESH_TENANT_ID:?}.pem
+      OTA_TENANT_KEYS_PASSPHRASE: ${OTA_TENANT_KEYS_PASSPHRASE:?}
+      IRONMESH_BROKER_HOST: ${IRONMESH_BROKER_HOST:-emqx}
+      IRONMESH_BROKER_PORT: "8883"
+      IRONMESH_FLEET_COUNT: ${IRONMESH_FLEET_COUNT:-500}
+      IRONMESH_DEMO_DWELL_S: ${IRONMESH_DEMO_DWELL_S:-30}
+    volumes:
+      - ../../scripts/demo:/demo:ro
+      - fleet-data:/fleet:ro
+      - ota-keys:/keys:ro
+    depends_on:
+      registry-seed:
+        condition: service_completed_successfully
+      ota:
+        condition: service_healthy
+      pki:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+  # `docker compose run --rm demo-tools <campaign|wait-active|wait-quarantine|status>`
+  demo-tools:
+    <<: *oneshot
+    networks: [ironmesh]
+    image: ghcr.io/lumidren/ironmesh-ota:${IRONMESH_TAG:-dev}
+    profiles: ["tools"]
+    user: "10001:10001"
+    entrypoint: ["python", "/demo/demo.py"]
+    command: ["status"]
+    environment:
+      <<: *demo-env
+    volumes:
+      - ../../scripts/demo:/demo:ro
+      - fleet-data:/fleet:ro
+      - ota-keys:/keys:ro
+
+  fleet:
+    <<: *hardened
+    image: ghcr.io/lumidren/ironmesh-fleet:${IRONMESH_TAG:-dev}
+    build:
+      context: ../../device/agent-rs
+      dockerfile: Dockerfile
+    user: "10001:10001"
+    entrypoint: ["/usr/local/bin/ironmesh-fleet"]
+    command:
+      - run
+      - --dir
+      - /fleet
+      - --config
+      - /fleet/fleet.toml
+      - --count
+      - ${IRONMESH_FLEET_COUNT:-500}
+      - --anomalous
+      - ${IRONMESH_FLEET_ANOMALOUS:-1}
+      - --stagger-ms
+      - "20"
+    environment:
+      RUST_LOG: info
+    volumes:
+      - fleet-data:/fleet
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      emqx:
+        condition: service_healthy
+      bridge-probe:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------------------------------
+  # Observability (provisioned from observability/)
+  # ------------------------------------------------------------------------------------------
+  otel-collector:
+    <<: *hardened
+    image: ${OTELCOL_IMAGE:-otel/opentelemetry-collector-contrib:0.164.0}
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      IRONMESH_ENVIRONMENT: local
+      OTEL_TRACES_ENDPOINT: ${OTEL_TRACES_ENDPOINT:-tempo:4317}
+      OTEL_LOGS_ENDPOINT: ${OTEL_LOGS_ENDPOINT:-http://loki:3100/otlp}
+      OTEL_EXPORTER_INSECURE: "true"
+    volumes:
+      - ../../observability/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+
+  prometheus:
+    <<: *hardened
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ../../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../observability/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${IRONMESH_BIND_ADDR:-127.0.0.1}:9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  grafana:
+    <<: *hardened
+    image: grafana/grafana-oss:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    secrets:
+      - grafana_admin_password
+    volumes:
+      - ../../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../observability/grafana/dashboards:/var/lib/grafana/dashboards/ironmesh:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${IRONMESH_BIND_ADDR:-127.0.0.1}:3001:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+networks:
+  ironmesh:
+    name: ironmesh
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  pgdata:
+  redpanda-data:
+  emqx-data:
+  emqx-log:
+  pki-data:
+  trust:
+  tls-pki:
+  tls-policy:
+  tls-bridge:
+  tls-registry:
+  tls-ota:
+  tls-anomaly:
+  tls-emqx:
+  fleet-data:
+  policy-state:
+  registry-data:
+  ota-data:
+  ota-keys:
+  anomaly-data:
+  tools:
+  prometheus-data:
+  grafana-data:
+
+secrets:
+  postgres_admin_password:
+    environment: POSTGRES_ADMIN_PASSWORD
+  pki_db_owner_password:
+    environment: PKI_DB_OWNER_PASSWORD
+  pki_db_password:
+    environment: PKI_DB_PASSWORD
+  registry_db_owner_password:
+    environment: REGISTRY_DB_OWNER_PASSWORD
+  registry_db_password:
+    environment: REGISTRY_DB_PASSWORD
+  ota_db_owner_password:
+    environment: OTA_DB_OWNER_PASSWORD
+  ota_db_password:
+    environment: OTA_DB_PASSWORD
+  anomaly_db_owner_password:
+    environment: ANOMALY_DB_OWNER_PASSWORD
+  anomaly_db_password:
+    environment: ANOMALY_DB_PASSWORD
+  backup_db_password:
+    environment: BACKUP_DB_PASSWORD
+  grafana_admin_password:
+    environment: GRAFANA_ADMIN_PASSWORD
