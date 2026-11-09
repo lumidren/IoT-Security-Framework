@@ -1,0 +1,80 @@
+menu "IronMesh"
+
+    config IRONMESH_PRODUCT
+        string "Product identifier (manifest product)"
+        default "sensor-esp32"
+
+    menu "Cloud endpoints"
+        config IRONMESH_BROKER_HOST
+            string "MQTT broker host (overridden by the trust bundle after enrollment)"
+            default "mqtt.ironmesh.local"
+        config IRONMESH_BROKER_PORT
+            int "MQTT broker port"
+            range 1 65535
+            default 8883
+        config IRONMESH_EST_HOST
+            string "EST server host"
+            default "pki.ironmesh.local"
+        config IRONMESH_EST_PORT
+            int "EST server port (mTLS)"
+            range 1 65535
+            default 8443
+        config IRONMESH_TELEMETRY_INTERVAL_S
+            int "Telemetry interval (s)"
+            range 5 86400
+            default 60
+    endmenu
+
+    menu "Wi-Fi"
+        config IRONMESH_WIFI_SSID
+            string "SSID"
+            default "ironmesh-hil"
+        config IRONMESH_WIFI_PSK
+            string "WPA2/WPA3 passphrase (dev/hil; prod reads it from NVS written at the factory)"
+            default ""
+    endmenu
+
+    menu "Secure element"
+        choice IRONMESH_SE
+            prompt "Device key storage"
+            default IRONMESH_SE_ATECC608
+            config IRONMESH_SE_ATECC608
+                bool "ATECC608B (hardware assurance)"
+            config IRONMESH_SE_SOFTWARE
+                bool "Encrypted NVS (software assurance, contract section 10)"
+        endchoice
+
+        config IRONMESH_I2C_PORT
+            int "I2C port"
+            depends on IRONMESH_SE_ATECC608
+            default 0
+        config IRONMESH_I2C_SDA
+            int "ATECC608B SDA GPIO"
+            depends on IRONMESH_SE_ATECC608
+            default 21
+        config IRONMESH_I2C_SCL
+            int "ATECC608B SCL GPIO"
+            depends on IRONMESH_SE_ATECC608
+            default 22
+        config IRONMESH_ATECC_I2C_ADDR
+            hex "ATECC608B 8-bit I2C address (0xC0 blank part, 0x6A Trust&GO)"
+            depends on IRONMESH_SE_ATECC608
+            default 0xC0
+    endmenu
+
+    config IRONMESH_REQUIRE_PQ
+        bool "Require the ML-DSA-65 manifest signature (IRONMESH_PQ_REQUIRED)"
+        default n
+        help
+            The ESP32 build has no ML-DSA-65 backend, so enabling this rejects every update
+            with MLDSA_NOT_AVAILABLE. Keep disabled until a backend is added.
+
+    config IRONMESH_DUT_CONTROL
+        bool "DUT control protocol over USB-Serial/JTAG (TEST HOOK, hil profile only)"
+        default n
+        help
+            Exposes conformance/DUT_PROTOCOL.md on the USB-Serial/JTAG console, every line
+            prefixed with "@@IM ". Must be disabled in production; tools/check_prod_config.py
+            fails CI if sdkconfig.defaults.prod enables it.
+
+endmenu

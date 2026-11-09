@@ -1,0 +1,10 @@
+## IDF Component Manager manifest (resolved by `idf.py reconfigure`)
+dependencies:
+  idf: ">=5.3,<5.4"
+  # ATECC608B driver (atcab_*), only linked with CONFIG_IRONMESH_SE_ATECC608
+  espressif/esp-cryptoauthlib: "^0.4.1"
+  # Ed25519 verification (crypto_sign_ed25519_verify_detached). mbedTLS 3.6 in IDF 5.3 has no
+  # Ed25519 (neither legacy nor PSA builtin), so libsodium is used; see README "Crypto".
+  espressif/libsodium: "^1.0.20"
+  # esp_secure_cert partition reader (bootstrap certificate written by the factory station)
+  espressif/esp_secure_cert_mgr: "^2.5.0"
