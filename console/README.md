@@ -73,7 +73,8 @@ fallbacks for compose and local development.
 | `CONSOLE_REGISTRY_URL`, `CONSOLE_OTA_URL`, `CONSOLE_ANOMALY_URL`, `CONSOLE_POLICY_URL` | `REGISTRY_URL` ..., then `http://localhost:<port>` | Upstream services (server-side only)                                                       |
 | `NEXT_PUBLIC_WS_URL`                                                                   | `wss://<app host>/v1/ws`, then current origin      | Browser-reachable registry WebSocket                                                       |
 | `NEXT_PUBLIC_MAP_STYLE_URL`                                                            | bundled OSM raster style                           | MapLibre style                                                                             |
-| `MAP_TILE_ORIGINS`                                                                     | `https://tile.openstreetmap.org`                   | Tile origins allowed by the CSP                                                            |
+| `MAP_TILE_ORIGINS`                                                                     | `https://tile.openstreetmap.org`                   | Tile origins allowed by the CSP (read per request by the middleware)                       |
+| `CONSOLE_STEP_UP_MAX_AGE`                                                              | `300`                                              | Max age in seconds of the last sign-in for destructive actions (step-up, minimum 30)       |
 | `NEXT_PUBLIC_ENVIRONMENT`                                                              | –                                                  | Label shown next to the tenant badge (hidden for prod/production)                          |
 | `NEXT_PUBLIC_MOCK_API`                                                                 | `false`                                            | Demo mode (see above)                                                                      |
 | `NEXT_DIST_DIR`                                                                        | `.next`                                            | Build directory override used by the mock build                                            |
@@ -87,7 +88,9 @@ fallbacks for compose and local development.
   session's OIDC access token as `Authorization: Bearer`, streams request/response bodies, forwards
   `Idempotency-Key`, `X-IronMesh-Tenant`, `If-Match`, `traceparent` and returns upstream RFC 9457
   problems untouched (plus `Idempotency-Replayed`, `Location`, `Content-Disposition`). It refuses
-  `/internal/*` paths and every mutating method for the `viewer` role (403 problem); expired
+  `/internal/*` paths (also when reached through dot segments or encoded slashes), cross-origin
+  mutations (403), every mutating method for the `viewer` role (403 problem) and destructive
+  actions without a recent sign-in (401 `step_up_required`, see [Security](#security)); expired
   access tokens yield a 401 problem so the UI can prompt a new sign-in.
 - **Auth.** `src/auth.ts` configures Auth.js with a generic `type: 'oidc'` provider (issuer
   discovery). The access token stays in the encrypted JWT cookie and is read server-side only
@@ -125,6 +128,7 @@ fallbacks for compose and local development.
 | `/audit`                                          | Filters, details expander, NDJSON export (admin)                                                                                                                                                                   |
 | `/settings/access`                                | Users and roles (owner can change), API keys (secret shown once), tenant security settings                                                                                                                         |
 | `/signin`, `/forbidden`                           | OIDC button, demo sign-in in mock mode                                                                                                                                                                             |
+| `/auth/continue`, `/auth/reauth[/complete]`       | Same-origin hop for cross-site navigations (SameSite=Strict cookie); step-up re-authentication pop-up                                                                                                              |
 
 ## Deployment notes
 
@@ -135,7 +139,7 @@ is minted server-side by `/api/ws/ticket`. Expose the registry's `/v1/ws` on the
 (recommended) or on a dedicated host and set `NEXT_PUBLIC_WS_URL` accordingly. The proxy must
 forward `Upgrade`/`Connection` headers and allow idle connections of at least 60 s (the client
 pings every 30 s). If the WebSocket is served from another origin, add that origin to the CSP
-`connect-src` (`next.config.ts` derives it from `NEXT_PUBLIC_WS_URL`).
+`connect-src` (`src/middleware.ts` derives it from `NEXT_PUBLIC_WS_URL`).
 
 Example nginx location block:
 
@@ -160,12 +164,97 @@ docker run -p 3000:3000 --env-file .env ironmesh/console
 ```
 
 Multi-stage image (deps → build → `node:24-alpine` runner), non-root `nextjs` user, `HEALTHCHECK`
-on `/api/health`. Set `AUTH_TRUST_HOST=true` behind a proxy. Security headers (CSP, HSTS, frame
-denial, referrer and permissions policies) are emitted by `next.config.ts`.
+on `/api/health`. Set `AUTH_TRUST_HOST=true` behind a proxy. Static security headers (HSTS, frame
+denial, referrer, permissions and opener policies) are emitted by `next.config.ts`; the CSP is
+per request (see [Security](#security)).
+
+## Security
+
+These controls close the console gaps recorded under T-51 and T-65 in `THREAT_MODEL.md`.
+
+**Content-Security-Policy with nonces.** `src/middleware.ts` generates a 128-bit nonce per request
+and builds the policy with `src/lib/security/csp.ts`:
+
+```text
+default-src 'self'; script-src 'self' 'nonce-<random>' 'strict-dynamic'; style-src 'self' 'unsafe-inline';
+img-src 'self' data: blob: <tiles> <map style>; font-src 'self'; connect-src 'self' <tiles> <map style> <ws>;
+worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';
+object-src 'none'
+```
+
+The policy goes on the response and on the forwarded request (`content-security-policy` and
+`x-nonce` request headers). Next.js 15 reads the nonce from the request header and puts it on its
+own inline and chunk scripts; the root layout reads `x-nonce` and passes it to next-themes for its
+inline theme script. Reading request headers in the root layout makes every page dynamically
+rendered, which nonces require. `'strict-dynamic'` lets nonce-bearing scripts load the
+code-split chunks (CSP3 browsers then ignore `'self'`, which stays as a CSP2 fallback). There is no
+`'unsafe-inline'` for scripts; `'unsafe-eval'` and `ws:` (HMR) are added in `next dev` only.
+`style-src` keeps `'unsafe-inline'`: Radix UI and next-themes set `style` attributes and CodeMirror
+and Sonner inject `<style>` elements at runtime. Nonces cannot cover style attributes, and a nonce
+in `style-src` would turn off `'unsafe-inline'` for them. Injected markup can therefore restyle the
+page but cannot run script. Paths the middleware skips (static assets, `/api/auth`, `/api/health`)
+get no CSP; they serve no HTML.
+
+**CSRF (Origin check).** `/api/proxy/*` and `/api/ws/ticket` refuse POST, PUT, PATCH and DELETE with
+a 403 problem unless `Origin` is the console's own origin; `Referer` is used only when `Origin` is
+missing. If both are missing, or `Origin` is `null`, the request is refused. The console origin is
+`AUTH_URL` / `NEXT_PUBLIC_APP_URL` (either is accepted). With neither configured it comes from the
+request `Host`, and from `X-Forwarded-Host` / `X-Forwarded-Proto` when `AUTH_TRUST_HOST=true`
+(`src/lib/security/origin.ts`). Auth.js endpoints keep their own double-submit CSRF token and server
+actions keep Next.js's Origin check.
+
+**Session cookie.** The Auth.js JWT session cookie is `HttpOnly`, `SameSite=Strict` and `Path=/`.
+When the public URL is https (or, with no URL configured, in a production build other than the demo
+build) it is also `Secure` and named `__Host-authjs.session-token`, so no subdomain can set or
+shadow it (`src/lib/security/session-cookie.ts`). A Strict cookie is not sent on cross-site
+navigations, including the redirect back from the IdP. The middleware therefore sends a cross-site
+navigation without a session (`Sec-Fetch-Site: cross-site`) to `/auth/continue`, which re-navigates
+from the console origin and so carries the cookie. The PKCE, state and callback-URL cookies stay
+`SameSite=Lax` because the OIDC callback needs them.
+
+**Step-up re-authentication.** The JWT stores `authTime`: the OIDC `auth_time` claim when the IdP
+sends it, otherwise the sign-in time (also used by the demo provider). The proxy classifies the
+upstream path after resolving dot segments and decoding `%2F` (`src/lib/security/step-up.ts`). It
+refuses the routes below with `401` and a problem
+`{"code": "step_up_required", "type": "urn:ironmesh:problem:step_up_required", "action": ..., "max_age": ...}`
+(plus an RFC 9470 `WWW-Authenticate: Bearer error="insufficient_user_authentication"`) when
+`authTime` is older than `CONSOLE_STEP_UP_MAX_AGE` (default 300 s) or missing:
+
+| Action                           | Route                                                     |
+| -------------------------------- | --------------------------------------------------------- |
+| Quarantine / release device      | `POST registry /v1/devices/{id}/quarantine`, `/release`   |
+| Decommission device              | `POST registry /v1/devices/{id}/decommission`             |
+| Device config write              | `PUT registry /v1/devices/{id}/config`                    |
+| API key create / revoke          | `POST registry /v1/api-keys`, `DELETE /v1/api-keys/{id}`  |
+| Tenant settings                  | `PATCH registry /v1/tenants/me/settings`                  |
+| User role change                 | `PUT registry /v1/users/{id}/role`                        |
+| Policy save                      | `PUT policy /v1/policy` (not `/v1/policy/evaluate`)       |
+| Campaign start / halt / rollback | `POST ota /v1/campaigns/{id}/start`, `/halt`, `/rollback` |
+
+`apiFetch` passes that problem to `StepUpProvider` (`src/providers/step-up-provider.tsx`), which
+opens a "Confirm it's you" dialog. With OIDC it opens `/auth/reauth` in a pop-up, which calls
+`signIn('oidc', …, { prompt: 'login', max_age: '0' })`; `/auth/reauth/complete` reports back over a
+`BroadcastChannel` (COOP `same-origin` severs `window.opener` once the pop-up visits the IdP). If the
+pop-up is blocked, the whole tab goes through the same forced login and the operator repeats the
+action afterwards. With the demo provider the demo sign-in is re-run in place. After
+re-authentication the provider checks that `/api/auth/session` still belongs to the same user, and
+then retries the original request once, with the same body and idempotency key: the proxy refused
+it before contacting the service. In demo mode the Mock Service Worker answers `/api/proxy/*` in the
+browser, so a passthrough MSW handler reproduces the same check from `/api/auth/session`. The
+Playwright suite runs with `CONSOLE_STEP_UP_MAX_AGE=3600` so a long run is not interrupted.
+
+Limits: if an IdP omits `auth_time`, the sign-in time is used. Under IdP SSO this can overstate
+freshness for the first `CONSOLE_STEP_UP_MAX_AGE` seconds after a silent sign-in; the step-up flow
+itself always forces `prompt=login`. The registry, OTA and policy services do not check
+`auth_time` themselves, so the step-up control lives in the console BFF.
 
 ## Testing
 
-- `npm test` — Vitest: API client (pagination, problem parsing, idempotency, schema mismatch),
+- `npm test` — Vitest: security helpers (CSP builder and nonce, Origin check, step-up route
+  classifier and age check, session cookie settings, redirect sanitiser), proxy and WebSocket ticket
+  route handlers (allowed and blocked origins, step-up refusals, path-normalisation bypasses), the
+  step-up dialog (demo re-sign-in, OIDC pop-up, blocked pop-up fallback, cancel), API client
+  (pagination, problem parsing, idempotency, schema mismatch, step-up retry),
   Zod schemas against the fixtures, RBAC matrix and proxy guard, stage validator, WebSocket client
   (reconnect/backoff/resubscribe/ping), WebSocket invalidation mapping, mock policy evaluator;
   component tests for the device table filters, campaign stage editor and policy dry-run panel.
