@@ -48,6 +48,8 @@ from app.ws import Hub, TicketStore
 ISSUER = "https://idp.test/realms/ironmesh"
 AUDIENCE = "ironmesh-api"
 INTERNAL_TOKEN = "internal-test-token-0123456789"
+OTA_TOKEN = "ota-registry-test-token-0123456789"
+ANOMALY_TOKEN = "anomaly-internal-test-token-0123456789"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VECTORS = REPO_ROOT / "device" / "common" / "vectors"
 
@@ -55,7 +57,7 @@ OIDC_KEY = ec.generate_private_key(ec.SECP256R1())
 OIDC_JWK = jwt.algorithms.ECAlgorithm.to_jwk(OIDC_KEY.public_key(), as_dict=True)
 OIDC_JWK.update({"kid": "test-key", "use": "sig", "alg": "ES256"})
 SERVICE_KEYS = {
-    name: ec.generate_private_key(ec.SECP256R1()) for name in ("pki", "policy", "anomaly")
+    name: ec.generate_private_key(ec.SECP256R1()) for name in ("pki", "policy", "anomaly", "ota")
 }
 CA_KEY = ec.generate_private_key(ec.SECP256R1())
 
@@ -340,7 +342,11 @@ def build_env(kind: str, repo: Repository, tmp: Path) -> Env:
         oidc_audience=AUDIENCE,
         background_jobs_enabled=False,
         orchestration_backoff_seconds=0.01,
-        internal_tokens={"policy": SecretStr(INTERNAL_TOKEN)},
+        internal_tokens={
+            "policy": SecretStr(INTERNAL_TOKEN),
+            "ota": SecretStr(OTA_TOKEN),
+            "anomaly": SecretStr(ANOMALY_TOKEN),
+        },
         log_level="warning",
         service_jwt_trusted_keys={n: pem_public(k) for n, k in SERVICE_KEYS.items()},
     )
@@ -359,7 +365,9 @@ def build_env(kind: str, repo: Repository, tmp: Path) -> Env:
         pki=FakePki(),
         ota=FakeOta(),
         emqx=FakeEmqx(),
-        keyring=TenantKeyring(LocalKeyWrapper.from_file(str(tmp / "kek.bin"), create=True)),
+        keyring=TenantKeyring(
+            LocalKeyWrapper.from_file(str(tmp / "kek.bin"), create=True), clock=clock
+        ),
         hub=Hub(metrics),
         tickets=TicketStore(60),
         metrics=metrics,

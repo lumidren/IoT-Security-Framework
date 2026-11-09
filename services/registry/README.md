@@ -50,19 +50,20 @@ Multi-stage `python:3.12-slim`, runs as UID 10001, `uvicorn --proxy-headers` (tr
 | `REGISTRY_REPO_BACKEND` | `postgres` | `memory` for local experiments |
 | `REGISTRY_OIDC_ISSUER` / `REGISTRY_OIDC_AUDIENCE` | - / `ironmesh-api` | JWKS discovered from the issuer (`REGISTRY_OIDC_JWKS_URL` overrides), cached `REGISTRY_OIDC_JWKS_CACHE_SECONDS` |
 | `REGISTRY_OIDC_TENANT_CLAIM` / `_ROLE_CLAIM` / `_PLATFORM_ROLES_CLAIM` | `tenant_id` / `role` / `platform_roles` | `platform_admin` in the latter enables `X-IronMesh-Tenant` |
-| `REGISTRY_INTERNAL_TOKENS` (secret, JSON) | `{}` | per-caller bearer tokens for `/internal/*`, e.g. `{"pki": "<PKI_REGISTRY_TOKEN>", "policy": "<POLICY_REGISTRY_TOKEN>", "anomaly": "<ANOMALY_INTERNAL_TOKEN>"}`; each token is bound to one caller and the per-endpoint allowlist applies |
-| `REGISTRY_SERVICE_JWT_TRUSTED_KEYS` | `{}` | JSON `{"pki": "<PEM>", "policy": "...", "anomaly": "..."}`: ES256 keys accepted on `/internal/*` (`aud=registry`, <= 5 min) |
-| `REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE` | - | P-256 key used to mint the registry's own service JWTs (`aud=pki` / `aud=ota`) |
+| `REGISTRY_INTERNAL_TOKENS` (secret, JSON) | `{}` | per-caller bearer tokens for `/internal/*`, e.g. `{"pki": "<PKI_REGISTRY_TOKEN>", "policy": "<POLICY_REGISTRY_TOKEN>", "anomaly": "<ANOMALY_INTERNAL_TOKEN>", "ota": "<OTA_REGISTRY_TOKEN>"}`. Keys are free-form caller names; each token is bound to one caller and the per-endpoint allowlist applies |
+| `REGISTRY_SERVICE_JWT_TRUSTED_KEYS` | `{}` | JSON `{"pki": "<PEM>", "policy": "...", "anomaly": "...", "ota": "..."}`: ES256 keys accepted on `/internal/*` (`aud=registry`, <= 5 min; the JWT `iss` must equal the map key) |
+| `REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE` | - | P-256 key used to mint the registry's own service JWTs (`iss=registry`, `aud=pki` / `aud=ota`); the PKI tenant-policy pushes use it |
 | `REGISTRY_KAFKA_BROKERS` | `localhost:9092` | plus `REGISTRY_KAFKA_TOPIC_{INGEST,AUTH,ALERTS,AUDIT,COMMANDS}`, `REGISTRY_KAFKA_CONSUMER_GROUP` |
 | `REGISTRY_KAFKA_TLS_ENABLED` / `_SASL_MECHANISM` / `_SASL_USERNAME` / `_SASL_PASSWORD` | `false` / `none` | `SCRAM-SHA-512` or `AWS_MSK_IAM` (needs `aws-msk-iam-sasl-signer-python`) |
-| `REGISTRY_PKI_URL` `REGISTRY_OTA_URL` `REGISTRY_POLICY_URL` | chart service names | mTLS with `REGISTRY_TLS_{CERT,KEY,CA}_FILE` |
+| `REGISTRY_PKI_URL` `REGISTRY_OTA_URL` `REGISTRY_POLICY_URL` | chart service names | mTLS with `REGISTRY_TLS_{CERT,KEY,CA}_FILE`; the PKI also receives the tenant command key + enrollment policy |
 | `REGISTRY_EMQX_API_URL` + `REGISTRY_EMQX_API_KEY` / `_SECRET` (secrets) | - | direct session kick, used only as containment when PKI revocation fails |
 | `REGISTRY_MQTT_HOST` / `_PORT` / `_CLIENT_ID` | `ironmesh-emqx` / `8883` / `svc-registry` | downlink publisher: MQTT 5, TLS 1.3, ALPN `mqtt`, client cert from `REGISTRY_TLS_*` |
 | `REGISTRY_KMS_BACKEND` | `local` | `local` (`REGISTRY_KMS_LOCAL_KEK_FILE`, auto-created 0600 outside prod) or `aws` (`REGISTRY_KMS_AWS_KEY_ID`, `REGISTRY_KMS_AWS_REGION`) |
 | `REGISTRY_PUBLIC_BASE_URL` | - | advertised in the OpenAPI `servers` |
 | `REGISTRY_MAX_SKEW_SECONDS` | `300` | envelope timestamp window |
 | `REGISTRY_TELEMETRY_RETENTION_DAYS` / `_PARTITIONS_AHEAD_DAYS` | `30` / `3` | daily partitions of `telemetry_samples` |
-| `REGISTRY_SWEEPER_INTERVAL_SECONDS` / `REGISTRY_MAINTENANCE_INTERVAL_SECONDS` | `5` / `300` | command expiry + outbox retries + health flush / partitions + gauges |
+| `REGISTRY_SWEEPER_INTERVAL_SECONDS` / `REGISTRY_MAINTENANCE_INTERVAL_SECONDS` | `5` / `300` | command expiry + outbox retries (incl. PKI tenant policy) + health flush / partitions + gauges |
+| `REGISTRY_BACKGROUND_JOBS_ENABLED` | `true` | sweeper, maintenance and the startup PKI tenant-policy reconciliation |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | - | enables the OTLP trace exporter (FastAPI + SQLAlchemy instrumentation) |
 
 ## Endpoints
@@ -92,11 +93,13 @@ Multi-stage `python:3.12-slim`, runs as UID 10001, `uvicorn --proxy-headers` (tr
 | GET | `/v1/users` · PUT `/v1/users/{id}/role` | admin · owner |
 | GET/POST | `/v1/api-keys` · DELETE `/v1/api-keys/{id}` | admin |
 | POST | `/v1/ws/ticket` → WS `/v1/ws?ticket=` | viewer |
-| GET | `/internal/v1/devices/{id}/lifecycle` | service `policy` |
+| GET | `/internal/v1/devices/{id}/lifecycle` | services `policy`, `anomaly` → `{device_id, tenant_id, state, assurance_level, product}` |
 | POST | `/internal/v1/devices/{id}/enrolled` | service `pki` |
 | GET | `/internal/v1/tenants/{tenant}/devices/{id}` | service `pki` → `{device_id, tenant_id, state, assurance_level, se_type, bootstrap_serial}` |
 | POST | `/internal/v1/tenants/{tenant}/devices/{id}/assurance` | service `pki` → `204` |
 | POST | `/internal/v1/devices/{id}/quarantine` | service `anomaly` |
+| POST | `/internal/v1/tenants/{tenant}/devices/resolve` | service `ota`: `{groups, tags, device_ids, states?}` → `{items: [{device_id, product, state, fw_version, fw_hash_hex, connected}]}` (union of the selectors, tags must all match, max 100 000, `422` above) |
+| POST | `/internal/v1/tenants/{tenant}/devices/{id}/downlink` | service `ota`: `{type: "ota_notify", body, retain}` → `{seq, published_at}`; `409` unless the device is `active`, `503` if the broker publish fails |
 | GET | `/healthz` · `/readyz` · `/metrics` · `/openapi.json` | none |
 
 Errors are RFC 9457 `application/problem+json` (`type, title, status, detail, instance, errors`).
@@ -124,6 +127,19 @@ API-key scopes: `tenant:read|write`, `devices:read|write|lifecycle`, `twin:read|
 * **Audit**: append-only (grants + trigger), per-tenant chain `hash = sha256(prev_hash || canonical_json)`
   with a head row; `/v1/audit/verify` checks sequence continuity, links, hashes, column/body
   agreement and the head (tail truncation).
+* **Downlinks**: the registry is the only holder and signer of each tenant's command key
+  (ShadowDesired 4, Command 5, OtaNotify 7, Config 9). `seq` is allocated per replay stream
+  `"<tenant kid>/<type>"` (WIRE_FORMAT §3.6) in `downlink_sequences` (migration `0002`); a new
+  stream starts above the legacy per-device counter, and the type-7 stream stays at or above
+  the wall-clock microsecond value the OTA service used when it still signed OtaNotify. The OTA
+  body is validated with the wire library's `OtaNotify` decoder (hex `bstr` fields), signed,
+  published to `im/v1/<t>/<d>/ota/notify` (retained per request) and recorded in the timeline
+  (`ota`) and audit (`device.downlink.ota_notify`).
+* **PKI tenant policy** (API_CONTRACT §5): the command key (`PUT /v1/tenants/{t}/command-key`)
+  and `allow_software_keys` (`PUT /v1/tenants/{t}/enrollment`) are pushed when a command key is
+  created (outbox row in the key's transaction), when `allow_software_keys` changes, and for
+  every tenant at startup (which also creates missing command keys). Pushes retry with backoff;
+  a failure leaves a `pki_tenant_policy` outbox action for the sweeper and a `failure` audit.
 * **Config**: plaintext JSON is AES-256-GCM encrypted at rest with a per-tenant data key wrapped by
   KMS; the published message is a tenant-signed Config envelope HPKE-wrapped (`COSE_Encrypt0`) to
   the device's current certificate key and retained.
@@ -149,6 +165,7 @@ Tests marked `postgres` start a throwaway PostgreSQL 16 from the `pgserver` whee
   `LISTEN/NOTIFY`) in front of `Hub.publish`.
 * `campaigns_running` in `/v1/fleet/summary` is `0`: campaigns are owned by the OTA service.
 * `/v1/fleet/health` `p99_ingest_ms` is the max of per-replica, per-minute p99s (an upper bound).
-* Retained `ShadowDesired` / `Config` messages carry the publish timestamp; a device that connects
-  more than `max_skew` (300 s) later rejects them as `ENV_TS_SKEW` under WIRE_FORMAT §3.6. Devices
-  need a "resend desired" request or the contract a skew exemption for retained downlinks.
+* Command-key rotation is not implemented (one key per tenant for its lifetime). A rotation must
+  commit the new key and then call `services/tenant_policy.sync` so the PKI bundle follows.
+* Retained OtaNotify topics are cleared by the OTA service directly (empty payload through the
+  EMQX API); the downlink endpoint only accepts signed `ota_notify` bodies.

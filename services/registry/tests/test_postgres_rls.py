@@ -39,6 +39,7 @@ TABLES = (
     "api_keys",
     "pending_actions",
     "ingest_stats",
+    "downlink_sequences",
 )
 
 

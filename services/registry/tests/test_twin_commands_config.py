@@ -336,7 +336,9 @@ async def test_config_requires_cert_and_handles_broker_failure(env: Env) -> None
     r = await env.client.put(url, headers=env.auth(t, "admin"), json={"config": {"a": 1}})
     assert r.status_code == 503 and "retry scheduled" in r.json()["detail"]
     env.clock.advance(seconds=31)
-    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 1
+    # the config publish retry, plus the PKI push queued when the command key was created
+    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 2
+    assert t in env.pki.command_keys
     inner = hpke.unwrap_config(env.mqtt.on("config")[-1].payload, dk.key)
     assert b"a" in inner
     r = await env.client.get(url, headers=env.auth(t, "admin"))

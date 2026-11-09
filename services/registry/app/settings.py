@@ -78,12 +78,13 @@ class Settings(BaseSettings):
     oidc_leeway_seconds: int = 30
     internal_tokens: dict[str, SecretStr] = Field(default_factory=dict)
     """Per-caller bearer tokens for ``/internal/*`` as JSON, e.g.
-    ``{"pki": "<PKI_REGISTRY_TOKEN>", "policy": "<POLICY_REGISTRY_TOKEN>", "anomaly": "..."}``.
-    A token authenticates exactly one calling service, so the per-endpoint caller allowlist
-    applies to it just as it does to service JWTs."""
+    ``{"pki": "<PKI_REGISTRY_TOKEN>", "policy": "<POLICY_REGISTRY_TOKEN>",
+    "anomaly": "<ANOMALY_INTERNAL_TOKEN>", "ota": "<OTA_REGISTRY_TOKEN>"}``. The keys are
+    free-form caller names; a token authenticates exactly one calling service, so the
+    per-endpoint caller allowlist applies to it just as it does to service JWTs."""
     service_jwt_audience: str = "registry"
     service_jwt_trusted_keys: dict[str, str] = Field(default_factory=dict)
-    """``{"pki": "<PEM public key>", "policy": "...", "anomaly": "..."}`` (JSON in the env)."""
+    """``{"pki": "<PEM public key>", "policy": "...", "anomaly": "...", "ota": "..."}`` (JSON)."""
     service_jwt_private_key_file: str | None = None
     service_jwt_issuer: str = "registry"
     ws_ticket_ttl_seconds: int = 60
