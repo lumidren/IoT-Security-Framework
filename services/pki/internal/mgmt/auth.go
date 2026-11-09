@@ -25,6 +25,27 @@ var (
 type Principal struct {
 	Subject string
 	Method  string // "mtls" or "jwt"
+	// Allowed reports whether the caller may use the general management API:
+	// a Services CA certificate whose CN is on the allow list, or any valid
+	// bearer JWT. Tenant policy endpoints authorize by Service() instead.
+	Allowed bool `json:"-"`
+}
+
+// Service returns the calling service's name ("registry", "ota", ...): the
+// Services CA client certificate CN without its "svc-" prefix, or the JWT
+// sub (with or without the prefix). It is empty for an mTLS identity that is
+// not a svc-* service.
+func (p *Principal) Service() string {
+	if p == nil {
+		return ""
+	}
+	if p.Method == "mtls" {
+		if !strings.HasPrefix(p.Subject, "svc-") {
+			return ""
+		}
+		return strings.TrimPrefix(p.Subject, "svc-")
+	}
+	return strings.TrimPrefix(p.Subject, "svc-")
 }
 
 // Authenticator accepts either a Services CA client certificate whose CN is on
@@ -53,6 +74,23 @@ func NewAuthenticator(servicesCA *x509.Certificate, allowedCNs []string, jwtKeys
 // Authenticate returns the caller's principal or ErrUnauthenticated /
 // ErrForbidden.
 func (a *Authenticator) Authenticate(r *http.Request) (*Principal, error) {
+	p, err := a.Identify(r)
+	if err != nil {
+		return nil, err
+	}
+	if !p.Allowed {
+		// A service identity that is not on the allow list cannot fall
+		// back to a token: it is explicitly not authorized.
+		return nil, ErrForbidden
+	}
+	return p, nil
+}
+
+// Identify authenticates the caller without applying the CN allow list: any
+// currently valid Services CA client certificate yields a principal (Allowed
+// tells whether its CN is allow-listed); otherwise a bearer ES256 JWT with
+// aud=pki is required.
+func (a *Authenticator) Identify(r *http.Request) (*Principal, error) {
 	now := a.Clock()
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 && a.ServicesCA != nil {
 		leaf := r.TLS.PeerCertificates[0]
@@ -60,12 +98,8 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Principal, error) {
 			if now.Before(leaf.NotBefore) || now.After(leaf.NotAfter) {
 				return nil, errors.New("mgmt: client certificate expired")
 			}
-			if a.AllowedCNs[leaf.Subject.CommonName] {
-				return &Principal{Subject: leaf.Subject.CommonName, Method: "mtls"}, nil
-			}
-			// A service identity that is not on the allow list cannot fall
-			// back to a token: it is explicitly not authorized.
-			return nil, ErrForbidden
+			cn := leaf.Subject.CommonName
+			return &Principal{Subject: cn, Method: "mtls", Allowed: a.AllowedCNs[cn]}, nil
 		}
 	}
 	auth := r.Header.Get("Authorization")
@@ -90,5 +124,5 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Principal, error) {
 	if subject == "" {
 		subject = "jwt"
 	}
-	return &Principal{Subject: subject, Method: "jwt"}, nil
+	return &Principal{Subject: subject, Method: "jwt", Allowed: true}, nil
 }

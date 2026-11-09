@@ -6,9 +6,14 @@
 //	POST /v1/devices/{device_id}/revoke-all    {"reason": "..."}
 //	GET  /v1/ca/chain                          PEM bundle
 //	GET  /v1/stats                             expiring counts (24h/72h/7d)
+//	PUT  /v1/tenants/{tenant}/command-key      (registry) tenant command key
+//	PUT  /v1/tenants/{tenant}/firmware-keys    (ota) firmware signing keys
+//	PUT  /v1/tenants/{tenant}/enrollment       (registry) allow_software_keys
+//	GET  /v1/tenants/{tenant}/policy
 //
 // Callers authenticate with a Services CA client certificate whose CN is on
-// the allow list or with an ES256 JWT (aud=pki).
+// the allow list or with an ES256 JWT (aud=pki). The tenant policy endpoints
+// authorize by owning service instead (see tenant.go).
 package mgmt
 
 import (
@@ -18,6 +23,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/ca"
@@ -42,11 +48,15 @@ type Config struct {
 	Chain   []*x509.Certificate
 	Metrics *metrics.Metrics
 	Clock   func() time.Time
+	// DefaultAllowSoftwareKeys seeds allow_software_keys when a tenant policy
+	// is first created through the tenant policy API (PKI_DEFAULT_ALLOW_SOFTWARE_KEYS).
+	DefaultAllowSoftwareKeys bool
 }
 
 // Handler serves the management API.
 type Handler struct {
-	cfg Config
+	cfg      Config
+	tenantMu sync.Mutex
 }
 
 // NewHandler validates the configuration.
@@ -75,6 +85,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /v1/devices/{device_id}/revoke-all", h.auth(h.revokeDevice))
 	mux.Handle("GET /v1/ca/chain", h.auth(h.chain))
 	mux.Handle("GET /v1/stats", h.auth(h.stats))
+	h.registerTenantRoutes(mux)
 }
 
 type principalKey struct{}
