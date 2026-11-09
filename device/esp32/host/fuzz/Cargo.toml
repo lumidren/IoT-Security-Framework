@@ -1,0 +1,72 @@
+[package]
+name = "im-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+description = "cargo-fuzz targets for the IronMesh ESP32 C protocol core (components/im_core)"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sha2 = "0.10"
+# feature "fuzz": the C core is compiled with MSVC /fsanitize-coverage (+ /fsanitize=address
+# when IM_FUZZ_ASAN=1, see RESULTS.md)
+im-core-tests = { path = "../core-tests", features = ["fuzz"] }
+
+# cargo-fuzz needs its own workspace (not a member of host/Cargo.toml).
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "cbor_decode"
+path = "fuzz_targets/cbor_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cose_decode"
+path = "fuzz_targets/cose_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "envelope_decode"
+path = "fuzz_targets/envelope_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest_decode"
+path = "fuzz_targets/manifest_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "delta_apply"
+path = "fuzz_targets/delta_apply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mqtt_decode"
+path = "fuzz_targets/mqtt_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dut_json"
+path = "fuzz_targets/dut_json.rs"
+test = false
+doc = false
+bench = false
