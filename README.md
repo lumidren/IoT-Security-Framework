@@ -220,8 +220,9 @@ allow if {
   rejected with `422` unless it compiles **and** the built-in invariant tests still pass. It is
   then hot-swapped atomically and the decision cache is flushed.
 - **Revocation fast path.** PKI revoke → HMAC-signed push to the policy service → revocation cache
-  → EMQX `DELETE /api/v5/clients/{id}`. In unit tests, the push-to-kick path completes in under
-  100 ms. CRL polling every 5 s is the fallback.
+  → EMQX `DELETE /api/v5/clients/{id}`. In the conformance suite, with the real policy binary, the
+  broker drops the session within 14 ms (p95) of the revoke call. CRL polling every 5 s is the
+  fallback.
 
 ### 6. Firmware updates
 
@@ -310,6 +311,40 @@ core.
 **Cross-implementation conformance.** Python, Rust and C produce byte-identical canonical CBOR,
 Ed25519 COSE signatures, manifests, HPKE output and delta patches from the shared vectors, and
 reject malformed input with the same error codes.
+
+### Device conformance suite
+
+One suite drives every firmware target through the same 27 cases over a device-under-test control
+protocol. Access-control and revocation cases run against the **real policy service binary**. The
+broker double consults it exactly as EMQX would, and revocation travels the production path: a
+signed push to the policy service, then a session kick, then a refused reconnect. Full matrix:
+[conformance/results/SUMMARY.md](conformance/results/SUMMARY.md).
+
+| Target | Passed | Failed | Not applicable |
+|---|---|---|---|
+| Linux agent (Rust) | 27 / 27 | 0 | 0 |
+| ESP32 protocol core (C, host build) | 26 / 26 | 0 | 1 (release-build test hook: compiled out by the prod profile) |
+| Both targets against the **real PKI binary** | 15 and 14 | 0 | Downlink and OTA cases (harness doesn't load tenant keys into the real PKI) |
+
+Covered cases include TLS 1.3 with ALPN, rejection of a rogue broker by pinning and of a TLS 1.2-only
+broker, session resumption, bounded backoff, attested enrollment, refusal for quarantined devices,
+manual and automatic certificate rotation, cross-device publish/subscribe denial, unsigned,
+tampered, untrusted-key and downgraded firmware rejection, health-check rollback, delta updates,
+replay, stale and forged command rejection, offline buffering, and encrypted config.
+
+**Revocation reaction time** (C-REV-1, 20 runs per target, budget < 10 s):
+
+| Target | Revoke → broker disconnect (p95) | Revoke → reconnect refused (p95, max) |
+|---|---|---|
+| Linux agent | 0.012 s | 0.017 s, 0.018 s |
+| ESP32 core | 0.014 s | 0.957 s, 1.000 s (bounded by the device's first reconnect backoff) |
+
+**Firmware tamper rejection**, measured on both targets:
+- Unsigned images are rejected before download.
+- A 1-byte-flipped image is rejected at verification with `image_hash`.
+- An untrusted signing key and a downgrade are both rejected before download.
+- An image that fails its health check is rolled back, after 15 s on Linux and 120 s on the ESP32.
+- A delta patch of about 16.6 KB rebuilds a 53–70 KB image whose hash matches the full image.
 
 ---
 
