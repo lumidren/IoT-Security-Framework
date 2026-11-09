@@ -754,7 +754,7 @@ services:
   # Local OIDC provider with a static demo user (realm import: keycloak/ironmesh-realm.json).
   keycloak:
     restart: unless-stopped
-    image: quay.io/keycloak/keycloak:26.0.7
+    image: quay.io/keycloak/keycloak:26.8.2
     network_mode: "service:console"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
