@@ -57,7 +57,7 @@ func newTenantEnv(t *testing.T, opts testutil.ServerOptions) *tenantEnv {
 func (e *tenantEnv) jwt(t *testing.T, sub string) map[string]string {
 	t.Helper()
 	now := time.Now().Unix()
-	tok, err := mgmt.SignES256(e.jwtKey, mgmt.Claims{Subject: sub, Audience: mgmt.Audience{"pki"}, IssuedAt: now, ExpiresAt: now + 300})
+	tok, err := mgmt.SignES256(e.jwtKey, mgmt.Claims{Subject: sub, Audience: mgmt.Audience{"pki"}, IssuedAt: now, ExpiresAt: now + 300, ID: testJTI()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestTenantPolicyStoreErrors(t *testing.T) {
 	srv := httptest.NewServer(logging.Middleware(slog.New(slog.NewTextHandler(io.Discard, nil)), mux))
 	defer srv.Close()
 	now := time.Now().Unix()
-	tok, _ := mgmt.SignES256(jwtKey, mgmt.Claims{Subject: "registry", Audience: mgmt.Audience{"pki"}, ExpiresAt: now + 60})
+	tok, _ := mgmt.SignES256(jwtKey, mgmt.Claims{Subject: "registry", Audience: mgmt.Audience{"pki"}, ExpiresAt: now + 60, IssuedAt: now, ID: testJTI()})
 	hdr := map[string]string{"Authorization": "Bearer " + tok}
 	put := func() int {
 		resp, _ := do(t, srv.Client(), http.MethodPut, srv.URL+"/v1/tenants/"+otherTenant+"/enrollment", map[string]any{"allow_software_keys": true}, hdr)

@@ -27,6 +27,7 @@ type Claims struct {
 	ExpiresAt int64    `json:"exp,omitempty"`
 	NotBefore int64    `json:"nbf,omitempty"`
 	IssuedAt  int64    `json:"iat,omitempty"`
+	ID        string   `json:"jti,omitempty"`
 }
 
 // Audience accepts both the string and array forms of "aud".
@@ -74,9 +75,13 @@ var (
 	ErrAudience = errors.New("token audience mismatch")
 )
 
-// MaxTokenLifetime bounds exp - iat (when iat is present) to catch
-// misconfigured issuers; the contract specifies 5 minute tokens.
-const MaxTokenLifetime = time.Hour
+// MaxTokenLifetime bounds exp - iat; the contract specifies 5 minute
+// service tokens (THREAT_MODEL T-50).
+const MaxTokenLifetime = 5 * time.Minute
+
+// ClockLeeway tolerates clock skew on nbf and iat, and extends how long a
+// jti is remembered after exp.
+const ClockLeeway = 30 * time.Second
 
 type header struct {
 	Alg string `json:"alg"`
@@ -85,7 +90,11 @@ type header struct {
 }
 
 // VerifyES256 parses token, verifies its ES256 signature with any of keys and
-// validates aud/exp/nbf at time now.
+// validates the claims at time now: exp, iat and jti are required, exp - iat
+// must be positive and at most MaxTokenLifetime, iat must not lie in the
+// future (beyond ClockLeeway), nbf is honoured and aud must contain
+// audience. Single use of the jti is enforced by the Authenticator's
+// ReplayCache.
 func VerifyES256(token string, keys []*ecdsa.PublicKey, audience string, now time.Time) (*Claims, error) {
 	parts := strings.Split(strings.TrimSpace(token), ".")
 	if len(parts) != 3 {
@@ -131,11 +140,21 @@ func VerifyES256(token string, keys []*ecdsa.PublicKey, audience string, now tim
 	if claims.ExpiresAt == 0 || claims.ExpiresAt <= unix {
 		return nil, ErrTokenExpired
 	}
-	if claims.NotBefore != 0 && claims.NotBefore > unix+30 {
+	leeway := int64(ClockLeeway / time.Second)
+	if claims.NotBefore != 0 && claims.NotBefore > unix+leeway {
 		return nil, ErrTokenExpired
 	}
-	if claims.IssuedAt != 0 && time.Duration(claims.ExpiresAt-claims.IssuedAt)*time.Second > MaxTokenLifetime {
-		return nil, fmt.Errorf("%w: lifetime exceeds %s", ErrInvalidToken, MaxTokenLifetime)
+	if claims.IssuedAt == 0 {
+		return nil, fmt.Errorf("%w: iat is required", ErrInvalidToken)
+	}
+	if claims.IssuedAt > unix+leeway {
+		return nil, fmt.Errorf("%w: iat is in the future", ErrInvalidToken)
+	}
+	if claims.ExpiresAt <= claims.IssuedAt || time.Duration(claims.ExpiresAt-claims.IssuedAt)*time.Second > MaxTokenLifetime {
+		return nil, fmt.Errorf("%w: lifetime (exp - iat) must be positive and at most %s", ErrInvalidToken, MaxTokenLifetime)
+	}
+	if strings.TrimSpace(claims.ID) == "" || len(claims.ID) > 256 {
+		return nil, fmt.Errorf("%w: jti is required", ErrInvalidToken)
 	}
 	if !claims.Audience.Contains(audience) {
 		return nil, ErrAudience

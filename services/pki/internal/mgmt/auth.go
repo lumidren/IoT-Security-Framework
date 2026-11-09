@@ -19,6 +19,11 @@ var (
 	ErrUnauthenticated = errors.New("mgmt: authentication required")
 	// ErrForbidden means the credential is valid but not authorized (403).
 	ErrForbidden = errors.New("mgmt: not authorized")
+	// ErrReplayed means the token's jti was already used on this instance.
+	ErrReplayed = errors.New("mgmt: token already used (jti replay)")
+	// ErrSubjectMismatch means a JWT presented together with a Services CA
+	// client certificate names a different service than the certificate.
+	ErrSubjectMismatch = errors.New("mgmt: token subject does not match the client certificate")
 )
 
 // Principal is an authenticated management caller.
@@ -50,11 +55,16 @@ func (p *Principal) Service() string {
 
 // Authenticator accepts either a Services CA client certificate whose CN is on
 // the allow list, or a bearer ES256 JWT with aud=pki signed by a trusted key.
+// A caller presenting both must present a JWT whose sub names the same
+// service as the certificate CN (ignoring the "svc-" prefix).
 type Authenticator struct {
 	ServicesCA *x509.Certificate
 	AllowedCNs map[string]bool
 	JWTKeys    []*ecdsa.PublicKey
 	Clock      func() time.Time
+	// Replay, when set, makes every service JWT single-use on this instance
+	// (PKI_MGMT_JWT_SINGLE_USE).
+	Replay *ReplayCache
 }
 
 // NewAuthenticator builds an Authenticator from a CN list.
@@ -89,9 +99,12 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Principal, error) {
 // Identify authenticates the caller without applying the CN allow list: any
 // currently valid Services CA client certificate yields a principal (Allowed
 // tells whether its CN is allow-listed); otherwise a bearer ES256 JWT with
-// aud=pki is required.
+// aud=pki is required. When a Services CA certificate and a bearer token are
+// both presented (and JWT keys are configured), the token must verify, its
+// jti must be unused and its sub must name the certificate's service.
 func (a *Authenticator) Identify(r *http.Request) (*Principal, error) {
 	now := a.Clock()
+	token, hasToken, tokErr := bearerToken(r.Header.Get("Authorization"))
 	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 && a.ServicesCA != nil {
 		leaf := r.TLS.PeerCertificates[0]
 		if ca.IssuedBy(leaf, a.ServicesCA) && len(r.TLS.VerifiedChains) > 0 {
@@ -99,23 +112,27 @@ func (a *Authenticator) Identify(r *http.Request) (*Principal, error) {
 				return nil, errors.New("mgmt: client certificate expired")
 			}
 			cn := leaf.Subject.CommonName
+			if hasToken && len(a.JWTKeys) > 0 {
+				if tokErr != nil {
+					return nil, tokErr
+				}
+				claims, err := a.verifyJWT(token, now)
+				if err != nil {
+					return nil, err
+				}
+				if ServiceName(claims.Subject) == "" || ServiceName(claims.Subject) != ServiceName(cn) {
+					return nil, errors.Join(ErrUnauthenticated, ErrSubjectMismatch)
+				}
+			}
 			return &Principal{Subject: cn, Method: "mtls", Allowed: a.AllowedCNs[cn]}, nil
 		}
 	}
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
+	if !hasToken || tokErr != nil || len(a.JWTKeys) == 0 {
 		return nil, ErrUnauthenticated
 	}
-	scheme, token, ok := strings.Cut(auth, " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
-		return nil, ErrUnauthenticated
-	}
-	if len(a.JWTKeys) == 0 {
-		return nil, ErrUnauthenticated
-	}
-	claims, err := VerifyES256(strings.TrimSpace(token), a.JWTKeys, RequiredAudience, now)
+	claims, err := a.verifyJWT(token, now)
 	if err != nil {
-		return nil, errors.Join(ErrUnauthenticated, err)
+		return nil, err
 	}
 	subject := claims.Subject
 	if subject == "" {
@@ -125,4 +142,33 @@ func (a *Authenticator) Identify(r *http.Request) (*Principal, error) {
 		subject = "jwt"
 	}
 	return &Principal{Subject: subject, Method: "jwt", Allowed: true}, nil
+}
+
+// verifyJWT verifies the token and consumes its jti.
+func (a *Authenticator) verifyJWT(token string, now time.Time) (*Claims, error) {
+	claims, err := VerifyES256(token, a.JWTKeys, RequiredAudience, now)
+	if err != nil {
+		return nil, errors.Join(ErrUnauthenticated, err)
+	}
+	if a.Replay != nil && !a.Replay.Use(claims.Issuer+"\x00"+claims.ID, time.Unix(claims.ExpiresAt, 0).Add(ClockLeeway), now) {
+		return nil, errors.Join(ErrUnauthenticated, ErrReplayed)
+	}
+	return claims, nil
+}
+
+// ServiceName normalises a service identity: "svc-registry" and "registry"
+// both yield "registry".
+func ServiceName(s string) string { return strings.TrimPrefix(strings.TrimSpace(s), "svc-") }
+
+// bearerToken extracts a bearer token. present reports whether an
+// Authorization header was sent; err is set for a malformed one.
+func bearerToken(header string) (token string, present bool, err error) {
+	if header == "" {
+		return "", false, nil
+	}
+	scheme, tok, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(tok) == "" {
+		return "", true, ErrUnauthenticated
+	}
+	return strings.TrimSpace(tok), true, nil
 }
