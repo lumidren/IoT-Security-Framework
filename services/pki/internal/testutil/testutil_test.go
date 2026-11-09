@@ -69,6 +69,7 @@ func TestHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 	pub.Sleep = func(time.Duration) {}
+	pub.Retries = 1
 	if err := pub.Publish(context.Background(), revocation.Event{EventID: "e", Serial: "01"}); err != nil {
 		t.Fatal(err)
 	}

@@ -149,6 +149,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 			return nil, err
 		}
 		pub.Logger = logger
+		pub.OnEndpoint = func(result string) { a.Metrics.RevocationPublishEndpoints.WithLabelValues(result).Inc() }
+		if cfg.PolicyFanout == config.PolicyFanoutDNS {
+			pub.Resolve = revocation.DNSResolver(nil)
+			logger.Info("revocation events fan out to every address of the policy host", "url", cfg.PolicyURL)
+		}
 		publisher = pub
 	} else {
 		logger.Warn("PKI_POLICY_URL is not set: revocation events are logged but not pushed")
@@ -186,6 +191,10 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		Store:   a.Store, Registry: reg, Bundler: bundler, Metrics: a.Metrics,
 		NonceTTL: cfg.NonceTTL, DefaultAllowSoftwareKeys: cfg.DefaultAllowSoftwareKeys,
 		DefaultAKRoots: akRoots, DefaultPCRDigests: cfg.TPMAllowedPCRDigests,
+		// Renewal supersedes the previous certificate after the grace
+		// period; the event is serial-scoped (device_deny=false), so the
+		// renewed device keeps connecting with its new certificate.
+		Revoker: a.Revoker, SupersedeGrace: cfg.SupersedeGrace,
 		Rollback: a.Revoker,
 	}); err != nil {
 		return nil, err
@@ -195,6 +204,11 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		return nil, fmt.Errorf("app: PKI_MGMT_JWT_PUBLIC_KEY_FILE: %w", err)
 	}
 	auth := mgmt.NewAuthenticator(a.Services, cfg.MgmtAllowedCNs, jwtKeys, nil)
+	if cfg.MgmtJWTSingleUse {
+		auth.Replay = mgmt.NewReplayCache(cfg.MgmtJWTReplayCacheSize)
+	} else {
+		logger.Warn("PKI_MGMT_JWT_SINGLE_USE=false: service JWTs can be replayed until they expire")
+	}
 	if a.Mgmt, err = mgmt.NewHandler(mgmt.Config{
 		Auth: auth, Revoker: a.Revoker, Store: a.Store, Metrics: a.Metrics,
 		Chain:                    []*x509.Certificate{a.Root, a.Factory, deviceCert, a.Services},
@@ -391,6 +405,7 @@ func (a *App) Run(ctx context.Context) error {
 	defer cancel()
 	go a.CRL.Run(ctx)
 	go a.maintenance(ctx)
+	go a.Revoker.RunDispatcher(ctx)
 	return server.Run(ctx, server.Options{
 		MTLSAddr:        a.Config.ListenMTLS,
 		PlainAddr:       a.Config.ListenPlain,

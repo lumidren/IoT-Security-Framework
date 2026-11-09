@@ -21,6 +21,12 @@ const (
 	KMSAWS     = "awskms"
 )
 
+// Revocation fan-out modes (PKI_POLICY_FANOUT).
+const (
+	PolicyFanoutOff = "off"
+	PolicyFanoutDNS = "dns"
+)
+
 // Environments.
 const (
 	EnvDevelopment = "development"
@@ -68,6 +74,16 @@ type Config struct {
 	PolicyURL     string
 	PolicyToken   string
 	PolicyHMACKey string
+	// PolicyFanout (PKI_POLICY_FANOUT) selects how revocation events reach
+	// the Policy replicas: "off" (default) posts to PKI_POLICY_URL once;
+	// "dns" resolves the URL host to every A/AAAA record (a Kubernetes
+	// headless Service) and delivers to each address, keeping the original
+	// host as Host header and TLS server name.
+	PolicyFanout string
+	// SupersedeGrace (PKI_SUPERSEDE_GRACE, default 1h) is how long the
+	// previous operational certificate stays valid after a renewal before it
+	// is revoked (reason superseded, serial-scoped).
+	SupersedeGrace time.Duration
 
 	RegistryURL   string
 	RegistryToken string
@@ -79,6 +95,12 @@ type Config struct {
 
 	MgmtAllowedCNs       []string
 	MgmtJWTPublicKeyFile string
+	// MgmtJWTSingleUse (PKI_MGMT_JWT_SINGLE_USE, default true) rejects a
+	// service JWT whose jti was already accepted by this instance.
+	MgmtJWTSingleUse bool
+	// MgmtJWTReplayCacheSize (PKI_MGMT_JWT_REPLAY_CACHE_SIZE, default 100000)
+	// bounds the jti replay cache; the oldest entries are evicted first.
+	MgmtJWTReplayCacheSize int
 
 	DefaultAllowSoftwareKeys bool
 	TPMAKCAFile              string
@@ -172,6 +194,9 @@ func Load(lookup Lookup) (*Config, error) {
 		PolicyURL:     get("PKI_POLICY_URL", ""),
 		PolicyToken:   get("PKI_POLICY_TOKEN", ""),
 		PolicyHMACKey: get("PKI_POLICY_HMAC_KEY", ""),
+		PolicyFanout:  strings.ToLower(get("PKI_POLICY_FANOUT", PolicyFanoutOff)),
+
+		SupersedeGrace: duration("PKI_SUPERSEDE_GRACE", "1h"),
 
 		RegistryURL:   get("PKI_REGISTRY_URL", ""),
 		RegistryToken: get("PKI_REGISTRY_TOKEN", ""),
@@ -181,8 +206,10 @@ func Load(lookup Lookup) (*Config, error) {
 		ServerKeyFile:  get("PKI_SERVER_KEY_FILE", ""),
 		ServerSANs:     list("PKI_SERVER_SANS", "pki,pki.ironmesh.local,localhost,127.0.0.1"),
 
-		MgmtAllowedCNs:       list("PKI_MGMT_ALLOWED_CNS", "svc-registry,svc-policy,svc-console"),
-		MgmtJWTPublicKeyFile: get("PKI_MGMT_JWT_PUBLIC_KEY_FILE", ""),
+		MgmtAllowedCNs:         list("PKI_MGMT_ALLOWED_CNS", "svc-registry,svc-policy,svc-console"),
+		MgmtJWTPublicKeyFile:   get("PKI_MGMT_JWT_PUBLIC_KEY_FILE", ""),
+		MgmtJWTSingleUse:       boolean("PKI_MGMT_JWT_SINGLE_USE", true),
+		MgmtJWTReplayCacheSize: integer("PKI_MGMT_JWT_REPLAY_CACHE_SIZE", 100000),
 
 		DefaultAllowSoftwareKeys: boolean("PKI_DEFAULT_ALLOW_SOFTWARE_KEYS", false),
 		TPMAKCAFile:              get("PKI_TPM_AK_CA_FILE", ""),
@@ -231,6 +258,17 @@ func Load(lookup Lookup) (*Config, error) {
 	}
 	if cfg.PolicyURL != "" && cfg.PolicyHMACKey == "" && cfg.PolicyToken == "" {
 		errs = append(errs, "PKI_POLICY_HMAC_KEY or PKI_POLICY_TOKEN: required with PKI_POLICY_URL")
+	}
+	switch cfg.PolicyFanout {
+	case PolicyFanoutOff, PolicyFanoutDNS:
+	default:
+		errs = append(errs, fmt.Sprintf("PKI_POLICY_FANOUT: must be %q or %q, got %q", PolicyFanoutOff, PolicyFanoutDNS, cfg.PolicyFanout))
+	}
+	if cfg.SupersedeGrace <= 0 {
+		errs = append(errs, "PKI_SUPERSEDE_GRACE: must be positive")
+	}
+	if cfg.MgmtJWTReplayCacheSize < 1000 {
+		errs = append(errs, "PKI_MGMT_JWT_REPLAY_CACHE_SIZE: must be at least 1000")
 	}
 	if cfg.BrokerPort <= 0 || cfg.BrokerPort > 65535 {
 		errs = append(errs, "PKI_BROKER_PORT: must be 1-65535")

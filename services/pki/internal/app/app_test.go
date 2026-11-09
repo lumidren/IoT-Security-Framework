@@ -172,6 +172,10 @@ func TestBuildWithOptionalFiles(t *testing.T) {
 	env["PKI_MGMT_JWT_PUBLIC_KEY_FILE"] = jwtFile
 	env["PKI_TPM_AK_CA_FILE"] = akFile
 	env["PKI_TPM_ALLOWED_PCR_DIGESTS"] = strings.Repeat("ab", 32)
+	env["PKI_POLICY_URL"] = "http://policy-headless.invalid:8081"
+	env["PKI_POLICY_TOKEN"] = "tok"
+	env["PKI_POLICY_FANOUT"] = "dns"
+	env["PKI_MGMT_JWT_SINGLE_USE"] = "false"
 	a, err := app.Build(context.Background(), load(t, env), logger)
 	if err != nil {
 		t.Fatalf("Build: %v", err)

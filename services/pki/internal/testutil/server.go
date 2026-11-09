@@ -45,6 +45,9 @@ type ServerOptions struct {
 	RateLimit *est.RateLimitConfig
 	// SupersedeGrace overrides the revocation delay of superseded certificates.
 	SupersedeGrace time.Duration
+	// AllowJWTReuse disables the jti replay cache (enabled by default, as
+	// in production).
+	AllowJWTReuse bool
 	// RegistryRetries / RegistryBackoff tune the enrolled callback retries
 	// (default backoff 1 ms so failure tests stay fast).
 	RegistryRetries int
@@ -96,6 +99,7 @@ func (p *PKI) StartServer(t testing.TB, opts ServerOptions) *Server {
 	if s.Revoke, err = revocation.NewService(p.Store, revocation.Options{CRL: s.CRL, OCSP: s.OCSP, Publisher: publisher, Metrics: p.Metrics, Clock: p.Clock, Logger: p.Logger}); err != nil {
 		t.Fatal(err)
 	}
+	go s.Revoke.RunDispatcher(ctx) // retries undelivered events until the test ends
 	rateLimit := est.RateLimitConfig{DeviceBurst: 100000, DevicePerMinute: 6000000, IPBurst: 100000, IPPerMinute: 6000000}
 	if opts.RateLimit != nil {
 		rateLimit = *opts.RateLimit
@@ -124,6 +128,9 @@ func (p *PKI) StartServer(t testing.TB, opts ServerOptions) *Server {
 		}
 	}
 	auth := mgmt.NewAuthenticator(p.Services.Certificate(), allowed, jwtKeys, p.Clock)
+	if !opts.AllowJWTReuse {
+		auth.Replay = mgmt.NewReplayCache(0)
+	}
 	if s.Mgmt, err = mgmt.NewHandler(mgmt.Config{Auth: auth, Revoker: s.Revoke, Store: p.Store, Chain: p.CAChain(), Metrics: p.Metrics, Clock: p.Clock, DefaultAllowSoftwareKeys: opts.DefaultAllowSoftwareKeys}); err != nil {
 		t.Fatal(err)
 	}

@@ -36,6 +36,9 @@ func TestDefaults(t *testing.T) {
 	if string(cfg.PolicyHMACKeyBytes()) != "" {
 		t.Fatal("hmac default")
 	}
+	if cfg.PolicyFanout != PolicyFanoutOff || cfg.SupersedeGrace != time.Hour || !cfg.MgmtJWTSingleUse || cfg.MgmtJWTReplayCacheSize != 100000 {
+		t.Fatalf("hardening defaults %+v", cfg)
+	}
 }
 
 func TestExplicitValues(t *testing.T) {
@@ -50,6 +53,7 @@ func TestExplicitValues(t *testing.T) {
 		"PKI_TPM_AK_CA_FILE": "ak.pem", "PKI_TPM_ALLOWED_PCR_DIGESTS": strings.Repeat("ab", 32) + "," + strings.Repeat("CD", 32),
 		"PKI_BROKER_HOST": "mqtt.example", "PKI_BROKER_PORT": "18883", "PKI_LOG_LEVEL": "debug", "PKI_SHUTDOWN_TIMEOUT": "3s",
 		"PKI_KEY_DEVICE_CA": "alias/dev", "PKI_KEY_SERVICES_CA": "alias/svc", "PKI_BUNDLE_KEY_FILE": "/keys/bundle.json",
+		"PKI_POLICY_FANOUT": "DNS", "PKI_SUPERSEDE_GRACE": "10m", "PKI_MGMT_JWT_SINGLE_USE": "false", "PKI_MGMT_JWT_REPLAY_CACHE_SIZE": "5000",
 	}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -59,6 +63,9 @@ func TestExplicitValues(t *testing.T) {
 		!cfg.DefaultAllowSoftwareKeys || len(cfg.TPMAllowedPCRDigests) != 2 || cfg.BrokerPort != 18883 || cfg.LogLevel != slog.LevelDebug ||
 		cfg.ShutdownTimeout != 3*time.Second || cfg.DeviceCAKeyRef != "alias/dev" || cfg.BundleKeyFile != "/keys/bundle.json" {
 		t.Fatalf("config %+v", cfg)
+	}
+	if cfg.PolicyFanout != PolicyFanoutDNS || cfg.SupersedeGrace != 10*time.Minute || cfg.MgmtJWTSingleUse || cfg.MgmtJWTReplayCacheSize != 5000 {
+		t.Fatalf("hardening settings %+v", cfg)
 	}
 	if string(cfg.PolicyHMACKeyBytes()) != "hmac" {
 		t.Fatal("hmac key")
@@ -101,6 +108,9 @@ func TestValidationErrors(t *testing.T) {
 		"iam without db":     {"PKI_DB_IAM_AUTH": "true"},
 		"bad iam bool":       {"PKI_DATABASE_URL": "postgres://db/pki", "PKI_DB_IAM_AUTH": "yes please"},
 		"bundle secret name": {"PKI_BUNDLE_KEY_SECRET_ARN": "ironmesh/bundle"},
+		"bad fanout":         {"PKI_POLICY_FANOUT": "srv"},
+		"zero grace":         {"PKI_SUPERSEDE_GRACE": "0s"},
+		"tiny replay cache":  {"PKI_MGMT_JWT_REPLAY_CACHE_SIZE": "10"},
 	}
 	for name, extra := range cases {
 		m := map[string]string{}
