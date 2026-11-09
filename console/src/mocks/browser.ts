@@ -1,5 +1,5 @@
 import { setupWorker } from 'msw/browser';
-import { handlers, setMockLatency } from './handlers';
+import { handlers, setMockLatency, setStepUpEmulation } from './handlers';
 
 export const worker = setupWorker(...handlers);
 
@@ -9,6 +9,7 @@ let started: Promise<void> | null = null;
 export function startMockWorker(): Promise<void> {
   if (!started) {
     setMockLatency(60);
+    setStepUpEmulation(true);
     started = worker
       .start({
         onUnhandledRequest: 'bypass',

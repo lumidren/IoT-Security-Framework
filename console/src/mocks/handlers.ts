@@ -1,4 +1,4 @@
-import { HttpResponse, delay, http, ws } from 'msw';
+import { HttpResponse, bypass, delay, http, ws } from 'msw';
 import type {
   Alert,
   ApiKey,
@@ -17,6 +17,13 @@ import type {
 } from '@/lib/api/schemas';
 import { StageInputSchema } from '@/lib/api/schemas';
 import { DEMO_TENANT_ID } from '@/lib/env';
+import {
+  DEFAULT_STEP_UP_MAX_AGE_S,
+  isAuthFresh,
+  stepUpAction,
+  stepUpChallenge,
+  stepUpProblemBody,
+} from '@/lib/security/step-up';
 import { validateStages } from '@/lib/stages';
 import { db, findDevice, paginate, summaryOf, telemetryFor } from './db';
 import { emptyCounts } from './fixtures/campaigns';
@@ -1753,7 +1760,53 @@ function wsHandlersFor(url: string) {
 
 export const wsHandlers = [wsHandlersFor('ws://*/v1/ws'), wsHandlersFor('wss://*/v1/ws')];
 
+// ----------------------------------------------------------------------------------------------
+// Step-up emulation (demo mode)
+// ----------------------------------------------------------------------------------------------
+
+/**
+ * In demo mode the browser worker answers `/api/proxy/*` itself, so the proxy's step-up check never
+ * runs. This handler mirrors it: destructive routes look up `auth_time` from the real Auth.js
+ * session endpoint and return the same 401 `step_up_required` problem when it is stale; otherwise
+ * it returns nothing and MSW falls through to the fixture handler. Node tests leave it disabled.
+ */
+let stepUpEmulation = false;
+export function setStepUpEmulation(enabled: boolean) {
+  stepUpEmulation = enabled;
+}
+
+const stepUpHandler = http.all('*/api/proxy/:service/*', async ({ request, params }) => {
+  if (!stepUpEmulation) return undefined;
+  const url = new URL(request.url);
+  const service = String(params['service']);
+  const rest = url.pathname.slice(`/api/proxy/${service}`.length);
+  const action = stepUpAction(service, request.method, rest);
+  if (!action) return undefined;
+  let authTime: number | undefined;
+  let maxAge = DEFAULT_STEP_UP_MAX_AGE_S;
+  try {
+    const response = await fetch(bypass(new URL('/api/auth/session', url.origin)));
+    const session = (await response.json()) as {
+      user?: { authTime?: number };
+      stepUpMaxAge?: number;
+    } | null;
+    authTime = session?.user?.authTime;
+    if (typeof session?.stepUpMaxAge === 'number') maxAge = session.stepUpMaxAge;
+  } catch {
+    authTime = undefined;
+  }
+  if (isAuthFresh(authTime, maxAge)) return undefined;
+  return HttpResponse.json(stepUpProblemBody(action, maxAge, url.pathname), {
+    status: 401,
+    headers: {
+      'content-type': 'application/problem+json',
+      'www-authenticate': stepUpChallenge(maxAge),
+    },
+  });
+});
+
 export const httpHandlers = [
+  stepUpHandler,
   ...registryHandlers,
   ...otaHandlers,
   ...anomalyHandlers,

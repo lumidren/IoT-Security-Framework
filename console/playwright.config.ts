@@ -43,6 +43,9 @@ export default defineConfig({
       AUTH_SECRET: process.env.AUTH_SECRET ?? 'e2e-only-secret-not-for-production-0123456789',
       AUTH_TRUST_HOST: 'true',
       AUTH_URL: baseURL,
+      // The suite signs in once (auth.setup.ts) and may run longer than the default 300 s
+      // step-up window; destructive-action specs are not about re-authentication.
+      CONSOLE_STEP_UP_MAX_AGE: '3600',
       NEXT_TELEMETRY_DISABLED: '1',
     },
   },
