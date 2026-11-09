@@ -100,7 +100,7 @@ fn load_keyring_secret(device_id: &str) -> Result<Zeroizing<Vec<u8>>, IdentityEr
     }
 }
 
-fn derive_kek(source: &SecretSource, device_id: &str) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
+pub(crate) fn derive_kek(source: &SecretSource, device_id: &str) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
     let ikm: Zeroizing<Vec<u8>> = match source {
         SecretSource::File(p) => load_machine_secret(p)?,
         #[cfg(feature = "keyring")]

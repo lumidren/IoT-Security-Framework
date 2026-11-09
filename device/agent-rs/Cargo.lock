@@ -1063,6 +1063,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hkdf",
+ "hmac",
  "http",
  "http-body-util",
  "hyper",

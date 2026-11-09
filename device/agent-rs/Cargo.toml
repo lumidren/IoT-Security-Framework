@@ -30,6 +30,7 @@ der = { version = "0.7", features = ["alloc", "oid", "std"] }
 ed25519-dalek = { version = "2.2", features = ["rand_core", "zeroize"] }
 hex = "0.4"
 hkdf = "0.12"
+hmac = "0.12"
 http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }

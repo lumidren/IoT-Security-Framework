@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod app;
+pub mod atrest;
 pub mod buffer;
 pub mod commands;
 pub mod config;
