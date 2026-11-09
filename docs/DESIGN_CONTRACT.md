@@ -100,8 +100,12 @@ Attestation flow:
   additionally require the broker cert SAN to match the configured host.
 * Session: `clean_start=false`, session expiry interval 7 days, receive maximum 32, keep-alive 60 s.
 * Reconnect backoff: exponential, base 1 s, factor 2, cap 300 s, full jitter.
-* Offline buffering: devices persist up to 10 000 telemetry messages (or 4 MiB on ESP32) in a ring
-  buffer and replay them in order on reconnect; the `seq` field preserves ordering server-side.
+* Offline buffering: devices persist telemetry in a ring buffer and replay it in order on
+  reconnect; the `seq` field preserves ordering server-side. Linux agents keep up to 10 000
+  messages. ESP32 devices keep a plaintext 1 MiB `storage` partition (about 2 048 records on 8 MiB
+  flash): records are signed, not secret, and NOR bit-clear acknowledgements are incompatible with
+  flash encryption. When the buffer is full the oldest records are overwritten and the gap is
+  visible to the cloud as a `seq` jump.
 
 Topic scheme (`<t>` = tenant id, `<d>` = device id). Devices publish to `pub` topics and subscribe to
 `sub` topics; **all** other topics are denied by the Policy service.

@@ -337,9 +337,10 @@ order. Receivers count `ENV_REPLAY` rejections in `ironmesh_replay_rejected_tota
 
 ### 3.7 Replay store semantics
 
-The store maps `(sender kid, direction)` to the last accepted `seq`. The server keeps it in
+The store maps a **replay stream** (§3.6 step 11: the device kid for uplink,
+`"<tenant kid>/<type>"` for downlink) to the last accepted `seq`. The server keeps it in
 Postgres per device (an `UPDATE ... SET last_seq = $1 WHERE kid = $2 AND last_seq < $1` style
-compare-and-set), the device in NVS/keyring per tenant key. Devices persist their own next `seq`
+compare-and-set), the device in NVS/keyring per tenant key and downlink type. Devices persist their own next `seq`
 before sending so a reboot never reuses a value; a certificate renewal changes the device kid but
 the device counter keeps increasing, so a receiver MAY additionally key its store by device id.
 

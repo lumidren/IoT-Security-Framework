@@ -51,7 +51,7 @@ Error codes for failed operations: `unsupported`, `busy`, `invalid_args`, `not_p
 
 | event              | data |
 |--------------------|------|
-| `enrolled`         | `{cert_serial_hex, not_after, se_type}` |
+| `enrolled`         | `{cert_serial_hex, not_after, se_type}` (`not_after` and every other timestamp field are Unix seconds) |
 | `enroll_failed`    | `{http_status, reason}` |
 | `cert_renewed`     | `{old_serial_hex, new_serial_hex, not_after}` |
 | `renew_failed`     | `{http_status, reason}` |
@@ -62,7 +62,7 @@ Error codes for failed operations: `unsupported`, `busy`, `invalid_args`, `not_p
 | `subscribe_result` | `{topic, granted, reason_code}` |
 | `message_rejected` | `{topic, code}` (inbound message failed COSE/replay/skew/schema checks) |
 | `command_executed` | `{cmd_id, status}` |
-| `ota_state`        | `{campaign_id, state, error}` (state names per contract §5 OtaStatus) |
+| `ota_state`        | `{campaign_id, state, error}` (state names per contract §5 OtaStatus; `error` is one of `unsigned`, `signature`, `untrusted_key`, `image_hash`, `downgrade`, `product`, `image_size`, `delta`, `health_check`, `download`, or empty) |
 | `rebooted`         | `{active_slot, version_code, reason}` where reason in `requested, ota_apply, rollback, watchdog` |
 | `buffer_flushed`   | `{count, first_seq, last_seq}` |
 
@@ -90,9 +90,9 @@ Error codes for failed operations: `unsupported`, `busy`, `invalid_args`, `not_p
 | C-OTA-5 | Valid update applies and is marked healthy                           | `rebooted{reason=ota_apply}`, new `version_code`, `ota_state=success` |
 | C-OTA-6 | Update that fails its health check rolls back                        | `rebooted{reason=rollback}`, previous slot active, `ota_state=rolled_back` |
 | C-OTA-7 | Delta update                                                         | applied image hash equals full image hash |
-| C-RPL-1 | Replayed command (same `seq`)                                        | `message_rejected{code=REPLAY}`; command not executed twice |
-| C-RPL-2 | Command with stale timestamp                                         | `message_rejected{code=TIMESTAMP_SKEW}` |
-| C-RPL-3 | Command signed by a non-tenant key                                   | `message_rejected{code=SIGNATURE}` |
+| C-RPL-1 | Replayed command (same `seq`)                                        | `message_rejected{code=ENV_REPLAY}`; command not executed twice |
+| C-RPL-2 | Command with stale timestamp                                         | `message_rejected{code=ENV_TS_SKEW}` |
+| C-RPL-3 | Command signed by a non-tenant key                                   | `message_rejected{code=COSE_SIGNATURE}` |
 | C-RPL-4 | Device `seq` strictly increases across reboot                        | `status.seq_out` after reboot > before |
 | C-OFF-1 | Offline buffering and resync                                         | telemetry sent while `net_down` is delivered after `net_up`, in order, no gaps, `buffer_flushed` |
 | C-CFG-1 | Encrypted config delivery                                            | DUT applies config; retained broker copy is ciphertext only |
