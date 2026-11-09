@@ -130,8 +130,16 @@ Server sends JSON frames `{type, at, data}` for: `device.connected`, `device.dis
 default subscription is `fleet` + `alerts`. Ping every 30 s.
 
 ### 1.12 Internal
-* `GET /internal/v1/devices/{id}/lifecycle` -> `{device_id, tenant_id, state, assurance_level, product}`
+* `GET /internal/v1/devices/{id}/lifecycle` (policy, anomaly) -> `{device_id, tenant_id, state, assurance_level, product}`
   (policy service; service JWT `aud=registry`)
+* `POST /internal/v1/tenants/{tenant}/devices/resolve` (OTA) body `{groups: [slug], tags: {k: v},
+  device_ids: [id], states?: [state]}` -> `{items: [{device_id, product, state, fw_version, fw_hash_hex,
+  connected}]}`; resolves campaign targets (union of the three selectors, max 100 000 items).
+* `POST /internal/v1/tenants/{tenant}/devices/{id}/downlink` (OTA) body `{type: "ota_notify",
+  body: object (contract §5 OtaNotify body, bstr fields hex-encoded), retain: bool}` ->
+  `{seq, published_at}`. The registry is the **only holder of the tenant command key**: it signs
+  every downlink (ShadowDesired, Command, OtaNotify, Config) and publishes it. Other services never
+  receive the private key.
 * `POST /internal/v1/devices/{id}/enrolled` (PKI) body `{serial_hex, not_before, not_after, se_type, assurance_level, fw_version, fw_hash_hex}`
   -> transitions `manufactured -> provisioned -> active` and records the cert.
 * `GET /internal/v1/tenants/{tenant}/devices/{id}` (PKI, during EST) -> `{device_id, tenant_id, state, assurance_level, se_type, bootstrap_serial}`
@@ -186,6 +194,10 @@ state: "open"|"acked"|"resolved", acked_by, resolved_by, actions: [{type: "quara
 
 ## 4. Policy (`services/policy`, port 8081)
 
+Authentication: the console forwards the user's OIDC access token (verified against
+`POLICY_OIDC_ISSUER` JWKS, `aud` contains `ironmesh-api`, role from the `role` claim); services may
+instead present an ES256 service JWT with `aud=policy`.
+
 * `GET /v1/policy` (admin) -> `{version, updated_at, updated_by, rego: str, sha256_hex}`
 * `PUT /v1/policy` (owner) body `{rego: str, message: str}` -> validates (compiles, runs the embedded
   Rego test suite; refuses if any built-in invariant test fails) -> `{version, sha256_hex}`; `422`
@@ -200,12 +212,25 @@ state: "open"|"acked"|"resolved", acked_by, resolved_by, actions: [{type: "quara
 See `services/pki/README.md`: `POST /v1/certificates/{serial}/revoke`, `GET /v1/certificates/{serial}`,
 `GET /v1/devices/{id}/certificates`, `POST /v1/devices/{id}/revoke-all`, `GET /v1/ca/chain`, `GET /v1/stats`.
 
+Tenant policy (what the EST bundle carries and what enrollment allows); callers authenticate with
+mTLS (Services CA, CN allowlist) or a service JWT, and each field has exactly one owner:
+
+* `PUT /v1/tenants/{tenant}/command-key` (registry) body `{public_key_b64}` (32-byte Ed25519) -> `204`
+* `PUT /v1/tenants/{tenant}/firmware-keys` (ota) body `{public_keys_b64: [..]}` (Ed25519 32 bytes
+  and/or ML-DSA-65 1952 bytes) -> `204`
+* `PUT /v1/tenants/{tenant}/enrollment` (registry) body `{allow_software_keys: bool}` -> `204`
+* `GET /v1/tenants/{tenant}/policy` -> `{command_key_b64, firmware_keys_b64, allow_software_keys, updated_at}`
+
+After issuing a certificate the PKI calls the registry's `POST /internal/v1/devices/{id}/enrolled`
+synchronously; enrollment fails with `503` (and the certificate is revoked) if the registry cannot
+record it, so a device is never `active` in the PKI but `manufactured` in the registry.
+
 ## 6. Event bus topics (Redpanda)
 
 | Topic        | Key                 | Value (JSON unless noted)                                              | Producer | Consumers           |
 |--------------|---------------------|------------------------------------------------------------------------|----------|---------------------|
 | `im.ingest`  | `<tenant>/<device>` | raw COSE bytes + headers `mqtt_topic, tenant_id, device_id, msg_class, received_at, traceparent` | bridge | registry, ota, anomaly |
-| `im.auth`    | `<clientid>`        | `{event: "connected"|"disconnected"|"authn_failed"|"authz_denied", clientid, peerhost, reason, topic?, action?, at}` | bridge (from EMQX webhook), policy | anomaly, registry |
+| `im.auth`    | `<clientid>`        | `{event: "connected"|"disconnected"|"authn_failed"|"authz_denied", clientid, peerhost, reason, topic?, action?, at}` | bridge (from EMQX webhook) | anomaly, registry |
 | `im.alerts`  | `<tenant>/<device>` | `Alert`                                                                | anomaly  | registry (timeline, WS), SIEM forwarder |
 | `im.audit`   | `<tenant>`          | `AuditEvent`                                                           | all      | registry (audit store), SIEM |
 | `im.commands`| `<tenant>/<device>` | `{cmd_id, device_id, status, at}`                                       | registry | ota (campaign device state), anomaly |
