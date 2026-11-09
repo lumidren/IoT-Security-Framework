@@ -262,16 +262,19 @@ func (a *API) history(w http.ResponseWriter, r *http.Request) {
 }
 
 type revocationItem struct {
-	SerialHex string     `json:"serial_hex"`
-	DeviceID  string     `json:"device_id"`
-	TenantID  string     `json:"tenant_id"`
-	Reason    string     `json:"reason"`
-	RevokedAt time.Time  `json:"revoked_at"`
-	AppliedAt time.Time  `json:"applied_at"`
-	Kicked    bool       `json:"kicked"`
-	KickedAt  *time.Time `json:"kicked_at,omitempty"`
-	Source    string     `json:"source"`
-	EventID   string     `json:"event_id"`
+	SerialHex string    `json:"serial_hex"`
+	DeviceID  string    `json:"device_id"`
+	TenantID  string    `json:"tenant_id"`
+	Reason    string    `json:"reason"`
+	RevokedAt time.Time `json:"revoked_at"`
+	AppliedAt time.Time `json:"applied_at"`
+	// Kicked reports that a session was actually disconnected; KickSkipped that the entry was
+	// settled without a kick because the live session already used another certificate.
+	Kicked      bool       `json:"kicked"`
+	KickSkipped bool       `json:"kick_skipped"`
+	KickedAt    *time.Time `json:"kicked_at,omitempty"`
+	Source      string     `json:"source"`
+	EventID     string     `json:"event_id"`
 }
 
 type revocationCursor struct {
@@ -312,11 +315,15 @@ func (a *API) revocations(w http.ResponseWriter, r *http.Request) {
 			next = &cur
 			break
 		}
-		items = append(items, revocationItem{
+		item := revocationItem{
 			SerialHex: e.Serial, DeviceID: e.DeviceID, TenantID: e.TenantID, Reason: e.Reason,
-			RevokedAt: e.RevokedAt, AppliedAt: e.AppliedAt, Kicked: e.Kicked, KickedAt: e.KickedAt,
-			Source: e.Source, EventID: e.EventID,
-		})
+			RevokedAt: e.RevokedAt, AppliedAt: e.AppliedAt, Kicked: e.Kicked && !e.KickSkipped,
+			KickSkipped: e.KickSkipped, Source: e.Source, EventID: e.EventID,
+		}
+		if item.Kicked {
+			item.KickedAt = e.KickedAt
+		}
+		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, Page{Items: items, NextCursor: next})
 }

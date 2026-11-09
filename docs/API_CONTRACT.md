@@ -216,7 +216,7 @@ instead present an ES256 service JWT with `aud=policy`.
 * `POST /v1/policy/evaluate` (operator) body `{input: {clientid, username, tenant_id, device_id, kind, topic, action, qos, retain}}`
   -> `{result: "allow"|"deny", matched_rules: [str], trace: [str], evaluated_version}` (dry-run, never cached)
 * `GET /v1/policy/history?cursor=` -> page of `{version, updated_at, updated_by, message, sha256_hex}`
-* `GET /v1/revocations?cursor=` (viewer) -> page of `{serial_hex, device_id, tenant_id, reason, revoked_at, applied_at, kicked: bool}`
+* `GET /v1/revocations?cursor=` (viewer) -> page of `{serial_hex, device_id, tenant_id, reason, revoked_at, applied_at, kicked: bool, kick_skipped: bool}` (`kick_skipped` = settled without a kick because the live session already used another certificate)
 
 ## 5. PKI management (`services/pki`, port 8443, mTLS + service JWT; console reaches it via registry proxy)
 

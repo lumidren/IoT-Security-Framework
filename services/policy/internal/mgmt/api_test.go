@@ -532,3 +532,28 @@ func TestRevocationsScopedToTokenTenant(t *testing.T) {
 		t.Fatalf("service view = %+v", got)
 	}
 }
+
+func TestRevocationsReportSkippedKicks(t *testing.T) {
+	e := newEnv(t)
+	if _, err := e.cache.Upsert(revocation.Entry{EventID: "sup", Serial: "0f", DeviceID: dev, TenantID: tenant, Reason: "superseded", RevokedAt: fixedNow.Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.cache.MarkKickSkipped("sup"); err != nil {
+		t.Fatal(err)
+	}
+	var p struct {
+		Items []revocationItem `json:"items"`
+	}
+	resp, raw := e.do("GET", "/v1/revocations", "viewer", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d: %s", resp.StatusCode, raw)
+	}
+	decode(t, raw, &p)
+	if len(p.Items) != 1 {
+		t.Fatalf("items = %+v", p.Items)
+	}
+	// The live session already used the renewed certificate, so nothing was disconnected.
+	if it := p.Items[0]; it.Kicked || !it.KickSkipped || it.KickedAt != nil {
+		t.Fatalf("superseded entry reported as %+v, want kicked=false kick_skipped=true", it)
+	}
+}

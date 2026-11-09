@@ -92,7 +92,8 @@
           "reason": { "type": "string" },
           "revoked_at": { "type": "string", "format": "date-time" },
           "applied_at": { "type": "string", "format": "date-time" },
-          "kicked": { "type": "boolean" },
+          "kicked": { "type": "boolean", "description": "a live session was disconnected" },
+          "kick_skipped": { "type": "boolean", "description": "settled without a kick: the live session already used another certificate" },
           "kicked_at": { "type": "string", "format": "date-time" },
           "source": { "type": "string", "enum": ["event", "crl"] },
           "event_id": { "type": "string" }
