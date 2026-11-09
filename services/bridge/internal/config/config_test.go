@@ -124,7 +124,20 @@ func TestLoadValidation(t *testing.T) {
 		{"bad duration", func(m map[string]string) { m["BRIDGE_MQTT_KEEPALIVE"] = "soon" }, "invalid duration"},
 		{"keepalive too long", func(m map[string]string) { m["BRIDGE_MQTT_KEEPALIVE"] = "20h" }, "at most 65535s"},
 		{"bad bool", func(m map[string]string) { m["BRIDGE_KAFKA_TLS"] = "maybe" }, "invalid boolean"},
-		{"kafka tls without ca", func(m map[string]string) { m["BRIDGE_KAFKA_TLS"] = "true" }, "BRIDGE_KAFKA_TLS_CA_FILE"},
+		{"bad tls enabled bool", func(m map[string]string) { m["BRIDGE_KAFKA_TLS_ENABLED"] = "si" }, "invalid boolean"},
+		{"unknown sasl", func(m map[string]string) { m["BRIDGE_KAFKA_SASL_MECHANISM"] = "gssapi" }, "BRIDGE_KAFKA_SASL_MECHANISM"},
+		{"scram without password", func(m map[string]string) {
+			m["BRIDGE_KAFKA_SASL_MECHANISM"] = "scram-sha-512"
+			m["BRIDGE_KAFKA_SASL_USERNAME"] = "bridge"
+		}, "BRIDGE_KAFKA_SASL_PASSWORD"},
+		{"plain without tls", func(m map[string]string) {
+			m["BRIDGE_KAFKA_SASL_MECHANISM"] = "plain"
+			m["BRIDGE_KAFKA_SASL_USERNAME"], m["BRIDGE_KAFKA_SASL_PASSWORD"] = "u", "p"
+		}, "BRIDGE_KAFKA_TLS_ENABLED"},
+		{"msk iam without tls", func(m map[string]string) { m["BRIDGE_KAFKA_SASL_MECHANISM"] = "aws-msk-iam" }, "BRIDGE_KAFKA_TLS_ENABLED"},
+		{"zero partitions", func(m map[string]string) { m["BRIDGE_KAFKA_TOPIC_PARTITIONS"] = "0" }, "BRIDGE_KAFKA_TOPIC_PARTITIONS"},
+		{"bad replication", func(m map[string]string) { m["BRIDGE_KAFKA_TOPIC_REPLICATION"] = "0" }, "BRIDGE_KAFKA_TOPIC_REPLICATION"},
+		{"bad topics create", func(m map[string]string) { m["BRIDGE_KAFKA_TOPICS_CREATE"] = "sure" }, "invalid boolean"},
 		{"bad level", func(m map[string]string) { m["BRIDGE_LOG_LEVEL"] = "loud" }, "unknown level"},
 	}
 	for _, tc := range cases {
@@ -174,5 +187,57 @@ func TestTLSConfigErrors(t *testing.T) {
 	cfg.KafkaTLSCAFile = bad
 	if _, err := cfg.KafkaTLSConfig(); err == nil {
 		t.Error("bad kafka CA should fail")
+	}
+}
+
+func TestLoadKafkaSecurityAndTopics(t *testing.T) {
+	base := func() map[string]string {
+		return map[string]string{"BRIDGE_MQTT_URL": "mqtt://localhost:1883"}
+	}
+	cfg, err := Load(MapGetenv(base()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.KafkaSASLMechanism != "none" || cfg.KafkaTopicsCreate || cfg.KafkaTopicPartitions != 12 || cfg.KafkaTopicReplication != 3 || cfg.KafkaTLS {
+		t.Errorf("defaults = %+v", cfg)
+	}
+	if got := cfg.KafkaTopics(); strings.Join(got, ",") != "im.ingest,im.auth,im.alerts,im.audit,im.commands,im.campaigns" {
+		t.Errorf("topics = %v", got)
+	}
+
+	env := base()
+	env["BRIDGE_KAFKA_TLS_ENABLED"] = "true"
+	env["BRIDGE_KAFKA_SASL_MECHANISM"] = "AWS-MSK-IAM"
+	env["BRIDGE_KAFKA_TOPICS_CREATE"] = "true"
+	env["BRIDGE_KAFKA_TOPIC_PARTITIONS"] = "24"
+	env["BRIDGE_KAFKA_TOPIC_REPLICATION"] = "-1"
+	env["BRIDGE_KAFKA_INGEST_TOPIC"] = "im.ingest.v2"
+	env["BRIDGE_KAFKA_AUTH_TOPIC"] = "im.alerts"
+	cfg, err = Load(MapGetenv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.KafkaTLS || cfg.KafkaSASLMechanism != "aws-msk-iam" || !cfg.KafkaTopicsCreate || cfg.KafkaTopicPartitions != 24 || cfg.KafkaTopicReplication != -1 {
+		t.Errorf("overrides = %+v", cfg)
+	}
+	if got := cfg.KafkaTopics(); strings.Join(got, ",") != "im.ingest.v2,im.alerts,im.audit,im.commands,im.campaigns" {
+		t.Errorf("topics = %v", got)
+	}
+	// TLS without a CA bundle uses the system roots.
+	kt, err := cfg.KafkaTLSConfig()
+	if err != nil || kt == nil || kt.RootCAs != nil || kt.MinVersion != tls.VersionTLS12 {
+		t.Errorf("system-roots TLS = %+v %v", kt, err)
+	}
+
+	env = base()
+	env["BRIDGE_KAFKA_SASL_MECHANISM"] = "scram-sha-512"
+	env["BRIDGE_KAFKA_SASL_USERNAME"], env["BRIDGE_KAFKA_SASL_PASSWORD"] = "bridge", "s3cret"
+	if cfg, err = Load(MapGetenv(env)); err != nil || cfg.KafkaSASLUsername != "bridge" || cfg.KafkaSASLPassword != "s3cret" {
+		t.Errorf("scram = %+v %v", cfg, err)
+	}
+	env["BRIDGE_KAFKA_SASL_MECHANISM"] = "plain"
+	env["BRIDGE_KAFKA_TLS"] = "true"
+	if _, err = Load(MapGetenv(env)); err != nil {
+		t.Errorf("plain over TLS: %v", err)
 	}
 }

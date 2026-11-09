@@ -1,14 +1,19 @@
 // Command bridge subscribes to EMQX as svc-bridge ($share/bridge/im/v1/#) and forwards device
 // messages to Redpanda (im.ingest) and EMQX auth events (webhook) to im.auth.
+//
+// "bridge healthcheck [--url URL] [--timeout D]" GETs /healthz (default derived from
+// BRIDGE_LISTEN) and exits 0 or 1, for container health checks in the distroless image.
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,16 +23,59 @@ import (
 
 	"github.com/lumidren/IoT-Security-Framework/services/bridge/internal/bridge"
 	"github.com/lumidren/IoT-Security-Framework/services/bridge/internal/config"
+	"github.com/lumidren/IoT-Security-Framework/services/bridge/internal/healthcheck"
 	"github.com/lumidren/IoT-Security-Framework/services/bridge/internal/logging"
 	"github.com/lumidren/IoT-Security-Framework/services/bridge/internal/server"
 	"github.com/lumidren/IoT-Security-Framework/services/bridge/internal/telemetry"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheckMain(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "bridge:", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheckMain implements "bridge healthcheck".
+func healthcheckMain(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	listen := strings.TrimSpace(getenv("BRIDGE_LISTEN"))
+	if listen == "" {
+		listen = ":8082"
+	}
+	return healthcheck.Run(context.Background(), "bridge", args, healthcheck.DefaultURL(listen, "/healthz"), stdout, stderr)
+}
+
+// kafkaConfig builds the producer configuration: TLS (BRIDGE_KAFKA_TLS[_ENABLED]) and SASL
+// (BRIDGE_KAFKA_SASL_MECHANISM).
+func kafkaConfig(ctx context.Context, cfg config.Config, log *slog.Logger) (bridge.KafkaConfig, error) {
+	kafkaTLS, err := cfg.KafkaTLSConfig()
+	if err != nil {
+		return bridge.KafkaConfig{}, err
+	}
+	mech, err := bridge.NewSASLMechanism(ctx, cfg.KafkaSASLMechanism, cfg.KafkaSASLUsername, cfg.KafkaSASLPassword, nil)
+	if err != nil {
+		return bridge.KafkaConfig{}, err
+	}
+	return bridge.KafkaConfig{Brokers: cfg.KafkaBrokers, ClientID: cfg.MQTTClientID, TLS: kafkaTLS, SASL: mech, Logger: log}, nil
+}
+
+// ensureTopics creates the platform topics when BRIDGE_KAFKA_TOPICS_CREATE=true.
+func ensureTopics(ctx context.Context, cfg config.Config, producer *bridge.KafkaProducer, log *slog.Logger) error {
+	if !cfg.KafkaTopicsCreate {
+		return nil
+	}
+	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	topics := cfg.KafkaTopics()
+	created, err := producer.EnsureTopics(tctx, int32(cfg.KafkaTopicPartitions), int16(cfg.KafkaTopicReplication), topics...)
+	if err != nil {
+		return err
+	}
+	log.Info("kafka topics ensured", "topics", topics, "created", created, "partitions", cfg.KafkaTopicPartitions, "replication", cfg.KafkaTopicReplication)
+	return nil
 }
 
 func run() error {
@@ -50,15 +98,18 @@ func run() error {
 	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	m := bridge.NewMetrics(reg)
 
-	kafkaTLS, err := cfg.KafkaTLSConfig()
+	kcfg, err := kafkaConfig(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
-	producer, err := bridge.NewKafkaProducer(bridge.KafkaConfig{Brokers: cfg.KafkaBrokers, ClientID: cfg.MQTTClientID, TLS: kafkaTLS, Logger: log})
+	producer, err := bridge.NewKafkaProducer(kcfg)
 	if err != nil {
 		return err
 	}
 	defer producer.Close()
+	if err := ensureTopics(ctx, cfg, producer, log); err != nil {
+		return err
+	}
 
 	forwarder, err := bridge.NewForwarder(bridge.ForwarderConfig{Producer: producer, IngestTopic: cfg.KafkaIngestTopic, Metrics: m, Logger: log})
 	if err != nil {
@@ -96,6 +147,9 @@ func run() error {
 	}
 	if cfg.EventsToken == "" {
 		log.Warn("BRIDGE_EVENTS_TOKEN is empty: /emqx/events accepts unauthenticated posts")
+	}
+	if cfg.KafkaSASLMechanism == bridge.SASLNone && !cfg.KafkaTLS {
+		log.Warn("Kafka connection is plaintext and unauthenticated; set BRIDGE_KAFKA_TLS_ENABLED and BRIDGE_KAFKA_SASL_MECHANISM outside local development")
 	}
 
 	handler := server.NewHandler(server.Config{

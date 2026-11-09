@@ -43,9 +43,15 @@ more messages in flight than the consumer semaphore admits.
 | `BRIDGE_TLS_SERVER_NAME` | broker hostname | expected broker SAN |
 | `BRIDGE_KAFKA_BROKERS` | `redpanda:9092` | comma-separated seed brokers |
 | `BRIDGE_KAFKA_INGEST_TOPIC` / `BRIDGE_KAFKA_AUTH_TOPIC` | `im.ingest` / `im.auth` | |
-| `BRIDGE_KAFKA_TLS` / `BRIDGE_KAFKA_TLS_CA_FILE` | `false` / — | TLS to Redpanda |
+| `BRIDGE_KAFKA_TLS_ENABLED` (alias `BRIDGE_KAFKA_TLS`) | `false` | TLS (1.2+) to the brokers; either variable set to `true` enables it |
+| `BRIDGE_KAFKA_TLS_CA_FILE` | — | CA bundle verifying the brokers; empty = system roots (Amazon MSK) |
+| `BRIDGE_KAFKA_SASL_MECHANISM` | `none` | `none`, `plain`, `scram-sha-512` or `aws-msk-iam` (franz-go `sasl/plain`, `sasl/scram`, `sasl/aws`). `plain` and `aws-msk-iam` require TLS. MSK IAM credentials come from the default AWS chain (env, IRSA / web identity, ECS, EC2 role) and are re-resolved on every connection; the region is taken from the broker host name (fallback `AWS_REGION`) |
+| `BRIDGE_KAFKA_SASL_USERNAME` / `BRIDGE_KAFKA_SASL_PASSWORD` | — | Credentials for `plain` / `scram-sha-512` (required with those) |
+| `BRIDGE_KAFKA_TOPICS_CREATE` | `false` | On boot create `im.ingest`, `im.auth` (the configured ingest/auth topic names), `im.alerts`, `im.audit`, `im.commands`, `im.campaigns` with the kadm admin API; existing topics count as success (settings untouched), any other error aborts startup |
+| `BRIDGE_KAFKA_TOPIC_PARTITIONS` | `12` | Partitions of created topics (1–10000) |
+| `BRIDGE_KAFKA_TOPIC_REPLICATION` | `3` | Replication factor of created topics (`-1` = broker default) |
 | `BRIDGE_MAX_INFLIGHT` | `1024` | semaphore and MQTT receive maximum |
-| `BRIDGE_EVENTS_TOKEN` | — | bearer token EMQX must send on `/emqx/events` |
+| `BRIDGE_EVENTS_TOKEN` | — | shared secret EMQX must send on `/emqx/events` in `X-IronMesh-Hook-Token` (or as `Authorization: Bearer`) |
 | `BRIDGE_MQTT_KEEPALIVE` / `BRIDGE_MQTT_SESSION_EXPIRY` | `60s` / `168h` | |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | enables OTLP/gRPC trace export |
 | `OTEL_SERVICE_NAME` | `ironmesh-bridge` | |
@@ -58,12 +64,21 @@ connect/disconnect events), `ironmesh_bridge_mqtt_connected`, `ironmesh_bridge_f
 
 ## EMQX webhook
 
-Point an EMQX rule-engine HTTP action at `POST http://bridge:8082/emqx/events` with
-`Authorization: Bearer <BRIDGE_EVENTS_TOKEN>` for the events `client.connected`,
-`client.disconnected`, `client.check_authn_complete` and `client.check_authz_complete` (the legacy
-names `client.authenticate failed` / `client.authorize denied` are accepted too). Successful authn/authz
-completions are ignored; failures become `authn_failed` / `authz_denied`. A 503 response asks EMQX
-to retry.
+`services/policy/deploy/emqx/emqx.conf` configures it (EMQX 5.8 connector + HTTP action + rule):
+`POST http://bridge:8082/emqx/events` with `X-IronMesh-Hook-Token: <BRIDGE_EVENTS_TOKEN>`
+(`Authorization: Bearer <token>` is accepted too; when the hook header is present it alone
+decides) for the events `client.connected`, `client.disconnected`, `client.check_authn_complete`
+and `client.check_authz_complete`, body = the rule's selected event map as JSON (one object per
+request; arrays are accepted too). The legacy names `client.authenticate failed` /
+`client.authorize denied` are accepted. Successful authn/authz completions are ignored; failures
+become `authn_failed` / `authz_denied`. A 503 response asks EMQX to retry.
+
+## Health check
+
+The image is distroless (no curl): `bridge healthcheck [--url URL] [--timeout 3s]` GETs
+`http://127.0.0.1:<port of BRIDGE_LISTEN>/healthz` and exits `0` on 2xx, `1` otherwise (TLS
+verification is skipped only for an `https` URL on a loopback host). Example:
+`test: ["CMD", "/bridge", "healthcheck"]`.
 
 ## Development
 
