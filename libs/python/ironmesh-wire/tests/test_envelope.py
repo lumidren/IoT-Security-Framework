@@ -556,3 +556,12 @@ def test_retainable_types_are_the_retained_downlink_topics() -> None:
         MessageType.OTA_NOTIFY,
         MessageType.CONFIG,
     } == envelope.RETAINABLE_TYPES
+
+
+def test_explicit_null_nonce_is_rejected() -> None:
+    valid = cbor.decode(envelope.encode_payload(make_message(telemetry())))
+    assert isinstance(valid, dict)
+    payload = cbor.encode({**valid, 5: None})
+    with pytest.raises(EnvelopeError) as excinfo:
+        envelope.decode_payload(payload)
+    assert excinfo.value.code == errors.ENV_NONCE

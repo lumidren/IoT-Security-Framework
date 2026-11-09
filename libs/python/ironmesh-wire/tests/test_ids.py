@@ -175,3 +175,9 @@ def test_topic_errors() -> None:
     with raises_code(errors.TOPIC_FORMAT):
         ids.topic_class_for_type(MessageType.ATTESTATION)
     assert ids.BRIDGE_SHARED_SUBSCRIPTION == "$share/bridge/im/v1/#"
+
+
+def test_semver_digits_are_ascii_only() -> None:
+    assert ids.is_semver("1.2.3")
+    assert not ids.is_semver("١.2.3")  # ARABIC-INDIC DIGIT ONE
+    assert not ids.is_semver("1.２.3")  # FULLWIDTH DIGIT TWO

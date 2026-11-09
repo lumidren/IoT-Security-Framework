@@ -342,6 +342,7 @@ def test_encrypt0_decode_errors() -> None:
         (rebuild(protected=cbor.encode([3])), errors.COSE_HEADER),
         (rebuild(protected=cbor.encode({1: 1})), errors.COSE_ALG),
         (rebuild(protected=cbor.encode({1: True})), errors.COSE_ALG),
+        (rebuild(protected=cbor.encode({1: 3.0})), errors.COSE_ALG),
         (rebuild(unprotected={5: iv}), errors.COSE_HEADER),
         (rebuild(unprotected=[]), errors.COSE_HEADER),
         (rebuild(unprotected={5: bytes(11), -70000: hpke_param}), errors.COSE_HEADER),

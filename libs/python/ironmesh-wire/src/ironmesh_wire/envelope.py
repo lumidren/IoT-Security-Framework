@@ -564,9 +564,13 @@ def decode_payload(data: bytes, limits: DecodeLimits = DEFAULT_LIMITS) -> Messag
         if not isinstance(key, int):
             raise EnvelopeError(errors.ENV_FIELD, "body keys must be integers")
     body = BODY_TYPES[message_type].from_map(raw_body)
-    raw_nonce = m.get(KEY_NONCE)
-    if raw_nonce is not None and not isinstance(raw_nonce, bytes):
-        raise EnvelopeError(errors.ENV_NONCE, "nonce must be a bstr")
+    raw_nonce: bytes | None = None
+    if KEY_NONCE in m:
+        # An explicit null is not "absent": the key is either omitted or carries a bstr.
+        value = m[KEY_NONCE]
+        if not isinstance(value, bytes):
+            raise EnvelopeError(errors.ENV_NONCE, "nonce must be a bstr")
+        raw_nonce = value
     _check_nonce(message_type, raw_nonce)
     return Message(seq=seq, ts=ts, body=body, nonce=raw_nonce)
 

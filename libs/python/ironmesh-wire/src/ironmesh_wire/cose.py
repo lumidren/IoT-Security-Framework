@@ -440,7 +440,7 @@ def encrypt0_decode(data: bytes, limits: DecodeLimits = DEFAULT_LIMITS) -> Encry
     header = cbor.decode(protected_bytes, limits)
     if not isinstance(header, dict) or set(header) != {HDR_ALG}:
         raise CoseError(errors.COSE_HEADER, "protected header must be exactly {1: alg}")
-    if header[HDR_ALG] != ALG_A256GCM or isinstance(header[HDR_ALG], bool):
+    if type(header[HDR_ALG]) is not int or header[HDR_ALG] != ALG_A256GCM:
         raise CoseError(errors.COSE_ALG, "content encryption algorithm must be A256GCM (3)")
     if not isinstance(unprotected, dict) or set(unprotected) != {HDR_IV, HDR_IRONMESH_HPKE}:
         raise CoseError(errors.COSE_HEADER, "unprotected header must be exactly {5, -70000}")

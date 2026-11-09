@@ -22,7 +22,8 @@ PRODUCT_RE: Final = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 SEMVER_RE: Final = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
-    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$",
+    re.ASCII,  # \d must not match non-ASCII digits (C and Rust implementations are ASCII-only)
 )
 
 TENANT_KID_PREFIX: Final = "tenant-cmd-"
