@@ -26,6 +26,7 @@ from starlette.requests import Request
 from ironmesh_ota import observability, runtime
 from ironmesh_ota.app import create_app
 from ironmesh_ota.auth import (
+    JtiReplayCache,
     StaticKeyTokenVerifier,
     authenticate_service,
     principal_from_claims,
@@ -284,7 +285,7 @@ async def test_build_container_dev_profile(tmp_path: Path) -> None:
         # a service JWT signed with the registry key is accepted on internal endpoints
         now = int(time.time())
         token = jwt.encode(
-            {"sub": "registry", "aud": "ota", "iat": now, "exp": now + 300},
+            {"sub": "registry", "aud": "ota", "iat": now, "exp": now + 300, "jti": "j-1"},
             svc_key,
             algorithm="ES256",
         )
@@ -292,6 +293,11 @@ async def test_build_container_dev_profile(tmp_path: Path) -> None:
             "/internal/v1/firmware/known-hashes", headers={"Authorization": f"Bearer {token}"}
         )
         assert resp.status_code == 200 and resp.json() == []
+        # ... but only once (OTA_SERVICE_JWT_SINGLE_USE defaults to true)
+        resp = await client.get(
+            "/internal/v1/firmware/known-hashes", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert resp.status_code == 401
 
 
 async def test_build_container_without_peers(tmp_path: Path) -> None:
@@ -424,7 +430,7 @@ async def test_service_token_rules() -> None:
     verifier = StaticKeyTokenVerifier([key.public_key()], audience="ota", algorithms=("ES256",))
     minter = ServiceTokenMinter(key, "registry", kid="k1")
     token = minter.mint("ota")
-    assert minter.mint("ota") == token  # cached while fresh
+    assert minter.mint("ota") != token  # never cached: every request gets its own jti
     caller = await authenticate_service(
         _request({"Authorization": f"Bearer {token}"}), verifier, ["registry"]
     )
@@ -436,7 +442,9 @@ async def test_service_token_rules() -> None:
     assert info.value.status == 403
     now = int(time.time())
     long_lived = jwt.encode(
-        {"sub": "registry", "aud": "ota", "iat": now, "exp": now + 3600}, key, algorithm="ES256"
+        {"sub": "registry", "aud": "ota", "iat": now, "exp": now + 3600, "jti": "j"},
+        key,
+        algorithm="ES256",
     )
     with pytest.raises(Problem) as info:
         await authenticate_service(
@@ -467,6 +475,60 @@ async def test_service_token_rules() -> None:
         ServiceTokenMinter(ec.generate_private_key(ec.SECP384R1()), "x")
 
 
+def test_minter_issues_a_fresh_token_per_call() -> None:
+    key = ec.generate_private_key(ec.SECP256R1())
+    minter = ServiceTokenMinter(key, "ota")
+    first, second = minter.mint("pki"), minter.mint("pki")
+    c1, c2 = (
+        jwt.decode(t, key.public_key(), algorithms=["ES256"], audience="pki")
+        for t in (first, second)
+    )
+    assert first != second and c1["jti"] != c2["jti"]
+    for c in (c1, c2):
+        assert c["aud"] == "pki" and c["iss"] == c["sub"] == "ota"
+        assert 0 < c["exp"] - c["iat"] <= 300 and abs(c["iat"] - time.time()) < 5
+
+
+async def test_service_token_single_use_and_jti_rules() -> None:
+    key = ec.generate_private_key(ec.SECP256R1())
+    verifier = StaticKeyTokenVerifier([key.public_key()], audience="ota", algorithms=("ES256",))
+    replay = JtiReplayCache()
+    token = ServiceTokenMinter(key, "registry").mint("ota")
+    auth = {"Authorization": f"Bearer {token}"}
+    caller = await authenticate_service(_request(auth), verifier, ["registry"], None, replay)
+    assert caller.name == "registry"
+    with pytest.raises(Problem) as info:
+        await authenticate_service(_request(auth), verifier, ["registry"], None, replay)
+    assert info.value.status == 401 and "already used" in str(info.value.detail)
+    now = int(time.time())
+    for claims in (
+        {"sub": "registry", "aud": "ota", "iat": now, "exp": now + 60},
+        {"sub": "registry", "aud": "ota", "iat": now, "exp": now + 60, "jti": ""},
+        {"sub": "registry", "aud": "ota", "iat": now, "exp": now + 60, "jti": "j" * 129},
+        {"sub": "registry", "aud": "ota", "iat": now, "exp": now + 301, "jti": "long"},
+    ):
+        bad = jwt.encode(claims, key, algorithm="ES256")
+        with pytest.raises(Problem) as info:
+            await authenticate_service(
+                _request({"Authorization": f"Bearer {bad}"}), verifier, ["registry"], None, replay
+            )
+        assert info.value.status == 401
+    # Without a replay cache (OTA_SERVICE_JWT_SINGLE_USE=false) a token may be reused.
+    for _ in range(2):
+        await authenticate_service(_request(auth), verifier, ["registry"])
+
+
+def test_jti_replay_cache_bounds() -> None:
+    cache = JtiReplayCache(max_entries=2)
+    assert cache.use("a", 100, now=0) and not cache.use("a", 100, now=99)
+    assert cache.use("a", 300, now=100)  # forgotten after exp + leeway
+    assert cache.use("b", 150, now=100) and len(cache) == 2
+    assert cache.use("c", 400, now=200) and len(cache) == 2  # expired "b" dropped first
+    assert cache.use("d", 400, now=200) and len(cache) == 2  # then the oldest ("a")
+    assert cache.use("a", 400, now=200)
+    assert JtiReplayCache(0).max_entries == 1
+
+
 def test_service_token_from_file(tmp_path: Path) -> None:
     key = ec.generate_private_key(ec.SECP256R1())
     path = tmp_path / "k.pem"
@@ -481,7 +543,7 @@ def test_service_token_from_file(tmp_path: Path) -> None:
     claims = jwt.decode(
         minter.mint("registry"), key.public_key(), algorithms=["ES256"], audience="registry"
     )
-    assert claims["iss"] == "ota" and claims["exp"] - claims["iat"] == 300
+    assert claims["iss"] == claims["sub"] == "ota" and claims["exp"] - claims["iat"] == 60
     from cryptography.hazmat.primitives.asymmetric import ed25519
 
     ed = tmp_path / "ed.pem"

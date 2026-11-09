@@ -13,7 +13,7 @@ import httpx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 
-from .auth import JwksTokenVerifier, StaticKeyTokenVerifier, TokenVerifier
+from .auth import JtiReplayCache, JwksTokenVerifier, StaticKeyTokenVerifier, TokenVerifier
 from .container import Container
 from .integrations.device_keys import (
     DeviceKeyResolver,
@@ -287,6 +287,9 @@ def build_container(settings: Settings) -> Container:
         service_verifier=service_verifier,
         leader=leader,
         closers=closers,
+        service_replay=JtiReplayCache(settings.service_jwt_replay_cache_size)
+        if settings.service_jwt_single_use
+        else None,
     )
 
 

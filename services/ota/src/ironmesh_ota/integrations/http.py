@@ -1,4 +1,8 @@
-"""Outgoing service-to-service HTTP: ES256 service JWTs (``aud=<service>``, 5 min) over mTLS."""
+"""Outgoing service-to-service HTTP: ES256 service JWTs (``aud=<service>``) over mTLS.
+
+Every request gets a freshly minted token (new random ``jti``, ``iat`` = now, ``exp`` = now +
+60 s): the PKI, policy and registry accept each ``jti`` only once, so tokens are never cached.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from ..settings import Settings
 
-TOKEN_LIFETIME_S = 300
+TOKEN_LIFETIME_S = 60
 
 
 class ServiceTokenMinter:
@@ -26,7 +30,6 @@ class ServiceTokenMinter:
         self._key = key
         self._issuer = issuer
         self._kid = kid
-        self._cache: dict[str, tuple[float, str]] = {}
 
     @classmethod
     def from_file(cls, path: Path, issuer: str) -> ServiceTokenMinter:
@@ -36,14 +39,12 @@ class ServiceTokenMinter:
         return cls(key, issuer)
 
     def mint(self, audience: str, now: float | None = None) -> str:
+        """A fresh single-use token for one request to ``audience`` (never cached)."""
         current = time.time() if now is None else now
-        cached = self._cache.get(audience)
-        if cached is not None and cached[0] - current > 60:
-            return cached[1]
         iat = int(current)
         exp = iat + TOKEN_LIFETIME_S
         headers = {"kid": self._kid} if self._kid else None
-        token = jwt.encode(
+        return jwt.encode(
             {
                 "iss": self._issuer,
                 "sub": self._issuer,
@@ -56,8 +57,6 @@ class ServiceTokenMinter:
             algorithm="ES256",
             headers=headers,
         )
-        self._cache[audience] = (exp, token)
-        return token
 
 
 def build_http_client(settings: Settings, base_url: str) -> httpx.AsyncClient:

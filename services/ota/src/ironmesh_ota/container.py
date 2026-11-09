@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from .auth import TokenVerifier
+from .auth import JtiReplayCache, TokenVerifier
 from .domain import AuditEvent, utcnow
 from .integrations.device_keys import DeviceKeyResolver
 from .integrations.events import BusEvent, EventPublisher
@@ -46,6 +46,8 @@ class Container:
     leader: LeaderLock
     clock: Callable[[], datetime] = utcnow
     closers: list[Callable[[], Any]] = field(default_factory=list)
+    service_replay: JtiReplayCache | None = field(default_factory=JtiReplayCache)
+    """Single-use ``jti`` cache for service JWTs on ``/internal/*`` (None disables it)."""
 
 
 @dataclass

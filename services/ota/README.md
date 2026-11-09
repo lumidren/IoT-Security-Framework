@@ -51,8 +51,13 @@ Extensions beyond the contract, all additive: `Campaign.requires_approval/approv
 Authentication: OIDC access tokens (`aud` contains `ironmesh-api`, claims `sub`, `tenant_id`,
 `role` or `roles`); `platform_admin` (in `platform_roles` or `roles`) may act in another tenant
 via `X-IronMesh-Tenant`, which is flagged as `cross_tenant` in the audit details. Internal
-endpoints accept an ES256 service JWT (`aud=ota`, at most 5 minutes, caller in
-`OTA_INTERNAL_ALLOWED_SERVICES`) or the chart's shared `OTA_INTERNAL_TOKEN`. API keys (`imk_…`)
+endpoints accept an ES256 service JWT (`aud=ota`, `iat`/`exp`/`jti` required, at most 5 minutes,
+caller in `OTA_INTERNAL_ALLOWED_SERVICES`; each `jti` is accepted once per instance while
+`OTA_SERVICE_JWT_SINGLE_USE=true`, the default, remembered until `exp` + 30 s in a bounded cache of
+`OTA_SERVICE_JWT_REPLAY_CACHE_SIZE` ids, default 100000) or the chart's shared
+`OTA_INTERNAL_TOKEN`. Outgoing service JWTs (`iss=sub=ota`, to the registry and the PKI) are
+minted fresh for every request (random `jti`, 60 s lifetime, never cached), because the PKI,
+policy and registry reject a reused `jti`. API keys (`imk_…`)
 are rejected with 401, since only the registry can verify them.
 
 ## Firmware, signing and storage
@@ -187,7 +192,7 @@ Names follow `deploy/helm/ironmesh` (ota block). Empty values mean "default".
 | Database | `OTA_DB_HOST/PORT/NAME/USER/SSLMODE/IAM_AUTH/PASSWORD` or `OTA_DATABASE_URL`; `OTA_DATABASE_BACKEND=memory` for local experiments |
 | Storage | `OTA_ARTIFACT_STORE` (`s3`/`filesystem`), `OTA_ARTIFACT_BUCKET`, `OTA_S3_KMS_KEY_ARN`, `OTA_S3_REGION`, `OTA_S3_OBJECT_LOCK_MODE`, `OTA_ARTIFACT_PATH`, `OTA_DOWNLOAD_HMAC_SECRET`, `OTA_DOWNLOAD_URL_TTL_S` |
 | Signing | `OTA_SIGNING_PROVIDER` (`kms-wrapped`/`file`), `OTA_SIGNING_KEK_KEY_ID`, `OTA_SIGNING_KEY_SECRET_ARN`, `OTA_SIGNING_KEY_ID`, `OTA_PQ_SIGNING_ENABLED`, `OTA_REQUIRE_PQ`, `OTA_SIGNING_PRIVATE_KEY_PEM`, `OTA_SIGNING_KEY_FILE`, `OTA_SIGNING_KEYRING_FILE`, `OTA_SIGNING_PASSPHRASE` |
-| Auth | `OTA_OIDC_ISSUER`, `OTA_OIDC_AUDIENCE`, `OTA_OIDC_JWKS_URL`, `OTA_INTERNAL_TOKEN` (accepted on `/internal/*`; also the PKI bearer when no service-JWT key is set), `OTA_SERVICE_PUBLIC_KEYS_DIR`, `OTA_SERVICE_TOKEN_KEY_FILE` (ES256 service JWTs, `iss=sub=ota`), `OTA_INTERNAL_ALLOWED_SERVICES` |
+| Auth | `OTA_OIDC_ISSUER`, `OTA_OIDC_AUDIENCE`, `OTA_OIDC_JWKS_URL`, `OTA_INTERNAL_TOKEN` (accepted on `/internal/*`; also the PKI bearer when no service-JWT key is set), `OTA_SERVICE_PUBLIC_KEYS_DIR`, `OTA_SERVICE_TOKEN_KEY_FILE` (ES256 service JWTs, `iss=sub=ota`, one per request), `OTA_INTERNAL_ALLOWED_SERVICES`, `OTA_SERVICE_JWT_SINGLE_USE` (default `true`), `OTA_SERVICE_JWT_REPLAY_CACHE_SIZE` (default `100000`) |
 | Peers | `OTA_REGISTRY_URL` + `OTA_REGISTRY_TOKEN` (secret: the `ota` entry of the registry's `REGISTRY_INTERNAL_TOKENS`; without it a service JWT `aud=registry` is used), `OTA_PKI_URL` (device keys and the firmware-key policy push), `OTA_EMQX_API_URL`, `OTA_EMQX_API_KEY`, `OTA_EMQX_API_SECRET` (or `OTA_MQTT_HOST` for a direct MQTT 5 client; retained-notify clears only), `OTA_TLS_CERT_FILE/KEY_FILE/CA_FILE` |
 | Kafka | `OTA_KAFKA_BROKERS`, `OTA_KAFKA_TOPIC_INGEST/AUDIT/CAMPAIGNS/COMMANDS`, `OTA_KAFKA_CONSUMER_GROUP`, `OTA_KAFKA_TLS_ENABLED` |
 | Controller | `OTA_CONTROLLER_ENABLED`, `OTA_CONTROLLER_INTERVAL_S`, `OTA_DEVICE_TIMEOUT_S`, `OTA_NOTIFY_RETRY_S` (default 60: re-send notifies the registry did not accept), `OTA_HALT_MIN_SAMPLE`, `OTA_FOUR_EYES_MIN_DWELL_S`, `OTA_LEADER_LOCK_KEY` |

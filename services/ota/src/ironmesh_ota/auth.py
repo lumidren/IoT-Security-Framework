@@ -4,13 +4,16 @@
   ``aud`` containing ``ironmesh-api``. Tenant from the ``tenant_id`` claim, role from ``role`` (or
   the highest of ``roles``). ``platform_admin`` (in ``platform_roles`` or ``roles``) may act in
   another tenant via ``X-IronMesh-Tenant``; that is flagged on the principal and audited.
-* Internal API: ES256 service JWTs (``aud=ota``, at most 5 minutes) from an allow-listed caller.
+* Internal API: ES256 service JWTs (``aud=ota``, ``iat``/``exp``/``jti``, at most 5 minutes,
+  each ``jti`` single use per instance) from an allow-listed caller.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hmac
+import threading
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -197,13 +200,51 @@ async def authenticate(request: Request, verifier: TokenVerifier) -> Principal:
     )
 
 
+class JtiReplayCache:
+    """Bounded in-memory set of used service-JWT ids (single use per instance).
+
+    An id is remembered until its token's ``exp`` plus the verification leeway (afterwards the
+    token is rejected as expired anyway). When full, expired ids are dropped first, then the
+    oldest.
+    """
+
+    def __init__(self, max_entries: int = 100_000) -> None:
+        self.max_entries = max(1, max_entries)
+        self._seen: dict[str, float] = {}  # key -> forget-after (unix time), insertion ordered
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._seen)
+
+    def use(self, key: str, forget_after: float, now: float | None = None) -> bool:
+        """Record ``key``; ``False`` when it was already used and has not expired."""
+        current = time.time() if now is None else now
+        with self._lock:
+            seen = self._seen.get(key)
+            if seen is not None and seen > current:
+                return False
+            self._seen.pop(key, None)
+            if len(self._seen) >= self.max_entries:
+                for k in [k for k, exp in self._seen.items() if exp <= current]:
+                    del self._seen[k]
+                while len(self._seen) >= self.max_entries:
+                    del self._seen[next(iter(self._seen))]
+            self._seen[key] = forget_after
+            return True
+
+
 async def authenticate_service(
     request: Request,
     verifier: TokenVerifier | None,
     allowed: Iterable[str],
     static_token: str | None = None,
+    replay: JtiReplayCache | None = None,
 ) -> ServicePrincipal:
-    """ES256 service JWT (preferred) or the shared ``OTA_INTERNAL_TOKEN`` bearer."""
+    """ES256 service JWT (preferred) or the shared ``OTA_INTERNAL_TOKEN`` bearer.
+
+    Service JWTs must carry integer ``iat``/``exp`` at most 5 minutes apart and a ``jti``; with
+    ``replay`` every ``jti`` (per issuer) is accepted once on this instance.
+    """
     token = _bearer(request)
     if static_token and hmac.compare_digest(token.encode(), static_token.encode()):
         ip, request_id = _request_meta(request)
@@ -222,6 +263,12 @@ async def authenticate_service(
         or (exp - iat > MAX_SERVICE_TOKEN_LIFETIME_S)
     ):
         raise Problem(401, "service tokens must live at most 5 minutes")
+    jti = claims.get("jti")
+    if not isinstance(jti, str) or not jti or len(jti) > 128:
+        raise Problem(401, "service tokens must carry a jti")
+    issuer = claims.get("iss") or claims.get("sub")
+    if replay is not None and not replay.use(f"{issuer}\x00{jti}", exp + LEEWAY_S):
+        raise Problem(401, "service token already used (jti replay)")
     name = claims.get("sub") or claims.get("iss")
     if not isinstance(name, str) or name not in set(allowed):
         raise Problem(403, "calling service is not allowed on this endpoint")

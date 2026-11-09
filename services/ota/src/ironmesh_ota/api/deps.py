@@ -40,7 +40,11 @@ async def internal_caller(request: Request) -> ServicePrincipal:
     c = container_of(request)
     token = c.settings.internal_token.get_secret_value() if c.settings.internal_token else None
     return await authenticate_service(
-        request, c.service_verifier, c.settings.internal_allowed_services, token
+        request,
+        c.service_verifier,
+        c.settings.internal_allowed_services,
+        token,
+        c.service_replay,
     )
 
 

@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     service_public_keys_dir: Path | None = None
     """ES256 service-JWT verification keys ``<service>.pem`` (``aud=ota``)."""
     service_audience: str = "ota"
+    service_jwt_single_use: bool = True
+    """Accept each service-JWT ``jti`` (per issuer) once per instance; a replay gets 401."""
+    service_jwt_replay_cache_size: int = Field(default=100_000, ge=1000)
     internal_allowed_services: tuple[str, ...] = ("registry", "anomaly", "bridge")
     service_token_key_file: Path | None = None
     service_token_issuer: str = "ota"  # noqa: S105 - a name
