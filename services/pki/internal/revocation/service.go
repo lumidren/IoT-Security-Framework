@@ -93,6 +93,20 @@ type Result struct {
 // after retries is reported in the Result (Published=false), not as an error,
 // because the revocation itself is durable and visible via CRL/OCSP.
 func (s *Service) Revoke(ctx context.Context, serial, reason, revokedBy string) (*Result, error) {
+	return s.revoke(ctx, serial, reason, revokedBy, true)
+}
+
+// RevokeUndelivered revokes a certificate that was issued but never handed
+// to the device (enrollment rolled back). It writes the revocation,
+// regenerates the CRL and invalidates OCSP like Revoke, but does not push an
+// event to the Policy service: no session can exist on that certificate, and
+// the push deny-lists the whole device, which would lock out its other,
+// still valid certificates.
+func (s *Service) RevokeUndelivered(ctx context.Context, serial, reason, revokedBy string) (*Result, error) {
+	return s.revoke(ctx, serial, reason, revokedBy, false)
+}
+
+func (s *Service) revoke(ctx context.Context, serial, reason, revokedBy string, publish bool) (*Result, error) {
 	start := s.opts.Clock()
 	_, canonical, err := ca.ParseSerial(serial)
 	if err != nil {
@@ -132,6 +146,10 @@ func (s *Service) Revoke(ctx context.Context, serial, reason, revokedBy string) 
 	}
 
 	res := &Result{Serial: canonical, DeviceID: rec.DeviceID, TenantID: rec.TenantID, Reason: reasonCode, ReasonName: ca.ReasonString(reasonCode), RevokedAt: now, EventID: eventID}
+	if !publish {
+		log.Info("revocation not published: certificate was never delivered")
+		return res, nil
+	}
 	ev := Event{EventID: eventID, Serial: canonical, DeviceID: rec.DeviceID, TenantID: rec.TenantID, Reason: ca.ReasonString(reasonCode), RevokedAt: now}
 	pubStart := s.opts.Clock()
 	pubErr := s.opts.Publisher.Publish(ctx, ev)

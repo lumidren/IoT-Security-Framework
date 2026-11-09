@@ -45,6 +45,10 @@ type ServerOptions struct {
 	RateLimit *est.RateLimitConfig
 	// SupersedeGrace overrides the revocation delay of superseded certificates.
 	SupersedeGrace time.Duration
+	// RegistryRetries / RegistryBackoff tune the enrolled callback retries
+	// (default backoff 1 ms so failure tests stay fast).
+	RegistryRetries int
+	RegistryBackoff time.Duration
 }
 
 // Server is a running test PKI service.
@@ -96,11 +100,16 @@ func (p *PKI) StartServer(t testing.TB, opts ServerOptions) *Server {
 	if opts.RateLimit != nil {
 		rateLimit = *opts.RateLimit
 	}
+	registryBackoff := opts.RegistryBackoff
+	if registryBackoff == 0 {
+		registryBackoff = time.Millisecond
+	}
 	if s.EST, err = est.NewHandler(est.Config{
 		DeviceCA: p.Device, FactoryCA: p.Factory.Certificate(), CACerts: p.CAChain(),
 		Store: p.Store, Registry: p.Registry, Bundler: p.Bundler, Metrics: p.Metrics, Clock: p.Clock, Logger: p.Logger,
 		NonceTTL: opts.NonceTTL, DefaultAllowSoftwareKeys: opts.DefaultAllowSoftwareKeys, DefaultPCRDigests: opts.DefaultPCRDigests,
-		Revoker: s.Revoke, SupersedeGrace: opts.SupersedeGrace, RateLimit: rateLimit,
+		Revoker: s.Revoke, SupersedeGrace: opts.SupersedeGrace, RateLimit: rateLimit, Rollback: s.Revoke,
+		RegistryRetries: opts.RegistryRetries, RegistryBackoff: registryBackoff,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +124,7 @@ func (p *PKI) StartServer(t testing.TB, opts ServerOptions) *Server {
 		}
 	}
 	auth := mgmt.NewAuthenticator(p.Services.Certificate(), allowed, jwtKeys, p.Clock)
-	if s.Mgmt, err = mgmt.NewHandler(mgmt.Config{Auth: auth, Revoker: s.Revoke, Store: p.Store, Chain: p.CAChain(), Metrics: p.Metrics, Clock: p.Clock}); err != nil {
+	if s.Mgmt, err = mgmt.NewHandler(mgmt.Config{Auth: auth, Revoker: s.Revoke, Store: p.Store, Chain: p.CAChain(), Metrics: p.Metrics, Clock: p.Clock, DefaultAllowSoftwareKeys: opts.DefaultAllowSoftwareKeys}); err != nil {
 		t.Fatal(err)
 	}
 

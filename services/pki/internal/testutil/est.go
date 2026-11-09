@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/veraison/go-cose"
@@ -85,8 +86,15 @@ type AttestationOptions struct {
 	KID []byte
 	// Alg overrides the COSE algorithm (default ES256).
 	Alg cose.Algorithm
-	// Extra adds unknown payload keys (schema violation tests).
+	// Extra adds unknown body keys (schema violation tests).
 	Extra map[int]any
+	// Seq, Ts and Type set the envelope fields {1: seq, 2: ts, 3: type}
+	// (defaults 1, the real current time, 10). Envelope replaces the whole
+	// envelope map (key 4 is filled with the body unless already present).
+	Seq      uint64
+	Ts       int64
+	Type     int
+	Envelope map[int]any
 }
 
 // BuildAttestation returns the base64 header value for the attestation.
@@ -115,11 +123,28 @@ func BuildAttestationRaw(t testing.TB, opts AttestationOptions) []byte {
 	if seType == "" {
 		seType = attest.SeTypeATECC608
 	}
-	payload := map[int]any{1: opts.Nonce, 2: csrHash, 3: fwHash, 4: fwVersion, 5: seType, 6: opts.Evidence}
+	body := map[int]any{1: opts.Nonce, 2: csrHash, 3: fwHash, 4: fwVersion, 5: seType, 6: opts.Evidence}
 	for k, v := range opts.Extra {
-		payload[k] = v
+		body[k] = v
 	}
-	encoded, err := attest.EncMode().Marshal(payload)
+	seq, ts, typ := opts.Seq, opts.Ts, opts.Type
+	if seq == 0 {
+		seq = 1
+	}
+	if ts == 0 {
+		ts = time.Now().Unix()
+	}
+	if typ == 0 {
+		typ = attest.MessageTypeAttestation
+	}
+	env := map[int]any{1: seq, 2: ts, 3: typ, 4: body}
+	if opts.Envelope != nil {
+		env = opts.Envelope
+		if _, ok := env[4]; !ok {
+			env[4] = body
+		}
+	}
+	encoded, err := attest.EncMode().Marshal(env)
 	if err != nil {
 		t.Fatal(err)
 	}

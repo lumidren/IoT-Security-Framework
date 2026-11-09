@@ -272,3 +272,35 @@ func TestHTTPPublisher(t *testing.T) {
 		}
 	})
 }
+
+func TestRevokeUndeliveredSkipsPublish(t *testing.T) {
+	t.Parallel()
+	p := testutil.New(t)
+	policy := testutil.NewFakePolicy(t, 0)
+	pub, err := revocation.NewHTTPPublisher(policy.URL, policy.Token, policy.HMACKey, policy.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	crl := &fakeCRL{}
+	ocspInv := &fakeOCSP{}
+	svc, _ := revocation.NewService(p.Store, revocation.Options{CRL: crl, OCSP: ocspInv, Publisher: pub, Metrics: p.Metrics, Clock: p.Clock, Logger: p.Logger})
+	dev := p.NewOperationalDevice(t, testutil.Tenant)
+	serial := ca.FormatSerial(dev.Cert.SerialNumber)
+	res, err := svc.RevokeUndelivered(context.Background(), serial, "cessationOfOperation", "pki:enroll-rollback")
+	if err != nil {
+		t.Fatalf("RevokeUndelivered: %v", err)
+	}
+	if res.Published || res.Reason != ca.ReasonCessationOfOperation || res.Serial != serial {
+		t.Fatalf("result %+v", res)
+	}
+	if policy.Requests() != 0 {
+		t.Fatalf("policy received %d requests, want none", policy.Requests())
+	}
+	if crl.calls.Load() != 1 || len(ocspInv.serials) != 1 {
+		t.Fatalf("hooks: crl=%d ocsp=%v", crl.calls.Load(), ocspInv.serials)
+	}
+	rev, err := p.Store.GetRevocation(context.Background(), serial)
+	if err != nil || rev.Reason != ca.ReasonCessationOfOperation || rev.RevokedBy != "pki:enroll-rollback" {
+		t.Fatalf("stored revocation %+v %v", rev, err)
+	}
+}

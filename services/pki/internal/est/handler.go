@@ -57,6 +57,16 @@ const (
 	// DefaultSupersedeGrace is how long a superseded operational certificate
 	// stays valid after a successful renewal.
 	DefaultSupersedeGrace = time.Hour
+	// DefaultRegistryRetries / DefaultRegistryBackoff bound the synchronous
+	// enrolled callback to the Registry (API_CONTRACT §5).
+	DefaultRegistryRetries = 3
+	DefaultRegistryBackoff = 500 * time.Millisecond
+	// DefaultEnrollRetryAfter is the Retry-After of a 503 caused by a failed
+	// enrolled callback.
+	DefaultEnrollRetryAfter = 30 * time.Second
+	// RollbackRevokedBy is recorded as the revoker of a certificate revoked
+	// because the Registry could not record its enrollment.
+	RollbackRevokedBy = "pki:enroll-rollback"
 
 	maxBodySize = 64 << 10
 )
@@ -64,6 +74,14 @@ const (
 // Revoker revokes certificates; *revocation.Service satisfies it.
 type Revoker interface {
 	Revoke(ctx context.Context, serial, reason, revokedBy string) (*revocation.Result, error)
+}
+
+// RollbackRevoker revokes a certificate that was issued but never delivered
+// to the device; *revocation.Service satisfies it (RevokeUndelivered writes
+// the revocation, regenerates the CRL and invalidates OCSP without pushing a
+// device deny-list event to the Policy service).
+type RollbackRevoker interface {
+	RevokeUndelivered(ctx context.Context, serial, reason, revokedBy string) (*revocation.Result, error)
 }
 
 // Config wires the EST handler.
@@ -88,8 +106,21 @@ type Config struct {
 	// SupersedeGrace on successful re-enrollment.
 	Revoker        Revoker
 	SupersedeGrace time.Duration
+	// Rollback revokes (reason cessationOfOperation) a just-issued
+	// certificate when the Registry cannot record the enrollment. When nil
+	// the revocation is written to the store directly (CRL and OCSP pick it
+	// up on their next refresh).
+	Rollback RollbackRevoker
 	// RateLimit bounds nonce and enrollment requests per device and per IP.
 	RateLimit RateLimitConfig
+	// RegistryRetries is how many times the enrolled callback to the Registry
+	// is retried after the first attempt (0 = DefaultRegistryRetries,
+	// negative = no retries). RegistryBackoff is the pause between attempts.
+	RegistryRetries int
+	RegistryBackoff time.Duration
+	// EnrollRetryAfter is the Retry-After sent with the 503 returned when the
+	// Registry cannot record an enrollment (default DefaultEnrollRetryAfter).
+	EnrollRetryAfter time.Duration
 }
 
 // Handler serves the EST endpoints.
@@ -127,6 +158,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	if cfg.SupersedeGrace <= 0 {
 		cfg.SupersedeGrace = DefaultSupersedeGrace
 	}
+	cfg = cfg.withRegistryDefaults()
 	if len(cfg.CACerts) == 0 {
 		cfg.CACerts = append([]*x509.Certificate{cfg.FactoryCA}, cfg.DeviceCA.Chain()...)
 	}
@@ -168,6 +200,9 @@ func (h *Handler) fail(w http.ResponseWriter, r *http.Request, op string, e *htt
 		l.Warn("est request rejected", attrs...)
 	}
 	h.count(op, e.status)
+	if e.retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int((e.retryAfter+time.Second-1)/time.Second)))
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	http.Error(w, e.msg, e.status)
@@ -328,6 +363,10 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request, reenroll bool) 
 		h.failAttestation(w, r, op, err, attrs)
 		return
 	}
+	if err := st.VerifyTimestamp(now); err != nil {
+		h.failAttestation(w, r, op, err, attrs)
+		return
+	}
 	if err := st.VerifyKeyID(client.Cert.SerialNumber.Bytes()); err != nil {
 		h.failAttestation(w, r, op, err, attrs)
 		return
@@ -390,30 +429,47 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request, reenroll bool) 
 		return
 	}
 
-	// 6. Issue, record, bundle, supersede.
+	// 6. Issue, record, bundle, report to the Registry, supersede.
 	cert, err := h.cfg.DeviceCA.IssueOperational(ca.DeviceRequest{TenantID: tenantID, DeviceID: deviceID, PublicKey: csrPub, Assurance: result.Assurance})
 	if err != nil {
 		h.fail(w, r, op, errInternal("certificate issuance failed", err), attrs...)
 		return
 	}
-	if err := h.cfg.Store.PutCertificate(ctx, ca.NewRecord(cert, store.KindOperational, result.Assurance, now)); err != nil {
+	rec := ca.NewRecord(cert, store.KindOperational, result.Assurance, now)
+	if err := h.cfg.Store.PutCertificate(ctx, rec); err != nil {
 		h.fail(w, r, op, errUnavailable("cannot record certificate", err), attrs...)
 		return
 	}
-	if err := h.cfg.Registry.RecordAssurance(ctx, tenantID, deviceID, result.Assurance); err != nil {
-		logging.FromContext(ctx).Error("recording assurance level in registry failed", append(attrs, "error", err.Error())...)
-	}
+	newSerial := ca.FormatSerial(cert.SerialNumber)
 	bundleHdr, err := h.cfg.Bundler.BuildHeader(tenantPolicy)
 	if err != nil {
+		h.rollback(ctx, rec, attrs)
 		h.fail(w, r, op, errInternal("cannot build trust bundle", err), attrs...)
 		return
 	}
 	der, err := EncodeCertsOnly([]*x509.Certificate{cert})
 	if err != nil {
+		h.rollback(ctx, rec, attrs)
 		h.fail(w, r, op, errInternal("cannot encode certificate", err), attrs...)
 		return
 	}
-	newSerial := ca.FormatSerial(cert.SerialNumber)
+	enrollment := registry.Enrollment{
+		SerialHex: newSerial, NotBefore: cert.NotBefore.UTC(), NotAfter: cert.NotAfter.UTC(),
+		SeType: result.SeType, AssuranceLevel: result.Assurance, FwVersion: result.FwVersion,
+	}
+	if len(result.FwHash) > 0 {
+		enrollment.FwHashHex = hex.EncodeToString(result.FwHash)
+	}
+	if err := h.recordEnrollment(ctx, tenantID, deviceID, enrollment); err != nil {
+		h.rollback(ctx, rec, attrs)
+		e := errUnavailable("the registry could not record the enrollment; the certificate was revoked, retry later", err)
+		e.retryAfter = h.cfg.EnrollRetryAfter
+		h.fail(w, r, op, e, append(attrs, "serial", newSerial)...)
+		return
+	}
+	if err := h.cfg.Registry.RecordAssurance(ctx, tenantID, deviceID, result.Assurance); err != nil {
+		logging.FromContext(ctx).Error("recording assurance level in registry failed", append(attrs, "error", err.Error())...)
+	}
 	if reenroll {
 		if due, ok := h.supersedePrevious(client, newSerial); ok {
 			w.Header().Set(HeaderSupersedes, due.Format(time.RFC3339))
@@ -427,6 +483,74 @@ func (h *Handler) enroll(w http.ResponseWriter, r *http.Request, reenroll bool) 
 	w.Header().Set(HeaderBundle, bundleHdr)
 	w.Header().Set("Cache-Control", "no-store")
 	writeBase64(w, ContentTypePKCS7, der)
+}
+
+func (c Config) withRegistryDefaults() Config {
+	switch {
+	case c.RegistryRetries == 0:
+		c.RegistryRetries = DefaultRegistryRetries
+	case c.RegistryRetries < 0:
+		c.RegistryRetries = 0
+	}
+	if c.RegistryBackoff <= 0 {
+		c.RegistryBackoff = DefaultRegistryBackoff
+	}
+	if c.EnrollRetryAfter <= 0 {
+		c.EnrollRetryAfter = DefaultEnrollRetryAfter
+	}
+	return c
+}
+
+// recordEnrollment calls the Registry's enrolled callback, retrying
+// transient failures RegistryRetries times with RegistryBackoff between
+// attempts. ErrNotFound and ErrRejected are not retried.
+func (h *Handler) recordEnrollment(ctx context.Context, tenantID, deviceID string, e registry.Enrollment) error {
+	var err error
+	for attempt := 0; attempt <= h.cfg.RegistryRetries; attempt++ {
+		if attempt > 0 {
+			t := time.NewTimer(h.cfg.RegistryBackoff)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return errors.Join(err, ctx.Err())
+			case <-t.C:
+			}
+		}
+		if err = h.cfg.Registry.RecordEnrollment(ctx, tenantID, deviceID, e); err == nil {
+			return nil
+		}
+		logging.FromContext(ctx).Warn("registry enrolled callback failed", "device_id", deviceID, "tenant_id", tenantID,
+			"serial", e.SerialHex, "attempt", attempt+1, "error", err.Error())
+		if errors.Is(err, registry.ErrNotFound) || errors.Is(err, registry.ErrRejected) {
+			return err
+		}
+	}
+	return err
+}
+
+// rollback revokes a certificate that was recorded but will not be
+// delivered, so a device is never active in the PKI while unknown to (or
+// not activated by) the Registry. It runs detached from the request context
+// so a client disconnect cannot leave the certificate valid.
+func (h *Handler) rollback(ctx context.Context, rec *store.CertificateRecord, attrs []any) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	log := logging.FromContext(ctx)
+	const reason = "cessationOfOperation"
+	var err error
+	if h.cfg.Rollback != nil {
+		_, err = h.cfg.Rollback.RevokeUndelivered(ctx, rec.Serial, reason, RollbackRevokedBy)
+	} else {
+		err = h.cfg.Store.AddRevocation(ctx, &store.Revocation{
+			Serial: rec.Serial, DeviceID: rec.DeviceID, TenantID: rec.TenantID, IssuerCN: rec.IssuerCN, NotAfter: rec.NotAfter,
+			Reason: ca.ReasonCessationOfOperation, RevokedAt: h.now(), RevokedBy: RollbackRevokedBy,
+		})
+	}
+	if err != nil && !errors.Is(err, store.ErrAlreadyRevoked) {
+		log.Error("revocation of undelivered certificate failed", append(attrs, "serial", rec.Serial, "error", err.Error())...)
+		return
+	}
+	log.Warn("undelivered certificate revoked", append(attrs, "serial", rec.Serial, "reason", reason)...)
 }
 
 // supersedePrevious schedules revocation (reason superseded) of the

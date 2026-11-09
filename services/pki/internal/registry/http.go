@@ -16,6 +16,7 @@ import (
 //
 //	GET  {base}/internal/v1/tenants/{tenant}/devices/{device}            -> Device JSON
 //	POST {base}/internal/v1/tenants/{tenant}/devices/{device}/assurance  {"assurance_level": "..."}
+//	POST {base}/internal/v1/devices/{device}/enrolled                    Enrollment JSON
 //
 // Requests carry "Authorization: Bearer <token>"; the HTTP client should be
 // configured with the Services CA client certificate for mTLS (§7).
@@ -100,4 +101,41 @@ func (c *HTTPClient) RecordAssurance(ctx context.Context, tenantID, deviceID, as
 		return fmt.Errorf("registry: unexpected status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// RecordEnrollment implements Client:
+//
+//	POST {base}/internal/v1/devices/{device}/enrolled  Enrollment JSON
+//
+// 404 maps to ErrNotFound; other 4xx responses except 408 and 429 map to
+// ErrRejected (retrying cannot help); everything else is a transient error.
+func (c *HTTPClient) RecordEnrollment(ctx context.Context, _, deviceID string, e Enrollment) error {
+	e.NotBefore, e.NotAfter = e.NotBefore.UTC(), e.NotAfter.UTC()
+	payload, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	u := fmt.Sprintf("%s/internal/v1/devices/%s/enrolled", c.BaseURL, url.PathEscape(deviceID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(req)
+	if err != nil {
+		return fmt.Errorf("registry: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode <= 299:
+		return nil
+	case resp.StatusCode == http.StatusNotFound:
+		return ErrNotFound
+	case resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests:
+		return fmt.Errorf("registry: enrolled callback returned %d", resp.StatusCode)
+	case resp.StatusCode >= 400 && resp.StatusCode <= 499:
+		return fmt.Errorf("%w: enrolled callback returned %d", ErrRejected, resp.StatusCode)
+	}
+	return fmt.Errorf("registry: enrolled callback returned %d", resp.StatusCode)
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // httpError is an RFC 7030 style error response: an HTTP status with a
@@ -13,6 +14,8 @@ type httpError struct {
 	status int
 	msg    string
 	cause  error
+	// retryAfter, when positive, is sent as Retry-After (seconds).
+	retryAfter time.Duration
 }
 
 func (e *httpError) Error() string {
