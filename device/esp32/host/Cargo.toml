@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["core-tests", "dut-shim"]
+exclude = ["fuzz"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[profile.dev]
+# The C core is compiled with debug info and /RTC-free optimisation-off flags by build.rs.
+opt-level = 1

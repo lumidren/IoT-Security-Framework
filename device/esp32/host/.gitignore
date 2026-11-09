@@ -1,0 +1,8 @@
+target/
+fuzz/target/
+fuzz/target-msvc/
+fuzz/work/
+fuzz/logs/
+fuzz/artifacts/
+fuzz/coverage/
+*.pdb

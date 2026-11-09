@@ -1,0 +1,33 @@
+[package]
+name = "im-core-tests"
+version = "0.1.0"
+description = "Host build of the IronMesh ESP32 protocol core (components/im_core) with a Rust crypto provider, plus the conformance-vector and unit tests"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+links = "im_core"
+
+[lib]
+name = "im_host"
+path = "src/lib.rs"
+
+[features]
+# Compile the C core with ASan + SanitizerCoverage for cargo-fuzz (see host/fuzz).
+fuzz = []
+
+[dependencies]
+p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+hkdf = "0.12"
+aes-gcm = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+ml-dsa = "0.1"
+
+[dev-dependencies]
+serde_json = "1"
+hex = "0.4"
+
+[build-dependencies]
+cc = "1"
