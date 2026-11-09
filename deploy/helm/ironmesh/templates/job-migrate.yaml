@@ -3,10 +3,12 @@ Schema migrations as the schema owner, before the service pods of an upgrade rol
 and right after a first install (post-install; the service pods retry until the schema exists).
 
   registry  alembic -c /srv/alembic.ini upgrade head   REGISTRY_MIGRATION_DATABASE_URL
+            (every revision, 0002_downlink_sequences included)
   ota       python -m ironmesh_ota.migrate             OTA_MIGRATION_DATABASE_URL
 
 Both DSNs are read from the service Secret (services.<name>.secretKeys). anomaly applies its
-schema at start (ANOMALY_DATABASE_MIGRATE_URL) and pki migrates itself with PKI_DATABASE_URL.
+schema at start (ANOMALY_DATABASE_MIGRATE_URL) and pki applies its embedded migrations at start
+with PKI_MIGRATION_DATABASE_URL (owner), then runs as pki_app (PKI_DATABASE_URL).
 */}}
 {{- if .Values.migrations.enabled }}
 {{- $jobs := dict "registry" (list "alembic" "-c" "/srv/alembic.ini" "upgrade" "head") "ota" (list "python" "-m" "ironmesh_ota.migrate") }}

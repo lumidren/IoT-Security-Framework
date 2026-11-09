@@ -18,9 +18,11 @@ data:
     #!/usr/bin/env bash
     # Creates the four IronMesh databases and the per-service roles (idempotent).
     #   <db>_owner  LOGIN  owns the schema, runs migrations
-    #   <db>_app    LOGIN  runtime role; never owns tables so row-level security applies.
-    #               Table grants come from each service's migration (append-only tables such as
-    #               audit_events / firmware stay INSERT+SELECT), so no default privileges here.
+    #   <db>_app    LOGIN NOBYPASSRLS  runtime role (registry_app, ota_app, anomaly_app and
+    #               pki_app, the PKI_DATABASE_URL user); never owns tables so row-level security
+    #               applies. Table grants come from each service's migration (append-only tables
+    #               such as audit_events / firmware / certificates stay INSERT+SELECT; pki:
+    #               0002_force_rls_app_role.sql), so no default privileges here.
     #   ironmesh_backup   LOGIN  read-only (pg_read_all_data) for scripts/backup/pg_backup.sh
     # With DB_IAM_AUTH=true every role is granted rds_iam and no password is set.
     set -euo pipefail
@@ -42,8 +44,16 @@ data:
     ensure_role() {
       local role="$1" login="$2"
       psql_admin -d postgres -v role="${role}" -v login="${login}" <<'SQL'
-    SELECT format('CREATE ROLE %I %s', :'role', CASE WHEN :'login' = 'true' THEN 'LOGIN' ELSE 'NOLOGIN' END)
+    SELECT format('CREATE ROLE %I %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', :'role', CASE WHEN :'login' = 'true' THEN 'LOGIN' ELSE 'NOLOGIN' END)
     WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role') \gexec
+    SQL
+    }
+
+    # Runtime roles must never bypass row-level security, even if created elsewhere first.
+    ensure_nobypassrls() {
+      psql_admin -d postgres -v role="$1" <<'SQL'
+    SELECT format('ALTER ROLE %I NOBYPASSRLS', :'role')
+    WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'role' AND rolbypassrls) \gexec
     SQL
     }
 
@@ -69,6 +79,7 @@ data:
 
       ensure_role "${owner}" true
       ensure_role "${app}" true
+      ensure_nobypassrls "${app}"
       set_password "${owner}" "${!owner_pw_var:-}"
       set_password "${app}" "${!app_pw_var:-}"
 

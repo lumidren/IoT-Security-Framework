@@ -131,11 +131,21 @@ kafka:
     audit: im.audit
     commands: im.commands
     campaigns: im.campaigns
-  # No IronMesh service creates topics: create them with these settings out of band
-  # (Terraform for MSK, `rpk topic create` for Redpanda; deploy/docker/docker-compose.yml
-  # redpanda-init shows the list).
+  # The bridge creates im.ingest, im.auth, im.alerts, im.audit, im.commands and im.campaigns
+  # idempotently on boot (BRIDGE_KAFKA_TOPICS_CREATE) with these settings
+  # (BRIDGE_KAFKA_TOPIC_PARTITIONS / BRIDGE_KAFKA_TOPIC_REPLICATION fall back to them); existing
+  # topics are left untouched. On MSK its IRSA role carries kafka-cluster:CreateTopic for them.
   partitions: 12
   replicationFactor: 3
+
+# Identity provider of the console users (Keycloak realm, Cognito, ...). Every empty
+# <SERVICE>_OIDC_ISSUER / _OIDC_AUDIENCE / _OIDC_ROLE_CLAIM (registry, ota, anomaly, policy) and
+# CONSOLE_OIDC_ISSUER / NEXT_PUBLIC_OIDC_ISSUER fall back to these, so an environment sets the
+# issuer once. policy discovers the JWKS from <issuer>/.well-known/openid-configuration.
+oidc:
+  issuer: ""
+  audience: ironmesh-api
+  roleClaim: role
 
 # OpenTelemetry collector reachable from every pod (gRPC 4317). Either the in-namespace
 # collector from deploy/k8s or a cluster-wide one in `namespace`.
@@ -202,18 +212,19 @@ deviceCa:
 #
 # Bundle key custody on AWS: Terraform provisions the Secrets Manager secret
 # <prefix>pki/bundle-signing-key (Ed25519 seed, encrypted under the symmetric CMK bundle_kek,
-# readable only by the pki IRSA role). The pki service can only load the bundle key from
-# PKI_BUNDLE_KEY_FILE today; reading the seed from Secrets Manager at start needs a new pki
-# setting (see the integration report), until then the file in this Secret is authoritative.
+# readable only by the pki IRSA role) and hands its ARN over as PKI_BUNDLE_KEY_SECRET_ARN
+# (terraform output helm_values). With that set the pki service loads the seed at start and
+# ignores PKI_BUNDLE_KEY_FILE, so bundle.key.json is only needed in this Secret without AWS.
 pkiCa:
   existingSecret: ironmesh-pki-ca
   mountPath: /etc/ironmesh/ca
 
-# Schema migrations (post-install / pre-upgrade hook): registry (Alembic,
-# REGISTRY_MIGRATION_DATABASE_URL) and ota (python -m ironmesh_ota.migrate,
-# OTA_MIGRATION_DATABASE_URL), both owner DSNs read from the service Secret. anomaly migrates
-# itself at start when ANOMALY_DATABASE_MIGRATE_URL is in its Secret; pki always migrates itself
-# with PKI_DATABASE_URL.
+# Schema migrations (post-install / pre-upgrade hook): registry (`alembic upgrade head`, every
+# revision incl. 0002_downlink_sequences, REGISTRY_MIGRATION_DATABASE_URL) and ota
+# (python -m ironmesh_ota.migrate, OTA_MIGRATION_DATABASE_URL), both owner DSNs read from the
+# service Secret. anomaly migrates itself at start when ANOMALY_DATABASE_MIGRATE_URL is in its
+# Secret; pki applies its embedded migrations at start with PKI_MIGRATION_DATABASE_URL (owner)
+# and then runs as the non-owner pki_app (PKI_DATABASE_URL).
 migrations:
   enabled: true
   backoffLimit: 3
@@ -223,8 +234,8 @@ migrations:
 writableDirSizeLimit: 512Mi
 
 # One-shot Job (pre-install/pre-upgrade hook) that creates the four databases and the per
-# service roles. Needs the master credentials (RDS-managed secret synced by External Secrets
-# or any Secret with keys username/password).
+# service roles (<db>_owner, <db>_app NOBYPASSRLS incl. pki_app). Needs the master credentials
+# (RDS-managed secret synced by External Secrets or any Secret with keys username/password).
 dbInit:
   enabled: false
   image: postgres:16-alpine
@@ -316,14 +327,17 @@ services:
       data: {}
     # Documented secret keys expected in the Secret (informational, validated in NOTES).
     secretKeys:
-      # pgx DSN of the pki database; the service applies its embedded migrations with it at start.
+      # pgx DSN of the non-owner runtime role pki_app (NOBYPASSRLS; forced RLS applies), e.g.
+      # postgres://pki_app@<host>:5432/pki?sslmode=verify-full (no password with PKI_DB_IAM_AUTH).
       - PKI_DATABASE_URL
+      # Schema-owner DSN (pki_owner) used only to apply the embedded migrations at start.
+      - PKI_MIGRATION_DATABASE_URL
       # Revocation push to the policy service (= POLICY_PKI_TOKEN / POLICY_PKI_HMAC_SECRET).
       - PKI_POLICY_TOKEN
       - PKI_POLICY_HMAC_KEY
-      # This service's entry in REGISTRY_INTERNAL_TOKENS ("pki").
+      # Enrolled callback / lifecycle checks: this service's entry in REGISTRY_INTERNAL_TOKENS ("pki").
       - PKI_REGISTRY_TOKEN
-      # Always required: the bundle key file is encrypted with it even with PKI_KMS=awskms.
+      # PKI_KMS=file, and the bundle key file when PKI_BUNDLE_KEY_SECRET_ARN is unset.
       - PKI_FILE_KMS_PASSPHRASE
       # PKI_KMS=softhsm only.
       - PKI_PKCS11_PIN
@@ -340,8 +354,14 @@ services:
       PKI_KMS: awskms
       # CA certificates (+ bundle key file) mounted from pkiCa.existingSecret.
       PKI_CA_DIR: /etc/ironmesh/ca
-      # Ed25519 bundle key: pkictl key file (file KMS envelope, PKI_FILE_KMS_PASSPHRASE).
+      # Ed25519 bundle key: pkictl key file (file KMS envelope, PKI_FILE_KMS_PASSPHRASE), or the
+      # Secrets Manager seed PKI_BUNDLE_KEY_SECRET_ARN (Terraform output; wins when set).
       PKI_BUNDLE_KEY_FILE: /etc/ironmesh/ca/bundle.key.json
+      PKI_BUNDLE_KEY_SECRET_ARN: ""
+      # RDS IAM authentication for PKI_DATABASE_URL (empty = database.iamAuth) and the token
+      # signing region (empty = aws.region).
+      PKI_DB_IAM_AUTH: ""
+      PKI_DB_IAM_REGION: ""
       # Device / Services CA key references: KMS alias or ARN (awskms), PKCS#11 label (softhsm) or
       # file path (file). Empty = alias/ironmesh-device-ca, alias/ironmesh-services-ca, ...
       PKI_KEY_DEVICE_CA: ""
@@ -349,6 +369,7 @@ services:
       # Base URL embedded in CRL DP / AIA extensions (empty = https://pki.<domain>).
       PKI_PUBLIC_BASE_URL: ""
       PKI_POLICY_URL: http://ironmesh-policy:8081
+      # Lifecycle checks and the synchronous enrolled callback (POST /internal/v1/devices/{id}/enrolled).
       PKI_REGISTRY_URL: http://ironmesh-registry:8000
       PKI_NONCE_TTL: 120s
       # Operational certificate lifetime (DESIGN_CONTRACT.md section 2), bounded 168h-720h.
@@ -357,7 +378,8 @@ services:
       PKI_SERVER_CERT_FILE: /etc/ironmesh/tls/tls.crt
       PKI_SERVER_KEY_FILE: /etc/ironmesh/tls/tls.key
       # Services CA client CNs allowed on the management API (registry revoke-all, anomaly / ota
-      # certificate lookups).
+      # certificate lookups). Tenant-policy writes are authorized by field owner on top of this:
+      # svc-registry pushes the command key + enrollment flag, svc-ota the firmware keys.
       PKI_MGMT_ALLOWED_CNS: svc-registry,svc-policy,svc-console,svc-anomaly,svc-ota
       # PEM file of P-256 keys trusted for ES256 bearer JWTs (aud=pki); empty = mTLS only.
       PKI_MGMT_JWT_PUBLIC_KEY_FILE: ""
@@ -460,6 +482,11 @@ services:
       POLICY_SERVICE_CIDRS: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8
       # Optional required `iss` of management-API JWTs (cmd/policy/main.go).
       POLICY_JWT_ISSUER: ""
+      # Console OIDC access tokens on the management API (empty = oidc.issuer / oidc.audience /
+      # oidc.roleClaim). Without an issuer and POLICY_JWT_PUBLIC_KEY_PEM, /v1/* answers 503.
+      POLICY_OIDC_ISSUER: ""
+      POLICY_OIDC_AUDIENCE: ""
+      POLICY_OIDC_ROLE_CLAIM: ""
     extraEnv: []
     extraVolumes: []
     extraVolumeMounts: []
@@ -520,8 +547,11 @@ services:
       create: false
       data: {}
     secretKeys:
-      # Bearer EMQX presents on POST /emqx/events.
+      # Bearer EMQX presents on POST /emqx/events (also rendered into the EMQX webhook action
+      # header by templates/externalsecret.yaml).
       - BRIDGE_EVENTS_TOKEN
+      # Only with BRIDGE_KAFKA_SASL_MECHANISM=plain / scram-sha-512, add BRIDGE_KAFKA_SASL_USERNAME
+      # and BRIDGE_KAFKA_SASL_PASSWORD to the Secret (aws-msk-iam uses the IRSA role).
     writableDirs:
       - /tmp
     config:
@@ -540,9 +570,18 @@ services:
       BRIDGE_KAFKA_BROKERS: ""
       BRIDGE_KAFKA_INGEST_TOPIC: im.ingest
       BRIDGE_KAFKA_AUTH_TOPIC: im.auth
-      # TLS to Kafka (empty = kafka.tlsEnabled); needs BRIDGE_KAFKA_TLS_CA_FILE when true.
-      BRIDGE_KAFKA_TLS: ""
+      # TLS to Kafka (empty = kafka.tlsEnabled); BRIDGE_KAFKA_TLS_CA_FILE is optional (system
+      # roots, e.g. for Amazon MSK).
+      BRIDGE_KAFKA_TLS_ENABLED: ""
       BRIDGE_KAFKA_TLS_CA_FILE: ""
+      # none | plain | scram-sha-512 | aws-msk-iam (empty = kafka.saslMechanism, normalised:
+      # AWS_MSK_IAM -> aws-msk-iam, SCRAM-SHA-512 -> scram-sha-512).
+      BRIDGE_KAFKA_SASL_MECHANISM: ""
+      # Create the platform topics on boot (empty partitions / replication = kafka.partitions /
+      # kafka.replicationFactor; -1 = broker default replication).
+      BRIDGE_KAFKA_TOPICS_CREATE: "true"
+      BRIDGE_KAFKA_TOPIC_PARTITIONS: ""
+      BRIDGE_KAFKA_TOPIC_REPLICATION: ""
       BRIDGE_MAX_INFLIGHT: "1024"
       BRIDGE_LOG_LEVEL: info
       BRIDGE_SHUTDOWN_TIMEOUT: 15s
@@ -609,7 +648,8 @@ services:
     secretKeys:
       - REGISTRY_DB_PASSWORD
       # JSON {"pki": "<PKI_REGISTRY_TOKEN>", "policy": "<POLICY_REGISTRY_TOKEN>",
-      # "anomaly": "<ANOMALY_INTERNAL_TOKEN>"}; every caller has its own, distinct token.
+      # "anomaly": "<ANOMALY_INTERNAL_TOKEN>", "ota": "<OTA_REGISTRY_TOKEN>"}; every caller has
+      # its own, distinct token.
       - REGISTRY_INTERNAL_TOKENS
       - REGISTRY_EMQX_API_KEY
       - REGISTRY_EMQX_API_SECRET
@@ -639,6 +679,8 @@ services:
       REGISTRY_KAFKA_CONSUMER_GROUP: registry-ingest
       REGISTRY_KAFKA_SASL_MECHANISM: ""
       REGISTRY_KAFKA_TLS_ENABLED: ""
+      # PKI management API over mTLS (svc-registry): the tenant command key and the enrollment
+      # flag are pushed to PUT /v1/tenants/{t}/command-key and /enrollment.
       REGISTRY_PKI_URL: https://ironmesh-pki:8443
       REGISTRY_POLICY_URL: http://ironmesh-policy:8081
       REGISTRY_OTA_URL: http://ironmesh-ota:8001
@@ -657,8 +699,9 @@ services:
       REGISTRY_MQTT_HOST: ironmesh-emqx
       REGISTRY_MQTT_PORT: "8883"
       REGISTRY_MQTT_CLIENT_ID: svc-registry
-      # Tenant key wrapping: aws (KMS) in every real environment; local = KEK file (dev only,
-      # lost with the emptyDir on restart).
+      # Tenant key wrapping (data keys and the tenant command keys, which only the registry holds
+      # and uses to sign every downlink): aws (KMS) in every real environment; local = KEK file
+      # (dev only, lost with the emptyDir on restart).
       REGISTRY_KMS_BACKEND: local
       REGISTRY_KMS_LOCAL_KEK_FILE: /var/lib/ironmesh/registry/registry-kek.bin
       REGISTRY_KMS_AWS_KEY_ID: ""
@@ -727,6 +770,8 @@ services:
     secretKeys:
       - OTA_DB_PASSWORD
       - OTA_INTERNAL_TOKEN
+      # Campaign resolve + OtaNotify downlink requests: the "ota" entry of REGISTRY_INTERNAL_TOKENS.
+      - OTA_REGISTRY_TOKEN
       - OTA_EMQX_API_KEY
       - OTA_EMQX_API_SECRET
       # OTA_SIGNING_PROVIDER=file only (development).
@@ -771,12 +816,11 @@ services:
       OTA_SIGNING_KEY_SECRET_ARN: ""
       OTA_SIGNING_KEY_ID: fw-ed25519-1
       OTA_PQ_SIGNING_ENABLED: "false"
-      # Tenant command keys (OtaNotify signing): kms-wrapped | file (dev only).
-      OTA_TENANT_KEYS_PROVIDER: kms-wrapped
-      OTA_TENANT_KEYS_KEK_KEY_ID: ""
-      OTA_TENANT_KEY_SECRET_PREFIX: ""
       OTA_PUBLIC_BASE_URL: ""
+      # Device keys and the firmware-keys push to the PKI tenant policy (mTLS, svc-ota).
       OTA_PKI_URL: https://ironmesh-pki:8443
+      # Campaign target resolution and OtaNotify downlink requests: the registry signs every
+      # downlink with the tenant command key (OTA holds no tenant key).
       OTA_REGISTRY_URL: http://ironmesh-registry:8000
       OTA_EMQX_API_URL: http://ironmesh-emqx:18083
       OTA_OIDC_ISSUER: ""
@@ -785,6 +829,8 @@ services:
       OTA_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
       OTA_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
       OTA_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      # Re-send OtaNotify requests the registry has not accepted after this many seconds.
+      OTA_NOTIFY_RETRY_S: "60"
       OTA_LOG_LEVEL: info
       OTA_LOG_FORMAT: json
       # OTLP traces (endpoint empty = otelCollector.endpoint).
@@ -1028,8 +1074,10 @@ emqx:
   # The chart's own TLS automation is disabled; certificates are mounted explicitly below.
   ssl:
     enabled: false
-  # Secret produced by templates/externalsecret.yaml (or by hand): EMQX_DASHBOARD__DEFAULT_PASSWORD
-  # and the X-IronMesh-Hook-Token headers.
+  # Secret produced by templates/externalsecret.yaml (or by hand): EMQX_DASHBOARD__DEFAULT_PASSWORD,
+  # the policy X-IronMesh-Hook-Token headers (= POLICY_HOOK_TOKEN) and the webhook action header
+  # EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__HEADERS__X-IRONMESH-HOOK-TOKEN
+  # (= BRIDGE_EVENTS_TOKEN).
   envFromSecret: ironmesh-emqx-env
   emqxConfig:
     EMQX_CLUSTER__DISCOVERY_STRATEGY: dns
@@ -1080,6 +1128,23 @@ emqx:
     EMQX_AUTHORIZATION__SOURCES__1__BODY__RETAIN: "${retain}"
     EMQX_AUTHORIZATION__SOURCES__1__CONNECT_TIMEOUT: 5s
     EMQX_AUTHORIZATION__SOURCES__1__REQUEST_TIMEOUT: 5s
+    # Client lifecycle / authn / authz events -> bridge POST /emqx/events -> im.auth (the
+    # connector + action + rule of services/policy/deploy/emqx/emqx.conf as env overrides; string
+    # values are HOCON-quoted). The action's token header comes from envFromSecret.
+    # VERIFY against the deployed EMQX 5.8.x (`emqx ctl conf show actions`).
+    EMQX_CONNECTORS__HTTP__IRONMESH_BRIDGE__ENABLE: "true"
+    EMQX_CONNECTORS__HTTP__IRONMESH_BRIDGE__URL: '"http://ironmesh-bridge:8082"'
+    EMQX_CONNECTORS__HTTP__IRONMESH_BRIDGE__CONNECT_TIMEOUT: 5s
+    EMQX_CONNECTORS__HTTP__IRONMESH_BRIDGE__POOL_SIZE: "8"
+    EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__ENABLE: "true"
+    EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__CONNECTOR: ironmesh_bridge
+    EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__PATH: '"/emqx/events"'
+    EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__METHOD: post
+    EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__HEADERS__CONTENT-TYPE: '"application/json"'
+    EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__MAX_RETRIES: "3"
+    EMQX_RULE_ENGINE__RULES__IRONMESH_AUTH_EVENTS__ENABLE: "true"
+    EMQX_RULE_ENGINE__RULES__IRONMESH_AUTH_EVENTS__SQL: '"SELECT * FROM \"$events/client_connected\", \"$events/client_disconnected\", \"$events/client_check_authn_complete\", \"$events/client_check_authz_complete\" WHERE event = ''client.connected'' OR event = ''client.disconnected'' OR (event = ''client.check_authn_complete'' AND reason_code != ''success'') OR (event = ''client.check_authz_complete'' AND result = ''deny'')"'
+    EMQX_RULE_ENGINE__RULES__IRONMESH_AUTH_EVENTS__ACTIONS: '["http:ironmesh_auth_events"]'
     # Management API keys for policy (session kicks), registry and ota (publish); file =
     # "key:secret:role" lines (templates/externalsecret.yaml).
     EMQX_API_KEY__BOOTSTRAP_FILE: /etc/ironmesh/emqx-api-keys/api-keys

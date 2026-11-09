@@ -20,20 +20,39 @@ that an environment only has to set them once.
 {{- if not (index $data (printf "%s_DB_SSLMODE" $prefix)) }}{{ $_ := set $data (printf "%s_DB_SSLMODE" $prefix) $.Values.database.sslMode }}{{ end }}
 {{- if not (index $data (printf "%s_DB_IAM_AUTH" $prefix)) }}{{ $_ := set $data (printf "%s_DB_IAM_AUTH" $prefix) (toString $.Values.database.iamAuth) }}{{ end }}
 {{- end }}
-{{- /* Kafka defaults: only for the keys a service actually declares (names differ per service:
-the bridge reads BRIDGE_KAFKA_TLS and has no SASL setting). */}}
+{{- /* Kafka defaults: only for the keys a service actually declares (the bridge also accepts
+BRIDGE_KAFKA_TLS and spells SASL mechanisms differently). */}}
 {{- if hasKey $svc.config (printf "%s_KAFKA_BROKERS" $prefix) }}
 {{- if not (index $data (printf "%s_KAFKA_BROKERS" $prefix)) }}{{ $_ := set $data (printf "%s_KAFKA_BROKERS" $prefix) (include "ironmesh.kafkaBootstrap" $) }}{{ end }}
 {{- $sasl := printf "%s_KAFKA_SASL_MECHANISM" $prefix }}
-{{- if and (hasKey $svc.config $sasl) (not (index $data $sasl)) }}{{ $_ := set $data $sasl $.Values.kafka.saslMechanism }}{{ end }}
+{{- if and (hasKey $svc.config $sasl) (not (index $data $sasl)) }}
+{{- /* The bridge spells mechanisms in lower case with dashes (aws-msk-iam, scram-sha-512). */}}
+{{- $mech := $.Values.kafka.saslMechanism }}
+{{- if eq $name "bridge" }}{{ $mech = $mech | lower | replace "_" "-" }}{{ end }}
+{{- $_ := set $data $sasl $mech }}
+{{- end }}
 {{- range $tlsKey := list (printf "%s_KAFKA_TLS_ENABLED" $prefix) (printf "%s_KAFKA_TLS" $prefix) }}
 {{- if and (hasKey $svc.config $tlsKey) (not (index $data $tlsKey)) }}{{ $_ := set $data $tlsKey (toString $.Values.kafka.tlsEnabled) }}{{ end }}
 {{- end }}
+{{- end }}
+{{- /* Topic creation settings (bridge) */}}
+{{- if and (hasKey $svc.config "BRIDGE_KAFKA_TOPIC_PARTITIONS") (not (index $data "BRIDGE_KAFKA_TOPIC_PARTITIONS")) }}{{ $_ := set $data "BRIDGE_KAFKA_TOPIC_PARTITIONS" (toString $.Values.kafka.partitions) }}{{ end }}
+{{- if and (hasKey $svc.config "BRIDGE_KAFKA_TOPIC_REPLICATION") (not (index $data "BRIDGE_KAFKA_TOPIC_REPLICATION")) }}{{ $_ := set $data "BRIDGE_KAFKA_TOPIC_REPLICATION" (toString $.Values.kafka.replicationFactor) }}{{ end }}
+{{- /* OIDC defaults: <P>_OIDC_ISSUER / _AUDIENCE / _ROLE_CLAIM (and NEXT_PUBLIC_OIDC_ISSUER) from
+`oidc`, only for the keys a service declares. */}}
+{{- $oidc := $.Values.oidc | default dict }}
+{{- $oidcDefaults := dict (printf "%s_OIDC_ISSUER" $prefix) ($oidc.issuer | default "") (printf "%s_OIDC_AUDIENCE" $prefix) ($oidc.audience | default "") (printf "%s_OIDC_ROLE_CLAIM" $prefix) ($oidc.roleClaim | default "") "NEXT_PUBLIC_OIDC_ISSUER" ($oidc.issuer | default "") }}
+{{- range $k, $v := $oidcDefaults }}
+{{- if and (hasKey $svc.config $k) (not (index $data $k)) $v }}{{ $_ := set $data $k (toString $v) }}{{ end }}
 {{- end }}
 {{- /* Public URLs */}}
 {{- if eq $name "pki" }}
 {{- if not (index $data "PKI_PUBLIC_BASE_URL") }}{{ $_ := set $data "PKI_PUBLIC_BASE_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "pki"))) }}{{ end }}
 {{- if not (index $data "PKI_BROKER_HOST") }}{{ $_ := set $data "PKI_BROKER_HOST" (include "ironmesh.host" (dict "root" $ "name" "mqtt")) }}{{ end }}
+{{- /* RDS IAM authentication for PKI_DATABASE_URL (pki has no PKI_DB_HOST, so the generic
+database block above does not apply). */}}
+{{- if and (hasKey $svc.config "PKI_DB_IAM_AUTH") (not (index $data "PKI_DB_IAM_AUTH")) }}{{ $_ := set $data "PKI_DB_IAM_AUTH" (toString $.Values.database.iamAuth) }}{{ end }}
+{{- if and (hasKey $svc.config "PKI_DB_IAM_REGION") (not (index $data "PKI_DB_IAM_REGION")) $.Values.aws.region }}{{ $_ := set $data "PKI_DB_IAM_REGION" $.Values.aws.region }}{{ end }}
 {{- else if eq $name "registry" }}
 {{- if not (index $data "REGISTRY_PUBLIC_BASE_URL") }}{{ $_ := set $data "REGISTRY_PUBLIC_BASE_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "registry"))) }}{{ end }}
 {{- else if eq $name "ota" }}

@@ -26,6 +26,11 @@ database:
   sslMode: verify-full
   iamAuth: true
 
+# Console users' IdP: every service's *_OIDC_ISSUER (registry, ota, anomaly, policy, console)
+# falls back to it.
+oidc:
+  issuer: https://auth.staging.ironmesh.dev/realms/ironmesh
+
 kafka:
   mode: msk-serverless
   saslMechanism: AWS_MSK_IAM
@@ -76,6 +81,12 @@ services:
     config:
       PKI_ENV: staging
       PKI_KMS: awskms
+      # RDS IAM tokens for PKI_DATABASE_URL (postgres://pki_app@...; rds_iam granted by db-init).
+      PKI_DB_IAM_AUTH: "true"
+      PKI_DB_IAM_REGION: eu-west-1
+      # Ed25519 bundle key seed from Secrets Manager: set by values-staging.generated.yaml
+      # (terraform output helm_values: services.pki.config.PKI_BUNDLE_KEY_SECRET_ARN).
+      PKI_BUNDLE_KEY_SECRET_ARN: ""
       PKI_LOG_LEVEL: debug
   policy:
     autoscaling:
@@ -88,16 +99,15 @@ services:
       minReplicas: 2
       maxReplicas: 4
     config:
-      # The bridge has no SASL support (services/bridge/internal/config): TLS only.
-      BRIDGE_KAFKA_TLS: "true"
-      BRIDGE_KAFKA_TLS_CA_FILE: /etc/ssl/certs/ca-certificates.crt
+      # MSK Serverless with IAM: AWS_MSK_IAM signed with the IRSA role, over TLS (system roots).
+      BRIDGE_KAFKA_SASL_MECHANISM: aws-msk-iam
+      BRIDGE_KAFKA_TLS_ENABLED: "true"
   registry:
     autoscaling:
       minReplicas: 2
       maxReplicas: 4
     config:
       REGISTRY_ENVIRONMENT: staging
-      REGISTRY_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
       REGISTRY_KMS_BACKEND: aws
       REGISTRY_KMS_AWS_REGION: eu-west-1
       REGISTRY_LOG_LEVEL: debug
@@ -110,10 +120,8 @@ services:
       OTA_ENV: prod
       OTA_ARTIFACT_STORE: s3
       OTA_SIGNING_PROVIDER: kms-wrapped
-      OTA_TENANT_KEYS_PROVIDER: kms-wrapped
       OTA_AWS_REGION: eu-west-1
       OTA_S3_REGION: eu-west-1
-      OTA_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
       OTA_LOG_LEVEL: debug
   anomaly:
     autoscaling:
@@ -123,15 +131,13 @@ services:
       ANOMALY_ENVIRONMENT: staging
       ANOMALY_AUTO_QUARANTINE: "false"
       ANOMALY_DB_REGION: eu-west-1
-      ANOMALY_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
       ANOMALY_LOG_LEVEL: debug
   console:
     autoscaling:
       minReplicas: 2
       maxReplicas: 3
-    config:
-      CONSOLE_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
-      NEXT_PUBLIC_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
+    # CONSOLE_OIDC_ISSUER / NEXT_PUBLIC_OIDC_ISSUER come from oidc.issuer.
+    config: {}
 
 emqx:
   replicaCount: 3

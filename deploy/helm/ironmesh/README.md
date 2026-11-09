@@ -49,8 +49,13 @@ code (`services/pki/internal/config/config.go`, `services/policy/internal/config
 
 Empty values are dropped from the ConfigMap. Shared fallbacks: `<P>_DB_HOST/PORT/SSLMODE/IAM_AUTH`
 from `database`; `<P>_KAFKA_BROKERS` from the Redpanda sub-chart or `kafka.bootstrapServers`;
-`<P>_KAFKA_SASL_MECHANISM`, `<P>_KAFKA_TLS_ENABLED` and `BRIDGE_KAFKA_TLS` from `kafka` (only
-when the service declares the key); `PKI_PUBLIC_BASE_URL` / `REGISTRY_PUBLIC_BASE_URL` /
+`<P>_KAFKA_SASL_MECHANISM` and `<P>_KAFKA_TLS_ENABLED` from `kafka` (only when the service
+declares the key; for the bridge the mechanism is normalised, `AWS_MSK_IAM` -> `aws-msk-iam`,
+`SCRAM-SHA-512` -> `scram-sha-512`); `BRIDGE_KAFKA_TOPIC_PARTITIONS` / `_REPLICATION` from
+`kafka.partitions` / `kafka.replicationFactor`; `<P>_OIDC_ISSUER` / `<P>_OIDC_AUDIENCE` /
+`<P>_OIDC_ROLE_CLAIM` and `NEXT_PUBLIC_OIDC_ISSUER` from `oidc.issuer` / `oidc.audience` /
+`oidc.roleClaim`; `PKI_DB_IAM_AUTH` from `database.iamAuth` and `PKI_DB_IAM_REGION` from
+`aws.region`; `PKI_PUBLIC_BASE_URL` / `REGISTRY_PUBLIC_BASE_URL` /
 `OTA_PUBLIC_BASE_URL` / `NEXT_PUBLIC_APP_URL` from the public hosts; `PKI_BROKER_HOST` from the
 mqtt host; `OTA_OTEL_ENDPOINT` from `otelCollector.endpoint`; `NEXT_PUBLIC_ENVIRONMENT` from
 `global.environment`. Secrets are listed in `services.<name>.secretKeys` and are expected in the
@@ -58,11 +63,11 @@ Secret / Secrets Manager JSON `<secretPathPrefix><service>`.
 
 | Service  | Plain (ConfigMap)                                                                                                   | Secret                                                                 |
 |----------|---------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------|
-| pki      | `PKI_ENV` `PKI_LISTEN_MTLS` `PKI_LISTEN_PLAIN` `PKI_KMS` (`awskms`/`softhsm`/`file`) `PKI_CA_DIR` `PKI_BUNDLE_KEY_FILE` `PKI_KEY_DEVICE_CA` `PKI_KEY_SERVICES_CA` `PKI_PUBLIC_BASE_URL` `PKI_POLICY_URL` `PKI_REGISTRY_URL` `PKI_NONCE_TTL` `PKI_OPERATIONAL_CERT_TTL` `PKI_SERVER_CERT_FILE` `PKI_SERVER_KEY_FILE` `PKI_MGMT_ALLOWED_CNS` `PKI_MGMT_JWT_PUBLIC_KEY_FILE` `PKI_DEFAULT_ALLOW_SOFTWARE_KEYS` `PKI_TPM_AK_CA_FILE` `PKI_TPM_ALLOWED_PCR_DIGESTS` `PKI_BROKER_HOST` `PKI_BROKER_PORT` `PKI_LOG_LEVEL` `PKI_SHUTDOWN_TIMEOUT` (also read: `PKI_SERVER_SANS`, `PKI_PKCS11_MODULE`, `PKI_PKCS11_TOKEN`) | `PKI_DATABASE_URL` `PKI_POLICY_TOKEN` `PKI_POLICY_HMAC_KEY` `PKI_REGISTRY_TOKEN` `PKI_FILE_KMS_PASSPHRASE` `PKI_PKCS11_PIN` |
-| policy   | `POLICY_LISTEN` `POLICY_EMQX_API_URL` `POLICY_PKI_CRL_URL` `POLICY_CRL_POLL_INTERVAL` `POLICY_CRL_ISSUER_CERT_FILE` `POLICY_REGISTRY_URL` `POLICY_REGISTRY_FAIL_OPEN` `POLICY_REGISTRY_TIMEOUT` `POLICY_REGISTRY_CACHE_TTL` `POLICY_SERVICE_CIDRS` `POLICY_STATE_DIR` `POLICY_AUTHZ_CACHE_TTL` `POLICY_SHUTDOWN_TIMEOUT` `POLICY_LOG_LEVEL` `POLICY_JWT_ISSUER` | `POLICY_EMQX_API_KEY` `POLICY_EMQX_API_SECRET` `POLICY_PKI_HMAC_SECRET` `POLICY_PKI_TOKEN` `POLICY_REGISTRY_TOKEN` `POLICY_HOOK_TOKEN` `POLICY_JWT_PUBLIC_KEY_PEM` |
-| bridge   | `BRIDGE_LISTEN` `BRIDGE_MQTT_URL` `BRIDGE_MQTT_CLIENT_ID` `BRIDGE_MQTT_TOPIC` `BRIDGE_MQTT_KEEPALIVE` `BRIDGE_MQTT_SESSION_EXPIRY` `BRIDGE_TLS_{CERT,KEY,CA}_FILE` `BRIDGE_TLS_SERVER_NAME` `BRIDGE_KAFKA_BROKERS` `BRIDGE_KAFKA_INGEST_TOPIC` `BRIDGE_KAFKA_AUTH_TOPIC` `BRIDGE_KAFKA_TLS` `BRIDGE_KAFKA_TLS_CA_FILE` `BRIDGE_MAX_INFLIGHT` `BRIDGE_LOG_LEVEL` `BRIDGE_SHUTDOWN_TIMEOUT` (also read: `BRIDGE_MQTT_CONNECT_RETRY`) | `BRIDGE_EVENTS_TOKEN` |
-| registry | `REGISTRY_ENVIRONMENT` `REGISTRY_LISTEN_PORT` `REGISTRY_DB_{HOST,PORT,NAME,USER,SSLMODE,IAM_AUTH}` `REGISTRY_KAFKA_BROKERS` `REGISTRY_KAFKA_TOPIC_{INGEST,AUTH,ALERTS,AUDIT,COMMANDS,CAMPAIGNS}` `REGISTRY_KAFKA_CONSUMER_GROUP` `REGISTRY_KAFKA_{SASL_MECHANISM,TLS_ENABLED}` `REGISTRY_PKI_URL` `REGISTRY_POLICY_URL` `REGISTRY_OTA_URL` `REGISTRY_EMQX_API_URL` `REGISTRY_OIDC_{ISSUER,AUDIENCE,JWKS_URL}` `REGISTRY_PUBLIC_BASE_URL` `REGISTRY_TLS_{CERT,KEY,CA}_FILE` `REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE` `REGISTRY_MQTT_{HOST,PORT,CLIENT_ID}` `REGISTRY_KMS_BACKEND` `REGISTRY_KMS_LOCAL_KEK_FILE` `REGISTRY_KMS_AWS_{KEY_ID,REGION}` `REGISTRY_LOG_{LEVEL,FORMAT}` | `REGISTRY_DB_PASSWORD` `REGISTRY_INTERNAL_TOKENS` (JSON `{"pki":…,"policy":…,"anomaly":…}`) `REGISTRY_EMQX_API_KEY` `REGISTRY_EMQX_API_SECRET` `REGISTRY_KAFKA_SASL_PASSWORD` `REGISTRY_MIGRATION_DATABASE_URL` (migration hook only) |
-| ota      | `OTA_ENV` `OTA_LISTEN_PORT` `OTA_DB_{HOST,PORT,NAME,USER,SSLMODE,IAM_AUTH}` `OTA_KAFKA_BROKERS` `OTA_KAFKA_TOPIC_{INGEST,COMMANDS,AUDIT,CAMPAIGNS}` `OTA_KAFKA_CONSUMER_GROUP` `OTA_KAFKA_{SASL_MECHANISM,TLS_ENABLED}` `OTA_ARTIFACT_STORE` `OTA_ARTIFACT_BUCKET` `OTA_S3_KMS_KEY_ARN` `OTA_S3_REGION` `OTA_AWS_REGION` `OTA_ARTIFACT_PATH` `OTA_SIGNING_PROVIDER` `OTA_SIGNING_KEK_KEY_ID` `OTA_SIGNING_KEY_SECRET_ARN` `OTA_SIGNING_KEY_ID` `OTA_PQ_SIGNING_ENABLED` `OTA_TENANT_KEYS_PROVIDER` `OTA_TENANT_KEYS_KEK_KEY_ID` `OTA_TENANT_KEY_SECRET_PREFIX` `OTA_PUBLIC_BASE_URL` `OTA_PKI_URL` `OTA_REGISTRY_URL` `OTA_EMQX_API_URL` `OTA_OIDC_{ISSUER,AUDIENCE,JWKS_URL}` `OTA_TLS_{CERT,KEY,CA}_FILE` `OTA_LOG_{LEVEL,FORMAT}` `OTA_OTEL_ENABLED` `OTA_OTEL_ENDPOINT` | `OTA_DB_PASSWORD` `OTA_INTERNAL_TOKEN` `OTA_EMQX_API_KEY` `OTA_EMQX_API_SECRET` `OTA_SIGNING_PRIVATE_KEY_PEM` (file provider only) `OTA_DOWNLOAD_HMAC_SECRET` `OTA_KAFKA_SASL_PASSWORD` `OTA_MIGRATION_DATABASE_URL` (migration hook only) |
+| pki      | `PKI_ENV` `PKI_LISTEN_MTLS` `PKI_LISTEN_PLAIN` `PKI_KMS` (`awskms`/`softhsm`/`file`) `PKI_CA_DIR` `PKI_BUNDLE_KEY_FILE` `PKI_BUNDLE_KEY_SECRET_ARN` (Terraform output; wins over the file) `PKI_DB_IAM_AUTH` `PKI_DB_IAM_REGION` `PKI_KEY_DEVICE_CA` `PKI_KEY_SERVICES_CA` `PKI_PUBLIC_BASE_URL` `PKI_POLICY_URL` `PKI_REGISTRY_URL` (enrolled callback) `PKI_NONCE_TTL` `PKI_OPERATIONAL_CERT_TTL` `PKI_SERVER_CERT_FILE` `PKI_SERVER_KEY_FILE` `PKI_MGMT_ALLOWED_CNS` (`svc-registry`, `svc-ota`, ...) `PKI_MGMT_JWT_PUBLIC_KEY_FILE` `PKI_DEFAULT_ALLOW_SOFTWARE_KEYS` `PKI_TPM_AK_CA_FILE` `PKI_TPM_ALLOWED_PCR_DIGESTS` `PKI_BROKER_HOST` `PKI_BROKER_PORT` `PKI_LOG_LEVEL` `PKI_SHUTDOWN_TIMEOUT` (also read: `PKI_SERVER_SANS`, `PKI_PKCS11_MODULE`, `PKI_PKCS11_TOKEN`) | `PKI_DATABASE_URL` (non-owner `pki_app`) `PKI_MIGRATION_DATABASE_URL` (owner `pki_owner`, migrations at start only) `PKI_POLICY_TOKEN` `PKI_POLICY_HMAC_KEY` `PKI_REGISTRY_TOKEN` `PKI_FILE_KMS_PASSPHRASE` (file KMS / bundle key file only) `PKI_PKCS11_PIN` |
+| policy   | `POLICY_LISTEN` `POLICY_EMQX_API_URL` `POLICY_PKI_CRL_URL` `POLICY_CRL_POLL_INTERVAL` `POLICY_CRL_ISSUER_CERT_FILE` `POLICY_REGISTRY_URL` `POLICY_REGISTRY_FAIL_OPEN` `POLICY_REGISTRY_TIMEOUT` `POLICY_REGISTRY_CACHE_TTL` `POLICY_SERVICE_CIDRS` `POLICY_STATE_DIR` `POLICY_AUTHZ_CACHE_TTL` `POLICY_SHUTDOWN_TIMEOUT` `POLICY_LOG_LEVEL` `POLICY_JWT_ISSUER` `POLICY_OIDC_{ISSUER,AUDIENCE,ROLE_CLAIM}` (console OIDC tokens; default `oidc.*`) | `POLICY_EMQX_API_KEY` `POLICY_EMQX_API_SECRET` `POLICY_PKI_HMAC_SECRET` `POLICY_PKI_TOKEN` `POLICY_REGISTRY_TOKEN` `POLICY_HOOK_TOKEN` `POLICY_JWT_PUBLIC_KEY_PEM` |
+| bridge   | `BRIDGE_LISTEN` `BRIDGE_MQTT_URL` `BRIDGE_MQTT_CLIENT_ID` `BRIDGE_MQTT_TOPIC` `BRIDGE_MQTT_KEEPALIVE` `BRIDGE_MQTT_SESSION_EXPIRY` `BRIDGE_TLS_{CERT,KEY,CA}_FILE` `BRIDGE_TLS_SERVER_NAME` `BRIDGE_KAFKA_BROKERS` `BRIDGE_KAFKA_INGEST_TOPIC` `BRIDGE_KAFKA_AUTH_TOPIC` `BRIDGE_KAFKA_TLS_ENABLED` `BRIDGE_KAFKA_TLS_CA_FILE` (optional) `BRIDGE_KAFKA_SASL_MECHANISM` (`none`/`plain`/`scram-sha-512`/`aws-msk-iam`) `BRIDGE_KAFKA_TOPICS_CREATE` `BRIDGE_KAFKA_TOPIC_{PARTITIONS,REPLICATION}` `BRIDGE_MAX_INFLIGHT` `BRIDGE_LOG_LEVEL` `BRIDGE_SHUTDOWN_TIMEOUT` (also read: `BRIDGE_MQTT_CONNECT_RETRY`, `BRIDGE_KAFKA_TLS`) | `BRIDGE_EVENTS_TOKEN`; `BRIDGE_KAFKA_SASL_{USERNAME,PASSWORD}` only with `plain`/`scram-sha-512` |
+| registry | `REGISTRY_ENVIRONMENT` `REGISTRY_LISTEN_PORT` `REGISTRY_DB_{HOST,PORT,NAME,USER,SSLMODE,IAM_AUTH}` `REGISTRY_KAFKA_BROKERS` `REGISTRY_KAFKA_TOPIC_{INGEST,AUTH,ALERTS,AUDIT,COMMANDS,CAMPAIGNS}` `REGISTRY_KAFKA_CONSUMER_GROUP` `REGISTRY_KAFKA_{SASL_MECHANISM,TLS_ENABLED}` `REGISTRY_PKI_URL` (command key + enrollment push, mTLS `svc-registry`) `REGISTRY_POLICY_URL` `REGISTRY_OTA_URL` `REGISTRY_EMQX_API_URL` `REGISTRY_OIDC_{ISSUER,AUDIENCE,JWKS_URL}` `REGISTRY_PUBLIC_BASE_URL` `REGISTRY_TLS_{CERT,KEY,CA}_FILE` `REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE` `REGISTRY_MQTT_{HOST,PORT,CLIENT_ID}` `REGISTRY_KMS_BACKEND` `REGISTRY_KMS_LOCAL_KEK_FILE` `REGISTRY_KMS_AWS_{KEY_ID,REGION}` `REGISTRY_LOG_{LEVEL,FORMAT}` | `REGISTRY_DB_PASSWORD` `REGISTRY_INTERNAL_TOKENS` (JSON `{"pki":…,"policy":…,"anomaly":…,"ota":…}`) `REGISTRY_EMQX_API_KEY` `REGISTRY_EMQX_API_SECRET` `REGISTRY_KAFKA_SASL_PASSWORD` `REGISTRY_MIGRATION_DATABASE_URL` (migration hook only) |
+| ota      | `OTA_ENV` `OTA_LISTEN_PORT` `OTA_DB_{HOST,PORT,NAME,USER,SSLMODE,IAM_AUTH}` `OTA_KAFKA_BROKERS` `OTA_KAFKA_TOPIC_{INGEST,COMMANDS,AUDIT,CAMPAIGNS}` `OTA_KAFKA_CONSUMER_GROUP` `OTA_KAFKA_{SASL_MECHANISM,TLS_ENABLED}` `OTA_ARTIFACT_STORE` `OTA_ARTIFACT_BUCKET` `OTA_S3_KMS_KEY_ARN` `OTA_S3_REGION` `OTA_AWS_REGION` `OTA_ARTIFACT_PATH` `OTA_SIGNING_PROVIDER` `OTA_SIGNING_KEK_KEY_ID` `OTA_SIGNING_KEY_SECRET_ARN` `OTA_SIGNING_KEY_ID` `OTA_PQ_SIGNING_ENABLED` `OTA_PUBLIC_BASE_URL` `OTA_PKI_URL` (firmware-keys push, mTLS `svc-ota`) `OTA_REGISTRY_URL` (target resolve + OtaNotify downlinks) `OTA_EMQX_API_URL` `OTA_OIDC_{ISSUER,AUDIENCE,JWKS_URL}` `OTA_TLS_{CERT,KEY,CA}_FILE` `OTA_NOTIFY_RETRY_S` `OTA_LOG_{LEVEL,FORMAT}` `OTA_OTEL_ENABLED` `OTA_OTEL_ENDPOINT` | `OTA_DB_PASSWORD` `OTA_INTERNAL_TOKEN` `OTA_REGISTRY_TOKEN` `OTA_EMQX_API_KEY` `OTA_EMQX_API_SECRET` `OTA_SIGNING_PRIVATE_KEY_PEM` (file provider only) `OTA_DOWNLOAD_HMAC_SECRET` `OTA_KAFKA_SASL_PASSWORD` `OTA_MIGRATION_DATABASE_URL` (migration hook only) |
 | anomaly  | `ANOMALY_ENVIRONMENT` `ANOMALY_LISTEN_PORT` `ANOMALY_DB_{HOST,PORT,NAME,USER,SSLMODE,IAM_AUTH,REGION}` `ANOMALY_KAFKA_BROKERS` `ANOMALY_KAFKA_TOPIC_{INGEST,AUTH,COMMANDS,ALERTS,AUDIT}` `ANOMALY_KAFKA_CONSUMER_GROUP` `ANOMALY_KAFKA_{SASL_MECHANISM,TLS_ENABLED}` `ANOMALY_{REGISTRY,POLICY,OTA,PKI}_URL` `ANOMALY_AUTO_QUARANTINE` `ANOMALY_QUARANTINE_MIN_SEVERITY` `ANOMALY_MODEL_DIR` `ANOMALY_OIDC_{ISSUER,AUDIENCE,JWKS_URL}` `ANOMALY_TLS_{CERT,KEY,CA}_FILE` `ANOMALY_LOG_{LEVEL,FORMAT}` | `ANOMALY_DB_PASSWORD` `ANOMALY_INTERNAL_TOKEN` `ANOMALY_SIEM_WEBHOOK_URL` `ANOMALY_SIEM_WEBHOOK_SECRET` `ANOMALY_KAFKA_SASL_PASSWORD` `ANOMALY_DATABASE_MIGRATE_URL` |
 | console  | `PORT` `HOSTNAME` `NODE_ENV` `NEXT_TELEMETRY_DISABLED` `AUTH_TRUST_HOST` `CONSOLE_{REGISTRY,OTA,ANOMALY,POLICY}_URL` `CONSOLE_OIDC_{ISSUER,CLIENT_ID}` `NEXT_PUBLIC_APP_URL` `NEXT_PUBLIC_OIDC_{ISSUER,CLIENT_ID}` `NEXT_PUBLIC_ENVIRONMENT` (`NEXT_PUBLIC_*` are also build-time; health probe `/api/health`) | `AUTH_SECRET` `CONSOLE_OIDC_CLIENT_SECRET` |
 | all      | `OTEL_SERVICE_NAME` `OTEL_EXPORTER_OTLP_ENDPOINT` `OTEL_EXPORTER_OTLP_PROTOCOL` `OTEL_RESOURCE_ATTRIBUTES` `OTEL_TRACES_SAMPLER(_ARG)` `POD_NAME` `POD_NAMESPACE` `NODE_NAME` `POD_IP` | |
@@ -71,9 +76,17 @@ Values that must match across secrets:
 
 * `PKI_POLICY_TOKEN` = `POLICY_PKI_TOKEN`, `PKI_POLICY_HMAC_KEY` = `POLICY_PKI_HMAC_SECRET`.
 * `REGISTRY_INTERNAL_TOKENS` = `{"pki": PKI_REGISTRY_TOKEN, "policy": POLICY_REGISTRY_TOKEN,
-  "anomaly": ANOMALY_INTERNAL_TOKEN}`. The three tokens must be **distinct**: each one
-  authenticates exactly one caller and the registry enforces the per-endpoint caller allowlist.
-* `POLICY_HOOK_TOKEN` = the EMQX `X-IronMesh-Hook-Token` header (derived by the EMQX ExternalSecret).
+  "anomaly": ANOMALY_INTERNAL_TOKEN, "ota": OTA_REGISTRY_TOKEN}`. The four tokens must be
+  **distinct**: each one authenticates exactly one caller and the registry enforces the
+  per-endpoint caller allowlist.
+* `POLICY_HOOK_TOKEN` = the EMQX authn/authz `X-IronMesh-Hook-Token` headers, and
+  `BRIDGE_EVENTS_TOKEN` = the header of the EMQX `ironmesh_auth_events` webhook action
+  (`EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__HEADERS__X-IRONMESH-HOOK-TOKEN`); both
+  are derived by the EMQX ExternalSecret. Without External Secrets put all three keys into
+  `emqx.envFromSecret` yourself.
+* Tenant policy ownership on the PKI (`PUT /v1/tenants/{t}/...`) follows the caller identity:
+  `svc-registry` (command key, enrollment) and `svc-ota` (firmware keys) Services CA client
+  certificates, which `internalTls` issues to those pods.
 * `POLICY_EMQX_API_KEY/SECRET`, `REGISTRY_EMQX_API_KEY/SECRET`, `OTA_EMQX_API_KEY/SECRET` = the
   EMQX bootstrap API keys (the `ironmesh-emqx-api-keys` ExternalSecret renders all three).
 * The db-init Job additionally reads `<DB>_DB_OWNER_PASSWORD` / `<DB>_DB_PASSWORD` and
@@ -84,8 +97,14 @@ Mounts: Services CA identity at `/etc/ironmesh/tls` (`tls.crt`, `tls.key`, `ca.c
 bundle at `/etc/ironmesh/device-ca/ca.crt` (pki, policy), PKI CA material and bundle key from
 `pkiCa.existingSecret` at `/etc/ironmesh/ca` (pki).
 
-Migrations: `templates/job-migrate.yaml` runs the registry and ota migrations as hooks
-(`migrations.enabled`); anomaly and pki migrate themselves at start.
+Migrations: `templates/job-migrate.yaml` runs the registry (`alembic upgrade head`, so revision
+`0002_downlink_sequences` is applied on upgrade) and ota migrations as hooks
+(`migrations.enabled`); anomaly migrates itself at start, and pki applies its embedded migrations
+at start with `PKI_MIGRATION_DATABASE_URL` before serving as `pki_app`.
+
+Kafka topics: the bridge creates `im.ingest`, `im.auth`, `im.alerts`, `im.audit`, `im.commands`
+and `im.campaigns` on boot (`BRIDGE_KAFKA_TOPICS_CREATE=true`, `kafka.partitions` /
+`kafka.replicationFactor`); on MSK its IRSA role carries `kafka-cluster:CreateTopic` for them.
 
 ## Broker
 
@@ -95,7 +114,11 @@ CA bundle, `verify_peer_ext_key_usage = clientAuth`, `mqtt.peer_cert_as_username
 `enable_authn = quick_deny_anonymous`; HTTP authn/authz to `ironmesh-policy:8081/emqx/{authn,authz}`
 with the hook token header, `authorization.no_match = deny`, `deny_action = disconnect`, 10 s
 authz cache (revocations are enforced by the policy kick, not the cache TTL). The policy service
-kicks sessions through `DELETE /api/v5/clients/{clientid}` using the bootstrap API key.
+kicks sessions through `DELETE /api/v5/clients/{clientid}` using the bootstrap API key. Client
+lifecycle, authn-failure and authz-deny events go through the `ironmesh_bridge` HTTP connector,
+the `ironmesh_auth_events` action (header `X-IronMesh-Hook-Token` = `BRIDGE_EVENTS_TOKEN`) and the
+rule of the same name to `ironmesh-bridge:8082/emqx/events` (`im.auth`), mirroring
+`services/policy/deploy/emqx/emqx.conf`.
 
 ## Networking
 
@@ -128,16 +151,20 @@ bridge webhook).
 * The firmware Ed25519 key never enters the cluster as a Secret (ESO is denied by IAM); ota
   unwraps it from Secrets Manager at runtime through `OTA_SIGNING_KEY_SECRET_ARN`.
 * The PKI bundle key is Ed25519 as well. Terraform keeps the seed in Secrets Manager
-  (`<prefix>pki/bundle-signing-key`, symmetric CMK `bundle_kek`, pki IRSA role only, ESO denied).
-  The pki service currently loads the bundle key only from `PKI_BUNDLE_KEY_FILE` (a pkictl key
-  file encrypted under `PKI_FILE_KMS_PASSPHRASE`), which the ceremony operator places in the
-  `pkiCa.existingSecret` Secret as `bundle.key.json`.
+  (`<prefix>pki/bundle-signing-key`, symmetric CMK `bundle_kek`, pki IRSA role only, ESO denied)
+  and hands the ARN to the chart as `PKI_BUNDLE_KEY_SECRET_ARN` (`terraform output helm_values`);
+  the pki service fetches the seed at start and ignores `PKI_BUNDLE_KEY_FILE`. Without it (no
+  AWS) the pkictl key file `bundle.key.json` in `pkiCa.existingSecret`, encrypted under
+  `PKI_FILE_KMS_PASSPHRASE`, is used.
+* Tenant command keys exist only in the registry (wrapped with `REGISTRY_KMS_*`); the registry
+  publishes the public key to the PKI tenant policy, and ota publishes its firmware keys there.
 
 ## Databases
 
 `dbInit.enabled` runs a pre-install/pre-upgrade Job that creates `registry`, `ota`, `pki`,
-`anomaly`, the roles `<db>_owner` (migrations), `<db>_app` (runtime, RLS applies) and
-`ironmesh_backup` (read-only), granting `rds_iam` when `database.iamAuth` is true. It needs
+`anomaly`, the roles `<db>_owner` (migrations), `<db>_app` (runtime, `NOBYPASSRLS`, RLS applies;
+`pki_app` is the `PKI_DATABASE_URL` user) and `ironmesh_backup` (read-only), granting `rds_iam`
+when `database.iamAuth` is true. Table grants for the app roles come from the migrations. It needs
 `dbInit.adminSecretName` with `username`/`password` (the RDS-managed master secret synced by ESO
 from `ironmesh/<env>/postgres-admin`).
 
@@ -145,7 +172,8 @@ from `ironmesh/<env>/postgres-admin`).
 
 * `values.yaml` – defaults, documented inline.
 * `values-staging.yaml` / `values-prod.yaml` – environment posture (replicas, HPA bounds, PDBs,
-  MSK IAM, External Secrets, node placement for the broker in prod).
+  `oidc.issuer`, MSK IAM incl. `BRIDGE_KAFKA_SASL_MECHANISM=aws-msk-iam`, RDS IAM for pki,
+  External Secrets, node placement for the broker in prod).
 * `values-<env>.generated.yaml` – written by `terraform output -raw helm_values`, git-ignored.
 
 ## Validation

@@ -35,7 +35,8 @@ Secrets
 {{- if .Values.externalSecrets.enabled }}
   External Secrets Operator syncs {{ .Values.externalSecrets.secretPathPrefix }}<service> from ClusterSecretStore "{{ .Values.externalSecrets.clusterSecretStore }}".
   Required JSON keys per service are listed in values.yaml (services.<name>.secretKeys); the EMQX
-  env/api-key Secrets are derived from the policy secret (POLICY_HOOK_TOKEN, POLICY_EMQX_API_*).
+  env/api-key Secrets are derived from the service secrets (POLICY_HOOK_TOKEN, BRIDGE_EVENTS_TOKEN
+  for the client-event webhook action, POLICY/REGISTRY/OTA_EMQX_API_*).
 {{- else }}
   External Secrets are disabled. Each service reads ironmesh-<service>-secret (or
   services.<name>.secret.existingSecret). Make sure these exist with the keys listed in
