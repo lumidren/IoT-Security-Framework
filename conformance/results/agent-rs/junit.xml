@@ -1,0 +1,389 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="ironmesh-conformance" tests="27" failures="0" errors="0" skipped="0" time="108.715">
+  <testsuite name="ironmesh-conformance.agent-rs" tests="27" failures="0" errors="0" skipped="0" time="108.715" timestamp="2026-11-09T20:36:05.0603466Z" hostname="MUSTAFAGOMAA (windows x86_64)">
+    <properties>
+      <property name="target" value="agent-rs"/>
+      <property name="mode" value="hermetic"/>
+      <property name="git_commit" value="8904ed970ffcb9fbbf516fb6cd9b1d79c7509427 (working tree modified)"/>
+      <property name="tenant_id" value="7f5d6207-dff5-425e-8c78-65cbe0b384cd"/>
+      <property name="run_dir" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\runs\agent-rs-1794256565"/>
+      <property name="policy_service" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\bin\policy.exe (sha256 2965de8111b46a59)"/>
+      <property name="signing_keys" value="test-vector keys from C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\libs\python\ironmesh-wire\tests\keys"/>
+      <property name="dut_binary" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\duts\agent-rs-dut\debug\ironmesh-agent.exe (sha256 ac3501f8013546ad)"/>
+      <property name="release_binary" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\duts\agent-rs-release\release\ironmesh-agent.exe (sha256 1ddff3aeeb44f9dd)"/>
+      <property name="product" value="gateway-rpi"/>
+      <property name="reconnect_backoff_clock_scale" value="0.02"/>
+      <property name="ota_health_timeout_s" value="15"/>
+    </properties>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-1 mTLS handshake with valid operational cert" time="0.812">
+      <system-out>criterion: `connected` with `tls_version=TLSv1.3`, `alpn=mqtt`
+measure tls_version = TLSv1.3
+measure alpn = mqtt
+evidence: DUT dev-5a6d3963f429a121 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 296b16959e8bf2bf0326e292c0357622
+evidence: connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: broker handshake: version Some(&quot;TLSv1.3&quot;), alpn Some(&quot;mqtt&quot;), client cert serial Some(&quot;7526dd0156c101861197e477cf60c829&quot;)
+evidence: CONNECT: client id = CN, clean_start=false, session_expiry=Some(604800), keep_alive=60, receive_maximum=Some(32); policy authn allow=true
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-2 Broker presents cert from an unpinned CA (rogue broker)" time="0.597">
+      <system-out>criterion: `connect_failed{reason=tls_pin_mismatch}`; no CONNECT packet observed
+measure RogueUnknownCa: connect_failed.reason = tls_pin_mismatch
+measure RogueUnknownCa: CONNECT packets observed = 0
+measure Rogue: connect_failed.reason = tls_pin_mismatch
+measure Rogue: CONNECT packets observed = 0
+evidence: DUT dev-2d0c7f15245ba2bf (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 6fda08949b22ad4977d5b9fc717e8a40
+evidence: broker mode RogueUnknownCa: connect_failed {&quot;detail&quot;:&quot;invalid peer certificate: Other(OtherError(PinMismatch))&quot;,&quot;reason&quot;:&quot;tls_pin_mismatch&quot;}
+evidence: broker-side handshakes in mode RogueUnknownCa: [&quot;ok=false version=None error=Some(\&quot;received fatal alert: CertificateUnknown\&quot;)&quot;]
+evidence: broker mode Rogue: connect_failed {&quot;detail&quot;:&quot;invalid peer certificate: Other(OtherError(PinMismatch))&quot;,&quot;reason&quot;:&quot;tls_pin_mismatch&quot;}
+evidence: broker-side handshakes in mode Rogue: [&quot;ok=false version=None error=Some(\&quot;received fatal alert: CertificateUnknown\&quot;)&quot;]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-3 Broker offers TLS 1.2 only" time="0.383">
+      <system-out>criterion: `connect_failed{reason=tls_handshake}`
+measure Tls12Only: connect_failed.reason = tls_handshake
+measure Tls12Only: CONNECT packets observed = 0
+evidence: DUT dev-6266a2fdbc60997a (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 6be3e5be1ba12c4733f728c174dda838
+evidence: broker mode Tls12Only: connect_failed {&quot;detail&quot;:&quot;received fatal alert: ProtocolVersion&quot;,&quot;reason&quot;:&quot;tls_handshake&quot;}
+evidence: broker-side handshakes in mode Tls12Only: [&quot;ok=false version=None error=Some(\&quot;peer is incompatible: Tls12NotOfferedOrEnabled\&quot;)&quot;]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-4 Session resumption on reconnect" time="0.399">
+      <system-out>criterion: second `connected.resumed=true` (where the target supports tickets)
+measure dut_reported_resumed = true
+measure broker_observed_resumed = true
+measure session_present = true
+evidence: DUT dev-5ad50d1165c26321 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 111d003ca7edf68e8455253d35531c47
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;5b73fecb97314ea421530374c696b91d&quot;,&quot;not_after&quot;:1795466166,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: second connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:true,&quot;session_present&quot;:true,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-5 Bounded reconnect backoff" time="12.506">
+      <system-out>criterion: reconnect attempts follow base 1 s, factor 2, cap 300 s, full jitter (verified on attempt timestamps with clock scaling)
+measure clock_scale = 0.02
+measure attempts_observed = 13
+measure max_gap_s = 4.178
+measure capped_gaps_checked = 4
+evidence: DUT dev-fdd9880c5e3035ea (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 79f2da2a0ca09dc2d89eaa9b0015c67c
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;05c9080438521adf781305408310b5bf&quot;,&quot;not_after&quot;:1795466167,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: connect_failed reasons (first 3): [&quot;not_authorized&quot;, &quot;not_authorized&quot;, &quot;not_authorized&quot;]; status.state=backoff observed: true
+evidence: gap_k &lt;= min(300, 2^k) x scale [s]: 0.013&lt;=0.020, 0.006&lt;=0.040, 0.004&lt;=0.080, 0.020&lt;=0.160, 0.151&lt;=0.320, 0.086&lt;=0.640, 0.350&lt;=1.280, 0.104&lt;=2.560, 1.097&lt;=5.120, 0.189&lt;=6.000, 2.262&lt;=6.000, 3.831&lt;=6.000, 4.178&lt;=6.000
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.enr" name="C-ENR-1 Zero-touch enrollment with attestation" time="0.162">
+      <system-out>criterion: `enrolled`; harness verifies attestation, CSR CN, fresh key
+measure issued_serial = 713f04cd9f9536bdddd7f24b0401f973
+measure assurance_ou = 7f5d6207-dff5-425e-8c78-65cbe0b384cd,assurance:software
+evidence: DUT dev-ccb1f91ba7aa89b8 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 0d82c7feb2093cdb0558a442526e4281
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;713f04cd9f9536bdddd7f24b0401f973&quot;,&quot;not_after&quot;:1795466179,&quot;se_type&quot;:&quot;software&quot;}
+evidence: EST: op=simpleenroll, client cert serial 0d82c7feb2093cdb0558a442526e4281 (bootstrap 0d82c7feb2093cdb0558a442526e4281), CSR CN=Some(&quot;dev-ccb1f91ba7aa89b8&quot;) OU=[&quot;7f5d6207-dff5-425e-8c78-65cbe0b384cd&quot;], fresh key=true
+evidence: attestation: kid 0d82c7feb2093cdb0558a442526e4281, seq 1, ts 1794256580, se_type software, fw_version 1.0.0, fw_hash 4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13, signature by the TLS client key verified=true
+warning: a fresh, never-enrolled device reports status.state=&quot;offline&quot; (DUT_PROTOCOL: unprovisioned = no usable certificate)
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.enr" name="C-ENR-2 Enrollment refused for quarantined device" time="0.147">
+      <system-out>criterion: `enroll_failed{http_status=403}`
+measure http_status = 403
+evidence: DUT dev-dcb573ee8b7b1c53 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 65759c6fd35af53df258a650fdfef95d
+evidence: enroll_failed {&quot;http_status&quot;:403,&quot;reason&quot;:&quot;device lifecycle state \&quot;quarantined\&quot; does not permit enrollment&quot;}
+evidence: EST answered 403: device lifecycle state &quot;quarantined&quot; does not permit enrollment
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rot" name="C-ROT-1 Certificate rotation (`renew`) keeps identity, changes key and serial" time="0.275">
+      <system-out>criterion: `cert_renewed`, new serial, new SPKI, reconnect succeeds
+measure old_serial = 13f79a75176dc16ca5cf59df7a181fde
+measure new_serial = 7ddef88310ac4516c4b591b4b59c3afa
+measure spki_changed = true
+measure reconnected_automatically = true
+evidence: DUT dev-65e5b8a83380700d (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 49eb98dd42b731ef48b11b31209d7d31
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;13f79a75176dc16ca5cf59df7a181fde&quot;,&quot;not_after&quot;:1795466179,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: cert_renewed {&quot;new_serial_hex&quot;:&quot;7ddef88310ac4516c4b591b4b59c3afa&quot;,&quot;not_after&quot;:1795466179,&quot;old_serial_hex&quot;:&quot;13f79a75176dc16ca5cf59df7a181fde&quot;}
+evidence: EST: op=simplereenroll, client cert serial 13f79a75176dc16ca5cf59df7a181fde, attestation kid Some(&quot;13f79a75176dc16ca5cf59df7a181fde&quot;), CSR fresh key true
+evidence: telemetry seq 3 verified with the renewed key (kid 7ddef88310ac4516c4b591b4b59c3afa)
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rot" name="C-ROT-2 Automatic rotation at 50 % lifetime (short-lived test certs)" time="20.205">
+      <system-out>criterion: `cert_renewed` without an explicit `renew`
+measure test_cert_lifetime_s = 40
+measure renewed_at_fraction_of_lifetime = 0.524
+measure reconnected_automatically = true
+evidence: DUT dev-c276606d532effb9 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 45a2249979578e2502ea39a732e83ba5
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;159d705a9bfcd0ededadc54c0aa7ce89&quot;,&quot;not_after&quot;:1794256620,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: cert_renewed {&quot;new_serial_hex&quot;:&quot;2b72c3488bf4681b04d1d785d7af74a8&quot;,&quot;not_after&quot;:1794256640,&quot;old_serial_hex&quot;:&quot;159d705a9bfcd0ededadc54c0aa7ce89&quot;}
+evidence: renewal at 21.0 s of 40 s (contract §2: 50 % + up to 10 % jitter)
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rev" name="C-REV-1 Revocation reaction time" time="35.928">
+      <system-out>criterion: revoke -&gt; broker disconnect -&gt; DUT cannot reconnect with the revoked cert, measured &lt; 10 s
+measure iterations = 20
+measure revoke -&gt; policy 202 = p50 0.003 s, p95 0.012 s, max 0.012 s
+measure revoke -&gt; kick (EMQX API) = p50 0.003 s, p95 0.012 s, max 0.012 s
+measure revoke -&gt; broker disconnect = p50 0.003 s, p95 0.012 s, max 0.012 s
+measure revoke -&gt; DUT disconnected event = p50 0.005 s, p95 0.014 s, max 0.015 s
+measure revoke -&gt; reconnect denied (end to end) = p50 0.007 s, p95 0.017 s, max 0.018 s
+evidence: DUT dev-f3b69e6e14c3a521 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 0177e4ad647e2dce009be63f5cb3dbeb
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;07099d0a4ada6e470ae36db939b40e86&quot;,&quot;not_after&quot;:1795466200,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: revocation path: harness PKI (CRL regenerated) -&gt; signed POST /internal/v1/revocations (bearer + HMAC) -&gt; real policy -&gt; EMQX API kick
+evidence: DUT disconnected {&quot;reason&quot;:&quot;broker DISCONNECT 0x98 &quot;,&quot;reason_code&quot;:152} then connect_failed {&quot;detail&quot;:&quot;CONNACK reason 0x87 &quot;,&quot;reason&quot;:&quot;not_authorized&quot;}
+evidence: reconnect with revoked serial Some(&quot;07099d0a4ada6e470ae36db939b40e86&quot;) answered CONNACK 0x87 by the policy authn hook
+evidence: DUT dev-891e478c050ca5f6 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 7f2e546220b9ed2a3ee225fefdd9f874
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;273ab3f08e13075e8b14f3385787d673&quot;,&quot;not_after&quot;:1795466202,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-6772798a69249e97 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 431d2434a25a8804e9890c967e1cb2ad
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;4dbb1ab765fd4bcee9c79c2f1f533ede&quot;,&quot;not_after&quot;:1795466204,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-8c255c4152662745 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 31817d3641e43f314fd61ea61affe57b
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;0123525dc907d4829193f5be1598bc40&quot;,&quot;not_after&quot;:1795466205,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-98c2a2b6bc176001 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 6bcce14c8ecc0f584eb7ab8c4f411829
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;0d7fdd99f1393f9e1f64f3a1ff180e9b&quot;,&quot;not_after&quot;:1795466207,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-a92a11c08e8b1811 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 63094eec424fe0f89cc752774dd49d91
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;5dc3e3420129ff09d1f939ace4505346&quot;,&quot;not_after&quot;:1795466209,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-386bea1a4e04225d (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 4bd6cde9f4aa81be31401f5f6d02cbfa
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;23f18201236da0151b0c005fe4ceacfc&quot;,&quot;not_after&quot;:1795466210,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-e1fb633136a36c4c (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 75e682b908ca50fb111058649099c834
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;3d30409800d4839c0ce662495cd82997&quot;,&quot;not_after&quot;:1795466212,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-b590506027b5d4a7 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 25b01349eb4763ba018074b847b7a21e
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;09c37077b516d6aedccd7c9f333470df&quot;,&quot;not_after&quot;:1795466214,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-a9921cfd0bdbbb91 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 21340f36b800a0b759374bbef0b7e733
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;43642533ad10462ac498d67a53b2644f&quot;,&quot;not_after&quot;:1795466216,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-3f078eafd63f3b89 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 0f36fc6ce503bb89f2e47d18adcd7a5e
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;63d04ec6ecb8648af9ed6507f4567643&quot;,&quot;not_after&quot;:1795466217,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-baa992e6ad51c64c (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 2d0116fbc1cd9eda01d84fe27834cbce
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;7f706bc1e0483010d4c9a26ffbf208d3&quot;,&quot;not_after&quot;:1795466219,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-e2c059240bd842db (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 7d80139ed6086ab92e3e9ad1e1b45b51
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;5b47b57fc3d73489a6a235a45a3413a9&quot;,&quot;not_after&quot;:1795466221,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-6a94a21ef8cb4b5e (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 03fa84200309e44258f795936917f291
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;53fcf939b86894dbe40c801473060b8c&quot;,&quot;not_after&quot;:1795466223,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-dfecb1940d1cd875 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 6994cd5d027dc2803fca516704be966f
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;49a6dc19734dab1f94c7c14b67b1800d&quot;,&quot;not_after&quot;:1795466225,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-3b3214a7d9a0eb98 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 5d30ad86118b82ed67d86282735dbd4f
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;799499c9fb9df6d1dc9f80fd8808a587&quot;,&quot;not_after&quot;:1795466226,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-88eef11158d74727 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 7566bc7765046eeef9a6d5a71bec9f05
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;7da632d442e9725d15e6917d2618454c&quot;,&quot;not_after&quot;:1795466229,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-c6300b4b3ab7bf74 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 677969c664592cd97907777c9dcd983a
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;5734fd95f9d4020a8500f90ec99e701b&quot;,&quot;not_after&quot;:1795466230,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-9dcb6e7170e53b15 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 176a63bd5ee94dec90c7cbacfa305d9c
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;69215205bc9eb12327b88062c5cd2190&quot;,&quot;not_after&quot;:1795466232,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-7a164475433cf8ba (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 0525ea7d24e7b40a497beac86284f1a2
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;4b9052621f98e81c30785ef6dbb2559b&quot;,&quot;not_after&quot;:1795466234,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: policy /metrics: ironmesh_kick_total{result=ok} +20, ironmesh_revocation_latency_seconds count 20 sum 0.090 s (mean 0.004 s, revoked_at -&gt; kick)
+evidence: policy log: {&quot;ts&quot;:&quot;2026-11-09T22:37:15.6352255+02:00&quot;,&quot;level&quot;:&quot;info&quot;,&quot;msg&quot;:&quot;revoked session kicked&quot;,&quot;service&quot;:&quot;policy&quot;,&quot;device_id&quot;:&quot;dev-7a164475433cf8ba&quot;,&quot;tenant_id&quot;:&quot;7f5d6207-dff5-425e-8c78-65cbe0b384cd&quot;,&quot;event_id&quot;:&quot;conformance-863ed969-edb2-46a7-aa2d
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.acl" name="C-ACL-1 Publish to another device&apos;s topic" time="1.631">
+      <system-out>criterion: `publish_result.ok=false` (or disconnect) and harness subscriber receives nothing
+measure outcome im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-e7b05dd908d85b6d/telemetry = disconnected
+measure outcome im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-e7b05dd908d85b6d/cmd/ack = disconnected
+measure outcome im/v1/6726f038-0285-4b8e-97c6-8d0e504d18d9/dev-c8e2c387179c3223/telemetry = disconnected
+measure outcome im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-c8e2c387179c3223/cmd/req = disconnected
+evidence: DUT dev-c8e2c387179c3223 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 3576c1caac2c2677355fbc7d9cd32060
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;4df6293576919eeef60c1806b0e24baa&quot;,&quot;not_after&quot;:1795466236,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: publish_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-e7b05dd908d85b6d/telemetry retain=false: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-e7b05dd908d85b6d/telemetry&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-e7b05dd908d85b6d/telemetry&quot;}; policy authz allowed=false
+evidence: publish_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-e7b05dd908d85b6d/cmd/ack retain=false: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-e7b05dd908d85b6d/cmd/ack&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-e7b05dd908d85b6d/cmd/ack&quot;}; policy authz allowed=false
+evidence: publish_raw im/v1/6726f038-0285-4b8e-97c6-8d0e504d18d9/dev-c8e2c387179c3223/telemetry retain=false: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/6726f038-0285-4b8e-97c6-8d0e504d18d9/dev-c8e2c387179c3223/telemetry&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/6726f038-0285-4b8e-97c6-8d0e504d18d9/dev-c8e2c387179c3223/telemetry&quot;}; policy authz allowed=false
+evidence: publish_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-c8e2c387179c3223/cmd/req retain=false: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-c8e2c387179c3223/cmd/req&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-c8e2c387179c3223/cmd/req&quot;}; policy authz allowed=false
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.acl" name="C-ACL-2 Subscribe to another device&apos;s command topic or wildcard" time="0.238">
+      <system-out>criterion: `subscribe_result.granted=false`
+measure reason_code im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-72259cb7fd001ed6/cmd/req = 135
+measure reason_code im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-72259cb7fd001ed6/config = 135
+measure reason_code im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/# = 135
+measure reason_code im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/+/cmd/req = 135
+measure reason_code im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-049e67ca6bdbf09d/# = 135
+measure reason_code # = 135
+measure reason_code $SYS/# = 135
+measure reason_code $share/bridge/im/v1/# = 135
+measure reason_code im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-049e67ca6bdbf09d/telemetry = 135
+evidence: DUT dev-049e67ca6bdbf09d (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 5336e042bb9be61496b7fe6636dfc4bc
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;2f69376ac7cca81fd67330d6eee04e14&quot;,&quot;not_after&quot;:1795466237,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: subscribe_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-72259cb7fd001ed6/cmd/req: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-72259cb7fd001ed6/cmd/req&quot;}
+evidence: subscribe_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-72259cb7fd001ed6/config: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-72259cb7fd001ed6/config&quot;}
+evidence: subscribe_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/#&quot;}
+evidence: subscribe_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/+/cmd/req: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/+/cmd/req&quot;}
+evidence: subscribe_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-049e67ca6bdbf09d/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-049e67ca6bdbf09d/#&quot;}
+evidence: subscribe_raw #: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;#&quot;}
+evidence: subscribe_raw $SYS/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;$SYS/#&quot;}
+evidence: subscribe_raw $share/bridge/im/v1/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;$share/bridge/im/v1/#&quot;}
+evidence: subscribe_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-049e67ca6bdbf09d/telemetry: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-049e67ca6bdbf09d/telemetry&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.acl" name="C-ACL-3 Retained publish on telemetry" time="1.024">
+      <system-out>criterion: rejected
+measure outcome = disconnected
+measure outcome events (retained) = disconnected
+evidence: DUT dev-0445492196e4909d (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 7713ef601b327d931c64b9c907009dc6
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;73faad37d24123b5ca637a4e9c179ddf&quot;,&quot;not_after&quot;:1795466238,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: publish_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-0445492196e4909d/telemetry retain=true: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-0445492196e4909d/telemetry&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-0445492196e4909d/telemetry&quot;}; policy authz allowed=false
+evidence: publish_raw im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-0445492196e4909d/events retain=true: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-0445492196e4909d/events&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-0445492196e4909d/events&quot;}; policy authz allowed=false
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-1 Unsigned image" time="1.334">
+      <system-out>criterion: `ota_state{state=rejected}`; active slot unchanged
+measure final_state = rejected
+measure error = unsigned
+measure artifact_downloads = 0
+evidence: DUT dev-5f5a17b5224e87ef (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 67a15883fe7d69f7e304acec1431beba
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;21aad5b27831882f4d35bb8244812ce3&quot;,&quot;not_after&quot;:1795466239,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: OtaNotify campaign 70a4e53a-e682-4654-8535-672230ed5dc4: version_code 101, image 49664 B sha256 9cda2235d9ba61d1eecfbf35fa33f4126f5ece209ceeab9d9a5743a6ee47e3bb, served 49664 B
+evidence: ota_state sequence: [&quot;received&quot;, &quot;rejected(unsigned)&quot;]
+evidence: ota_slots before {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0}]} after {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0}]}
+evidence: signed OtaStatus uplinks (state, error): [(0, None), (7, Some(&quot;COSE_TAG&quot;))]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-2 Tampered image (1 byte flipped, valid manifest)" time="1.636">
+      <system-out>criterion: `ota_state{state=rejected, error=image_hash}`
+measure final_state = rejected
+measure error = image_hash
+measure artifact_downloads = 1
+evidence: DUT dev-16c95d5a6f92755f (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 559bf7ac3ab8a9ce7a8111b3f14471ec
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;730ef71d451dd02e917b446662789e1a&quot;,&quot;not_after&quot;:1795466240,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: OtaNotify campaign 5b765848-817c-4cc9-b7f3-258c015e65db: version_code 101, image 49664 B sha256 9cda2235d9ba61d1eecfbf35fa33f4126f5ece209ceeab9d9a5743a6ee47e3bb, served 49664 B
+evidence: ota_state sequence: [&quot;received&quot;, &quot;downloading&quot;, &quot;downloading&quot;, &quot;verifying&quot;, &quot;rejected(image_hash)&quot;]
+evidence: ota_slots before {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0}]} after {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0}]}
+evidence: signed OtaStatus uplinks (state, error): [(0, None), (1, None), (1, None), (2, None), (7, Some(&quot;MF_HASH_MISMATCH&quot;))]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-3 Manifest signed by an untrusted key" time="1.686">
+      <system-out>criterion: rejected
+measure final_state = rejected
+measure error = untrusted_key
+measure artifact_downloads = 0
+evidence: DUT dev-4a06e5b07e3d604b (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 5d66449ef24f251c519d0d4b7cb82b1b
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;6f20c0e3761d367a19f8a0b95151a34f&quot;,&quot;not_after&quot;:1795466242,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: OtaNotify campaign 6319d16d-a30a-45de-825e-c15952b0e2b4: version_code 101, image 49664 B sha256 9cda2235d9ba61d1eecfbf35fa33f4126f5ece209ceeab9d9a5743a6ee47e3bb, served 49664 B
+evidence: ota_state sequence: [&quot;received&quot;, &quot;rejected(untrusted_key)&quot;]
+evidence: ota_slots before {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0}]} after {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0}]}
+evidence: signed OtaStatus uplinks (state, error): [(0, None), (7, Some(&quot;COSE_UNKNOWN_KEY&quot;))]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-4 Downgrade (`version_code` not greater)" time="1.325">
+      <system-out>criterion: rejected
+measure final_state = rejected
+measure error = downgrade
+measure artifact_downloads = 0
+evidence: DUT dev-885e9ef9cf5f9006 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 11faa5e7177486489d5eedf3d33bb306
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;01aaf68416d1934e2dbdeb7b199be9d7&quot;,&quot;not_after&quot;:1795466243,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: OtaNotify campaign 1d81dbcb-fd00-4013-8ea9-22debb4cf7d4: version_code 100, image 49664 B sha256 9cda2235d9ba61d1eecfbf35fa33f4126f5ece209ceeab9d9a5743a6ee47e3bb, served 49664 B
+evidence: ota_state sequence: [&quot;received&quot;, &quot;rejected(downgrade)&quot;]
+evidence: ota_slots before {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0}]} after {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0}]}
+evidence: signed OtaStatus uplinks (state, error): [(0, None), (7, Some(&quot;MF_ROLLBACK&quot;))]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-5 Valid update applies and is marked healthy" time="0.387">
+      <system-out>criterion: `rebooted{reason=ota_apply}`, new `version_code`, `ota_state=success`
+measure new_version_code = 101
+measure image_sha256 = 38a75ec340d75debddaf93f02cde6099b90d0dda7f073b9d249412a46a56a558
+evidence: DUT dev-e4309f840c8526ec (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 4b18084d86b39350301b607e55db5a7f
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;479f07a4aeb8d548f2ddae52e6a633bd&quot;,&quot;not_after&quot;:1795466245,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: OtaNotify campaign a51108a8-dbb5-4c6b-a6aa-b6f060b9b188: version_code 101, image 53329 B sha256 38a75ec340d75debddaf93f02cde6099b90d0dda7f073b9d249412a46a56a558, served 53329 B
+evidence: ota_state sequence: [&quot;received&quot;, &quot;downloading&quot;, &quot;downloading&quot;, &quot;verifying&quot;, &quot;applying&quot;, &quot;rebooting&quot;, &quot;success&quot;]
+evidence: rebooted {&quot;active_slot&quot;:&quot;b&quot;,&quot;reason&quot;:&quot;ota_apply&quot;,&quot;version_code&quot;:101}
+evidence: ota_slots after: {&quot;active_slot&quot;:&quot;b&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;38a75ec340d75debddaf93f02cde6099b90d0dda7f073b9d249412a46a56a558&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.1.0&quot;,&quot;version_code&quot;:101}]}
+evidence: signed OtaStatus{state=5 success} uplink, fw_hash matches the image: true
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-6 Update that fails its health check rolls back" time="15.724">
+      <system-out>criterion: `rebooted{reason=rollback}`, previous slot active, `ota_state=rolled_back`
+measure rollback_error = health_check
+measure seconds_apply_to_rollback = 15.0
+evidence: DUT dev-9edd4c25d85a5744 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 0b1b8f95b59850cc34b8b8f8ea87d2aa
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;793e8d9c172605add4924ef10f50e5a1&quot;,&quot;not_after&quot;:1795466245,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: OtaNotify campaign af2de6b6-6030-4d73-8267-24072d4bf598: version_code 101, image 49852 B sha256 d707cc4e82429a8ad6fb618fd6094621f2f7752dbba674d826ece0426835f281, served 49852 B
+evidence: rebooted {&quot;active_slot&quot;:&quot;b&quot;,&quot;reason&quot;:&quot;ota_apply&quot;,&quot;version_code&quot;:101} then health check without broker access
+evidence: rebooted {&quot;active_slot&quot;:&quot;a&quot;,&quot;reason&quot;:&quot;rollback&quot;,&quot;version_code&quot;:100}
+evidence: ota_state sequence: [&quot;received&quot;, &quot;downloading&quot;, &quot;downloading&quot;, &quot;verifying&quot;, &quot;applying&quot;, &quot;rebooting&quot;, &quot;rolled_back(health_check)&quot;]
+evidence: ota_slots before {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0}]} after {&quot;active_slot&quot;:&quot;a&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;4cb2d74483ab36b04aff112fc132c1d86c5017c460e151f6ddce991541119e13&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.0.0&quot;,&quot;version_code&quot;:100},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;d707cc4e82429a8ad6fb618fd6094621f2f7752dbba674d826ece0426835f281&quot;,&quot;state&quot;:&quot;inval...
+evidence: signed OtaStatus{state=6 rolled_back} delivered after reconnecting
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-7 Delta update" time="0.329">
+      <system-out>criterion: applied image hash equals full image hash
+measure patch_bytes = 16650
+measure image_bytes = 53361
+measure applied_image_sha256 = dc8ef08b09eb854409e8e32e8fb3663b8f5eaf544a80198f2633ab183c588f5a
+evidence: DUT dev-934f465f9cddbddd (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 39c0bde1b97d8b8bb55804b9abb6cf68
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;3dea607efca91eccd01897ca04596be8&quot;,&quot;not_after&quot;:1795466261,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: delta base: the factory image (hash verified against ota_slots)
+evidence: OtaNotify campaign dcb0ab8c-dab3-4c72-a48a-0f0470b31609: version_code 101, image 53361 B sha256 dc8ef08b09eb854409e8e32e8fb3663b8f5eaf544a80198f2633ab183c588f5a, served 16650 B (IMDELTA1 patch)
+evidence: ota_state sequence: [&quot;received&quot;, &quot;downloading&quot;, &quot;downloading&quot;, &quot;verifying&quot;, &quot;applying&quot;, &quot;rebooting&quot;, &quot;success&quot;]
+evidence: rebooted {&quot;active_slot&quot;:&quot;b&quot;,&quot;reason&quot;:&quot;ota_apply&quot;,&quot;version_code&quot;:101}
+evidence: ota_slots after: {&quot;active_slot&quot;:&quot;b&quot;,&quot;pending_slot&quot;:null,&quot;slots&quot;:[{&quot;name&quot;:&quot;a&quot;,&quot;sha256_hex&quot;:&quot;&quot;,&quot;state&quot;:&quot;empty&quot;,&quot;version&quot;:&quot;&quot;,&quot;version_code&quot;:0},{&quot;name&quot;:&quot;b&quot;,&quot;sha256_hex&quot;:&quot;dc8ef08b09eb854409e8e32e8fb3663b8f5eaf544a80198f2633ab183c588f5a&quot;,&quot;state&quot;:&quot;valid&quot;,&quot;version&quot;:&quot;1.1.0&quot;,&quot;version_code&quot;:101}]}
+evidence: signed OtaStatus{state=5 success} uplink, fw_hash matches the image: true
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rpl" name="C-RPL-1 Replayed command (same `seq`)" time="2.250">
+      <system-out>criterion: `message_rejected{code=ENV_REPLAY}`; command not executed twice
+measure rejection_code = ENV_REPLAY
+measure command_executed_count = 1
+measure command_acks_on_wire = 1
+evidence: DUT dev-3daab6d13905422b (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 7397ea359691ab7a21326016393bf46b
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;398c78ae923c9fd2fa48861e0c20a3ee&quot;,&quot;not_after&quot;:1795466261,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: original seq 1000: command_executed {&quot;cmd_id&quot;:&quot;e103c45c-17eb-424c-9d57-e781ef3daae5&quot;,&quot;status&quot;:0}
+evidence: signed CommandAck seq 2 echoes cmd_id and nonce
+evidence: message_rejected {&quot;code&quot;:&quot;ENV_REPLAY&quot;,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-3daab6d13905422b/cmd/req&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rpl" name="C-RPL-2 Command with stale timestamp" time="2.260">
+      <system-out>criterion: `message_rejected{code=ENV_TS_SKEW}`
+measure rejection_code = ENV_TS_SKEW
+measure rejection_code = ENV_TS_SKEW
+evidence: DUT dev-343cacbb9f822a21 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 13fbbb9a9fa809cd970b516d24c28606
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;4b38505bd9ffdaed2d20b3529eef3a28&quot;,&quot;not_after&quot;:1795466263,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: command seq 1001 with ts = now - 400 s (window 300 s)
+evidence: message_rejected {&quot;code&quot;:&quot;ENV_TS_SKEW&quot;,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-343cacbb9f822a21/cmd/req&quot;}
+evidence: message_rejected {&quot;code&quot;:&quot;ENV_TS_SKEW&quot;,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-343cacbb9f822a21/cmd/req&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rpl" name="C-RPL-3 Command signed by a non-tenant key" time="2.334">
+      <system-out>criterion: `message_rejected{code=COSE_SIGNATURE}`
+measure rejection_code = COSE_SIGNATURE
+evidence: DUT dev-2db817fa9d0b7951 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 75ca9af0a46d942d5c4e515c7c8690a4
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;0d13a215c998ef19948d62b7b177ee41&quot;,&quot;not_after&quot;:1795466266,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: command seq 1003 with kid tenant-cmd-&lt;tenant&gt; signed by a non-tenant Ed25519 key
+evidence: message_rejected {&quot;code&quot;:&quot;COSE_SIGNATURE&quot;,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-2db817fa9d0b7951/cmd/req&quot;}
+evidence: a genuine command with the forged seq was executed afterwards (store not advanced by the forgery)
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rpl" name="C-RPL-4 Device `seq` strictly increases across reboot" time="0.305">
+      <system-out>criterion: `status.seq_out` after reboot &gt; before
+measure seq_out_before = 5
+measure seq_out_after = 6
+measure last_seq_sent_before = 4
+measure first_seq_sent_after = 6
+evidence: DUT dev-acfd36fde358a237 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 0b9068a11fd0e6f01b38ee2e4af7e131
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;6f081587fe3abe6767104a6a8e20fa18&quot;,&quot;not_after&quot;:1795466268,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: rebooted {&quot;active_slot&quot;:&quot;a&quot;,&quot;reason&quot;:&quot;requested&quot;,&quot;version_code&quot;:100}
+evidence: telemetry seqs on the wire: [2, 3, 4, 6]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.off" name="C-OFF-1 Offline buffering and resync" time="1.630">
+      <system-out>criterion: telemetry sent while `net_down` is delivered after `net_up`, in order, no gaps, `buffer_flushed`
+measure buffered_and_flushed = 25
+measure telemetry_on_wire = 32
+evidence: DUT dev-aa0adf5c844fab2e (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 6b35d34fd0d2808712600cef5123168f
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;07d84e820e4d3b049a2eed5c1164fe11&quot;,&quot;not_after&quot;:1795466268,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: net_down -&gt; disconnected {&quot;reason&quot;:&quot;network down&quot;,&quot;reason_code&quot;:128}
+evidence: offline send_telemetry 25 -&gt; {&quot;first_seq&quot;:4,&quot;last_seq&quot;:28}, status.buffered=25
+evidence: net_up -&gt; buffer_flushed {&quot;count&quot;:25,&quot;first_seq&quot;:4,&quot;last_seq&quot;:28}
+evidence: telemetry seqs on the wire (32): [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.cfg" name="C-CFG-1 Encrypted config delivery" time="2.270">
+      <system-out>criterion: DUT applies config; retained broker copy is ciphertext only
+measure applied = yes (replay of the same ciphertext rejected with ENV_REPLAY)
+measure retained_bytes = 352
+measure retained_ciphertext_bytes = 204
+evidence: DUT dev-79b67e9685d2868c (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 553a7ec00dd56605e9da7e4ecf14f4f3
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;5bfa3d16945de9f69760dc23d94c6020&quot;,&quot;not_after&quot;:1795466270,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:46520&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: Config v7 (tenant-signed, seq 1000) HPKE-wrapped to the certificate key of 5bfa3d16945de9f69760dc23d94c6020, published retained
+evidence: config_applied {&quot;version&quot;:7}
+evidence: re-delivery: message_rejected {&quot;code&quot;:&quot;ENV_REPLAY&quot;,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-79b67e9685d2868c/config&quot;}
+evidence: config wrapped to a foreign key: message_rejected {&quot;code&quot;:&quot;HPKE_OPEN&quot;,&quot;topic&quot;:&quot;im/v1/7f5d6207-dff5-425e-8c78-65cbe0b384cd/dev-79b67e9685d2868c/config&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.hook" name="C-HOOK-1 Release build has no control channel" time="0.212">
+      <system-out>criterion: release `agent-rs` exits non-zero on `--dut`
+measure exit_code = 2
+evidence: C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\duts\agent-rs-release\release\ironmesh-agent.exe --dut -&gt; exit Some(2); stderr: ironmesh-agent: the DUT control channel is not compiled into this build (cargo feature `dut-control`); refusing --dut
+</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>
