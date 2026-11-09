@@ -1,6 +1,7 @@
 // Package mgmt serves the policy management API from API_CONTRACT.md section 4: inspect, publish
 // and dry-run the Rego policy, browse its history, and list the revocation cache. Every route is
-// protected by the ES256 bearer-token Guard with per-route minimum roles.
+// protected by the bearer-token Guard (console OIDC access tokens or ES256 service JWTs) with
+// per-route minimum roles.
 package mgmt
 
 import (
@@ -293,10 +294,16 @@ func (a *API) revocations(w http.ResponseWriter, r *http.Request) {
 		}
 		after = &c
 	}
+	// Callers bound to a tenant (console OIDC tokens carry tenant_id) only see that tenant's
+	// revocations; service tokens without a tenant see every entry.
+	claims, _ := auth.ClaimsFromContext(r.Context())
 	items := make([]revocationItem, 0, limit)
 	var next *string
 	for _, e := range a.revoked.Entries() { // ascending by revoked_at, event id
 		if after != nil && !entryAfter(e, *after) {
+			continue
+		}
+		if claims.TenantID != "" && e.TenantID != claims.TenantID {
 			continue
 		}
 		if len(items) == limit {

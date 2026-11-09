@@ -487,3 +487,47 @@ func TestInternalErrors(t *testing.T) {
 		t.Errorf("evaluate with failing engine = %d", got)
 	}
 }
+
+func TestRevocationsScopedToTokenTenant(t *testing.T) {
+	e := newEnv(t)
+	const otherTenant = "0b6f3c1e-2d4a-4e8b-9f10-aa55aa55aa55"
+	base := fixedNow.Add(-time.Hour)
+	for i, tn := range []string{tenant, otherTenant, ""} {
+		id := string(rune('a' + i))
+		if _, err := e.cache.Upsert(revocation.Entry{EventID: "ev-" + id, Serial: "1" + id, DeviceID: "dev-000000000000000" + id, TenantID: tn, Reason: "keyCompromise", RevokedAt: base.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call := func(claims map[string]any) []revocationItem {
+		t.Helper()
+		tok, err := e.signer.Sign(claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/v1/revocations", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d: %s", resp.StatusCode, raw)
+		}
+		var p struct {
+			Items []revocationItem `json:"items"`
+		}
+		decode(t, raw, &p)
+		return p.Items
+	}
+	exp := fixedNow.Add(time.Hour).Unix()
+	got := call(map[string]any{"sub": "u", "aud": "policy", "role": "viewer", "exp": exp, "tenant_id": tenant})
+	if len(got) != 1 || got[0].TenantID != tenant {
+		t.Fatalf("tenant-scoped = %+v", got)
+	}
+	// A service token without tenant_id sees every tenant (and CRL-sourced entries).
+	if got := call(map[string]any{"sub": "registry", "aud": "policy", "role": "viewer", "exp": exp}); len(got) != 3 {
+		t.Fatalf("service view = %+v", got)
+	}
+}
