@@ -540,6 +540,23 @@ async def enrolled(
             dev.fw_hash_hex = body.fw_hash_hex
         dev.last_error = None
         await u.tx.save_device(dev)
+        # A retained config is HPKE-wrapped to the certificate key that was current when it was
+        # published. Re-wrap it to the new key (durably, through the action outbox) so a
+        # superseded or leaked key cannot decrypt the configuration the broker keeps retained.
+        stored_config = await u.tx.get_config(dev.id)
+        if stored_config is not None:
+            await u.tx.insert_action(
+                ActionRecord(
+                    tenant_id=u.tenant_id,
+                    id=str(uuid.uuid4()),
+                    kind="publish_config",
+                    device_id=dev.id,
+                    payload={"version": stored_config.version, "cause": "rewrap_on_enroll"},
+                    created_at=now,
+                    next_attempt_at=now,
+                    last_error=None,
+                )
+            )
         kind = "renew" if renewal else "enroll"
         await add_timeline(
             u,

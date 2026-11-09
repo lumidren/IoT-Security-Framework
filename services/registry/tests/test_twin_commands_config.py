@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from datetime import timedelta
 
+import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from ironmesh_wire import AckStatus, Direction, envelope, hpke, ids
+from ironmesh_wire.errors import WireError
 from ironmesh_wire.ids import TopicClass
 
 from app.auth import SYSTEM
@@ -356,3 +358,34 @@ async def test_config_requires_cert_and_handles_broker_failure(env: Env) -> None
     assert r.status_code == 409
     env.clock.advance(days=1)
     assert timedelta(days=1)
+
+
+async def test_retained_config_rewrapped_to_new_key_on_renewal(env: Env) -> None:
+    """T-48: after a certificate renewal the retained config is re-wrapped to the new key, so the
+    superseded (possibly leaked) key can no longer decrypt what the broker keeps retained."""
+    t = await env.tenant()
+    dev, old = await env.active_device(t)
+    did = dev["id"]
+    cfg = {"wifi_psk": "correct horse battery staple"}
+    r = await env.client.put(
+        f"/v1/devices/{did}/config", headers=env.auth(t, "admin"), json={"config": cfg}
+    )
+    assert r.status_code == 200, r.text
+    assert hpke.unwrap_config(env.mqtt.on("config")[-1].payload, old.key)
+
+    new = await env.enroll(t, did)  # renewal: new key, new certificate
+    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) >= 1
+    latest = env.mqtt.on("config")[-1]
+    assert latest.retain
+    inner = hpke.unwrap_config(latest.payload, new.key)
+    msg = verify_downlink(inner, t, await tenant_public_key(env, t), int(env.clock().timestamp()))
+    assert isinstance(msg.body, envelope.Config) and dict(msg.body.settings) == cfg
+    with pytest.raises(WireError):
+        hpke.unwrap_config(latest.payload, old.key)
+
+    # A device without stored config queues nothing extra on enrollment.
+    other, _ = await env.active_device(t)
+    before = len(env.mqtt.on("config"))
+    await env.enroll(t, other["id"])
+    await device_svc.run_pending_actions(env.ctx, SYSTEM, [t])
+    assert len(env.mqtt.on("config")) == before
