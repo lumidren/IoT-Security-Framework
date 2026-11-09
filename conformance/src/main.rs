@@ -6,6 +6,7 @@
 //! ironmesh-conformance summary [--results-dir conformance/results]
 //! ironmesh-conformance list
 //! ironmesh-conformance build
+//! ironmesh-conformance load [--devices 10000] [--rate 200] [--sustain-s 600] [--interval-s 10]   (see loadtest/README.md)
 //! ```
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -53,6 +54,15 @@ enum Cmd {
         /// Output directory.
         #[arg(long)]
         out: PathBuf,
+    },
+    /// Load test: N simulated devices against the hermetic cloud and the real policy service.
+    Load(Box<ironmesh_conformance::load::LoadArgs>),
+    /// Internal: the fleet process of `load`.
+    #[command(hide = true)]
+    LoadFleet {
+        /// Fleet spec written by `load`.
+        #[arg(long)]
+        spec: PathBuf,
     },
 }
 
@@ -285,6 +295,8 @@ async fn run(a: RunArgs) -> Result<bool> {
                 run_dir: run_dir.clone(),
                 repo_root: p.repo.clone(),
                 tenant_id: tenant.clone(),
+                policy_env: Vec::new(),
+                hook_pool: None,
             })
             .await?
         }
@@ -383,6 +395,22 @@ fn write_summary(results_root: &Path, repo: &Path) -> Result<()> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Cmd::LoadFleet { spec } = &cli.cmd {
+        // Separate process, own runtime (worker count from the spec); logs go to stderr.
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+            )
+            .with_writer(std::io::stderr)
+            .init();
+        return match ironmesh_conformance::load::fleet::fleet_main(spec) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("ironmesh-conformance load-fleet: {e:#}");
+                ExitCode::from(2)
+            }
+        };
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
@@ -409,6 +437,18 @@ fn main() -> ExitCode {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Build => build_all(&p, true, true, true, true, true).map(|()| ExitCode::SUCCESS),
+        Cmd::Load(a) => {
+            let policy = a.policy_bin.clone().unwrap_or_else(|| p.policy());
+            let built = if policy.is_file() { Ok(()) } else { build_go(&p, "./services/policy/cmd/policy", &p.policy()) };
+            built.and_then(|()| runtime.block_on(ironmesh_conformance::load::run(*a, policy, go_binary()))).map(|(_, passed)| {
+                if passed {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            })
+        }
+        Cmd::LoadFleet { .. } => Ok(ExitCode::SUCCESS),
         Cmd::ExportPki { out } => ironmesh_conformance::harness::pki::TestPki::generate(&[]).and_then(|pki| pki.save(&out)).map(|()| {
             eprintln!("harness PKI written to {} (anchors.pem, est-pin.hex, bundle.pub.hex, factory-ca.*)", out.display());
             ExitCode::SUCCESS

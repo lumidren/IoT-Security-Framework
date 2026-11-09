@@ -27,6 +27,15 @@ all of them, including the real PKI binaries for `--pki-bin`. Requirements: Rust
 Windows `C:\Program Files\Go\bin\go.exe` is used when `go` is not on `PATH`), MSVC for the ESP32 C
 core. No Docker, no EMQX, no Postgres.
 
+## Load test
+
+`ironmesh-conformance load` runs N simulated devices (default 10 000) against the same hermetic
+cloud and the real policy service. The devices run in a separate fleet process, built on the
+agent-rs device stack. The command measures throughput, latency, policy decisions, errors and
+CPU/RSS per process, and writes the results to `loadtest/results/`. The broker double runs in load
+mode for this command: no observation log, topic-indexed routing and a keep-alive hook pool. See
+[`../loadtest/README.md`](../loadtest/README.md) and [`../loadtest/REPORT.md`](../loadtest/REPORT.md).
+
 ## Architecture
 
 ```mermaid
@@ -80,6 +89,7 @@ flowchart LR
 | `src/dut/` | `Dut` handle, line-protocol transport (`link.rs`, stdio and `@@IM ` serial framing), launchers per target |
 | `src/cases/` | One module per case family |
 | `src/report/` | JUnit, Markdown report, SUMMARY |
+| `src/load/` | Load test: orchestrator, fleet process, uplink verifier, sampler, statistics, report |
 
 ### Design decisions
 

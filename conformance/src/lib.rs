@@ -10,12 +10,14 @@
 //!   `esp32-hil`).
 //! * [`cases`]: one module per case family of the DUT_PROTOCOL case table.
 //! * [`report`]: JUnit XML, the per-target Markdown report and the cross-target summary.
+//! * [`load`]: the 10 000-device load test on the same hermetic cloud (`ironmesh-conformance load`).
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod cases;
 pub mod dut;
 pub mod harness;
+pub mod load;
 pub mod report;
 pub mod util;
 
