@@ -135,6 +135,25 @@ fn server_sans(extra: &[String]) -> Vec<String> {
     v
 }
 
+/// A `svc-*` client certificate (`CN=<cn>, OU=services, O=IronMesh`, clientAuth), the profile of
+/// `pkictl issue-server` that the policy authn hook requires for service principals.
+fn service_client_leaf(ca: &Ca, cn: &str) -> Result<Leaf> {
+    let key = p256()?;
+    let mut p = CertificateParams::new(Vec::<String>::new())?;
+    p.distinguished_name.push(DnType::OrganizationName, "IronMesh");
+    p.distinguished_name.push(DnType::OrganizationalUnitName, "services");
+    p.distinguished_name.push(DnType::CommonName, cn);
+    p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    p.serial_number = Some(SerialNumber::from_slice(&util::random_serial()));
+    let now = time::OffsetDateTime::now_utc();
+    p.not_before = now - time::Duration::hours(1);
+    p.not_after = now + time::Duration::days(90);
+    p.use_authority_key_identifier_extension = true;
+    let der = p.signed_by(&key, &ca.issuer())?.der().to_vec();
+    Ok(Leaf { der, key_der: key.serialize_der() })
+}
+
 fn server_leaf(ca: &Ca, cn: &str, sans: &[String]) -> Result<Leaf> {
     let key = p256()?;
     let mut p = CertificateParams::new(sans.to_vec())?;
@@ -197,6 +216,8 @@ pub struct CrlEntry {
     pub serial: Vec<u8>,
     /// Revocation time (Unix s).
     pub revoked_at: u64,
+    /// CRL reason.
+    pub reason: RevocationReason,
 }
 
 /// The hermetic PKI.
@@ -223,6 +244,8 @@ pub struct TestPki {
     pub est: Leaf,
     /// Artifact server certificate (Services CA).
     pub artifacts: Leaf,
+    /// `svc-registry` client certificate (Services CA): the downlink publisher's MQTT identity.
+    pub registry_client: Leaf,
     /// PKI bundle signing key (Ed25519, baked into firmware).
     pub bundle_key: ed25519_dalek::SigningKey,
     /// Revoked operational serials (CRL content).
@@ -259,6 +282,7 @@ impl TestPki {
             rogue_distinct_broker: server_leaf(&rogue_distinct, "mqtt", &sans)?,
             est: server_leaf(&services, "pki", &sans)?,
             artifacts: server_leaf(&services, "ota", &sans)?,
+            registry_client: service_client_leaf(&services, "svc-registry")?,
             root,
             factory,
             device,
@@ -312,6 +336,7 @@ impl TestPki {
             rogue_distinct_broker: server_leaf(&rogue_distinct, "mqtt", &sans)?,
             est: server_leaf(&services, "pki", &sans)?,
             artifacts: server_leaf(&services, "ota", &sans)?,
+            registry_client: service_client_leaf(&services, "svc-registry")?,
             root,
             factory,
             device,
@@ -377,10 +402,18 @@ impl TestPki {
     /// # Errors
     /// rcgen failures.
     pub fn revoke(&self, serial: &[u8]) -> Result<Vec<u8>> {
+        self.revoke_with_reason(serial, RevocationReason::KeyCompromise)
+    }
+
+    /// Record a revocation with a CRL reason and return the regenerated CRL.
+    ///
+    /// # Errors
+    /// rcgen failures.
+    pub fn revoke_with_reason(&self, serial: &[u8], reason: RevocationReason) -> Result<Vec<u8>> {
         {
             let mut r = self.revoked.lock().map_err(|_| anyhow!("lock"))?;
             if !r.iter().any(|e| e.serial == serial) {
-                r.push(CrlEntry { serial: serial.to_vec(), revoked_at: util::now_unix() });
+                r.push(CrlEntry { serial: serial.to_vec(), revoked_at: util::now_unix(), reason });
             }
         }
         self.crl()
@@ -408,7 +441,7 @@ impl TestPki {
                 .map(|e| RevokedCertParams {
                     serial_number: SerialNumber::from_slice(&e.serial),
                     revocation_time: time::OffsetDateTime::from_unix_timestamp(e.revoked_at as i64).unwrap_or(now),
-                    reason_code: Some(RevocationReason::KeyCompromise),
+                    reason_code: Some(e.reason),
                     invalidity_date: None,
                 })
                 .collect(),

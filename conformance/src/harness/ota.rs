@@ -192,13 +192,32 @@ impl ArtifactServer {
     /// # Errors
     /// Bind / TLS failures.
     pub async fn start(host: &str, url_host: &str, pki: &TestPki) -> Result<Self> {
+        Self::start_with(host, url_host, (pki.artifacts.chain(&pki.services), pki.artifacts.key())).await
+    }
+
+    /// Start with an explicit server identity (the real PKI's `pkictl issue-server --cn ota`
+    /// certificate in `--pki-bin` runs, so devices trusting only that PKI can download).
+    ///
+    /// # Errors
+    /// Bind / TLS failures.
+    pub async fn start_with(
+        host: &str,
+        url_host: &str,
+        identity: (Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>),
+    ) -> Result<Self> {
         let store = Store::default();
         let router = Router::new().route("/fw/{name}", get(serve_file)).with_state(store.clone());
-        let cfg = net::server_config(pki.artifacts.chain(&pki.services), pki.artifacts.key(), ClientAuth::None, Versions::Both, &[])?;
+        let cfg = net::server_config(identity.0, identity.1, ClientAuth::None, Versions::Both, &[])?;
         let listener = net::bind(host, 0).await?;
         let addr = listener.local_addr()?;
         net::serve_https(listener, cfg, router);
         Ok(Self { addr, url_host: url_host.to_owned(), store })
+    }
+
+    /// Base URL of the served artifacts (`ota.base_url` of the devices).
+    #[must_use]
+    pub fn base_url(&self) -> String {
+        format!("https://{}:{}/fw", self.url_host, self.addr.port())
     }
 
     /// Publish bytes; returns the HTTPS URL.

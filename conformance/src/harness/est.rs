@@ -438,7 +438,27 @@ fn enroll_impl(
         e.push(csr_pin);
         st.issued.insert(facts.serial_hex.clone(), der.clone());
     }
-    ctx.registry.set_state(&client.device_id, "active");
+    // The PKI's synchronous `POST /internal/v1/devices/{id}/enrolled` (API_CONTRACT §1.12); a
+    // refusal fails the enrollment with 503 like the real PKI (which also revokes the certificate).
+    let ts = |t: u64| {
+        time::OffsetDateTime::from_unix_timestamp(t as i64)
+            .ok()
+            .and_then(|d| d.format(&time::format_description::well_known::Rfc3339).ok())
+            .unwrap_or_default()
+    };
+    let enrolled = super::registry::Enrolled {
+        serial_hex: facts.serial_hex.clone(),
+        not_before: ts(facts.not_before),
+        not_after: ts(facts.not_after),
+        se_type: a.se_type.as_str().to_owned(),
+        assurance_level: if a.se_type.as_str() == "software" { "software" } else { "hardware" }.into(),
+        fw_version: None,
+        fw_hash_hex: None,
+    };
+    if let Err(r) = ctx.registry.record_enrollment(&client.device_id, &enrolled) {
+        lock(&ctx.state).revoked.push(facts.serial_hex.clone());
+        return Err((StatusCode::SERVICE_UNAVAILABLE, format!("the registry could not record the enrollment ({}: {})", r.0, r.1)));
+    }
     rec.issued_der = Some(der.clone());
     rec.issued_serial_hex = Some(facts.serial_hex);
     let mut resp = pkcs7_response(&[der]);
@@ -534,6 +554,12 @@ impl EstServer {
     /// Mark a serial revoked (the EST server refuses it as a client certificate).
     pub fn revoke(&self, serial_hex: &str) {
         lock(&self.state).revoked.push(serial_hex.to_owned());
+    }
+
+    /// Whether `serial_hex` was revoked.
+    #[must_use]
+    pub fn is_revoked(&self, serial_hex: &str) -> bool {
+        lock(&self.state).revoked.iter().any(|s| s == serial_hex)
     }
 
     /// Enrollment attempts of a device.

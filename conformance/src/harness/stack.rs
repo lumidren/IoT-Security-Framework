@@ -27,6 +27,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::json;
 
+use super::jwt::ServiceJwt;
 use super::net::{self, http_request};
 use super::{unsupported, DeviceEndpoints};
 
@@ -57,6 +58,10 @@ pub struct StackConfig {
     pub svc_cert: PathBuf,
     /// Its key.
     pub svc_key: PathBuf,
+    /// Optional P-256 private key (PEM) whose public key is in the PKI's
+    /// `PKI_MGMT_JWT_PUBLIC_KEY_FILE`: every PKI management request then also carries a freshly
+    /// minted single-use ES256 JWT (`aud=pki`, `iss = sub` = the service of `svc_cert`'s CN).
+    pub svc_jwt_key: PathBuf,
     /// Tenant id provisioned in the stack.
     pub tenant_id: String,
     /// Tenant command key seed (hex) when the stack runs with a test tenant key; enables the
@@ -119,6 +124,7 @@ pub struct Stack {
     mgmt_tls: Arc<rustls::ClientConfig>,
     mqtt_tls: Arc<rustls::ClientConfig>,
     has_tenant_key: bool,
+    jwt: Option<ServiceJwt>,
 }
 
 fn read_pem_certs(path: &Path) -> Result<Vec<Vec<u8>>> {
@@ -140,13 +146,39 @@ impl Stack {
     pub fn new(cfg: StackConfig) -> Result<Self> {
         let anchors = read_pem_certs(&cfg.anchors_pem)?;
         let anchor_refs: Vec<&[u8]> = anchors.iter().map(Vec::as_slice).collect();
+        let svc_chain = read_pem_certs(&cfg.svc_cert)?;
+        let jwt = if cfg.svc_jwt_key.as_os_str().is_empty() {
+            None
+        } else {
+            let cn = svc_chain.first().and_then(|c| super::pki::cert_facts(c).ok()).and_then(|f| f.cn).unwrap_or_default();
+            let service = cn.trim_start_matches("svc-").to_owned();
+            Some(ServiceJwt::from_pem_file(&cfg.svc_jwt_key, &service, &service)?)
+        };
         let chain: Vec<rustls::pki_types::CertificateDer<'static>> =
-            read_pem_certs(&cfg.svc_cert)?.into_iter().map(rustls::pki_types::CertificateDer::from).collect();
+            svc_chain.into_iter().map(rustls::pki_types::CertificateDer::from).collect();
         let key = read_key(&cfg.svc_key)?;
         let mgmt_tls = net::client_config(&anchor_refs, Some((chain.clone(), key.clone_key())), &[])?;
         let mqtt_tls = net::client_config(&anchor_refs, Some((chain, key)), &[b"mqtt"])?;
         let has_tenant_key = cfg.tenant_key_seed_hex.len() == 64;
-        Ok(Self { cfg, anchors, mgmt_tls, mqtt_tls, has_tenant_key })
+        Ok(Self { cfg, anchors, mgmt_tls, mqtt_tls, has_tenant_key, jwt })
+    }
+
+    /// Headers of a PKI management request: a fresh single-use JWT per request when configured.
+    fn mgmt_headers(&self, json_body: bool) -> Result<Vec<(&'static str, String)>> {
+        let mut h = Vec::new();
+        if json_body {
+            h.push(("content-type", "application/json".to_string()));
+        }
+        if let Some(j) = &self.jwt {
+            h.push(("authorization", format!("Bearer {}", j.mint("pki", &[])?)));
+        }
+        Ok(h)
+    }
+
+    /// Base URL of the stack's artifact directory, if configured.
+    #[must_use]
+    pub fn artifact_base_url(&self) -> Option<String> {
+        (!self.cfg.artifact_base_url.is_empty()).then(|| self.cfg.artifact_base_url.trim_end_matches('/').to_owned())
     }
 
     /// Tenant signing key seed, if configured.
@@ -270,12 +302,12 @@ impl Stack {
     ///
     /// # Errors
     /// Non-2xx answers.
-    pub async fn revoke(&self, serial_hex: &str) -> Result<()> {
+    pub async fn revoke(&self, serial_hex: &str, reason: &str) -> Result<()> {
         let r = http_request(
             "POST",
             &self.pki(&format!("/v1/certificates/{serial_hex}/revoke")),
-            &[("content-type", "application/json".to_string())],
-            serde_json::to_vec(&json!({"reason": "keyCompromise"}))?,
+            &self.mgmt_headers(true)?,
+            serde_json::to_vec(&json!({ "reason": reason }))?,
             Some(self.mgmt_tls.clone()),
             Duration::from_secs(15),
         )
@@ -294,7 +326,7 @@ impl Stack {
         let r = http_request(
             "GET",
             &self.pki(&format!("/v1/certificates/{serial_hex}")),
-            &[],
+            &self.mgmt_headers(false)?,
             Vec::new(),
             Some(self.mgmt_tls.clone()),
             Duration::from_secs(10),
