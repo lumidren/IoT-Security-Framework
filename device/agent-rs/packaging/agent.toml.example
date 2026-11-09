@@ -33,7 +33,10 @@ product = "gateway-rpi"
 pq_required = false                # or IRONMESH_PQ_REQUIRED=1
 health_timeout_s = 120
 max_boot_attempts = 3
+# Artifact download hosts (T-60). When empty or absent, only the hosts of pki.est_host and
+# base_url are allowed - never "any host".
 allowed_hosts = ["artifacts.example.com"]
+# base_url = "https://ota.example.com/artifacts"
 max_image_size = 1073741824
 reboot_command = ["systemctl", "reboot"]
 

@@ -142,8 +142,13 @@ pub struct OtaSettings {
     pub health_timeout_s: u64,
     /// Boot attempts before the bootloader rolls back.
     pub max_boot_attempts: u32,
-    /// Download hosts allowed (empty: any host).
+    /// Artifact download hosts allowed (T-60). Empty (the default) means the hosts of the
+    /// configured EST endpoint (`pki.est_host`) and OTA base URL (`ota.base_url`), never "any
+    /// host"; see [`Settings::download_allowlist`].
     pub allowed_hosts: Vec<String>,
+    /// OTA service / artifact base URL (`https://host[:port]/...`); its host is allowlisted for
+    /// artifact downloads when `allowed_hosts` is empty.
+    pub base_url: Option<String>,
     /// Trust anchors for artifact downloads (PEM). Defaults to the PKI CA bundle.
     pub download_ca_bundle: Option<PathBuf>,
     /// Maximum image size (bytes).
@@ -162,6 +167,7 @@ impl Default for OtaSettings {
             health_timeout_s: 120,
             max_boot_attempts: 3,
             allowed_hosts: Vec::new(),
+            base_url: None,
             download_ca_bundle: None,
             max_image_size: 1 << 30,
             reboot_command: vec!["systemctl".into(), "reboot".into()],
@@ -312,7 +318,38 @@ impl Settings {
         if !matches!(self.ota.boot_control.as_str(), "file" | "fw_setenv") {
             return Err(SettingsError::Invalid("ota.boot_control must be file or fw_setenv".into()));
         }
+        if let Some(u) = &self.ota.base_url {
+            crate::ota::download::parse_https_url(u).map_err(|e| SettingsError::Invalid(format!("ota.base_url: {e}")))?;
+        }
+        if self
+            .ota
+            .allowed_hosts
+            .iter()
+            .any(|h| h.trim().is_empty() || h.contains(['/', '@', '*']) || (h.contains(':') && h.parse::<std::net::Ipv6Addr>().is_err()))
+        {
+            return Err(SettingsError::Invalid("ota.allowed_hosts entries must be bare host names (no scheme, port or wildcard)".into()));
+        }
         Ok(())
+    }
+
+    /// Hosts OTA artifacts may be downloaded from (T-60): `ota.allowed_hosts` when set,
+    /// otherwise the hosts of the configured EST endpoint and OTA base URL. Lower-cased; never
+    /// "any host".
+    #[must_use]
+    pub fn download_allowlist(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = if self.ota.allowed_hosts.is_empty() {
+            let base = self.ota.base_url.as_deref().and_then(|u| crate::ota::download::parse_https_url(u).ok()).map(|u| u.host);
+            std::iter::once(self.pki.est_host.trim_start_matches('[').trim_end_matches(']').to_owned()).chain(base).collect()
+        } else {
+            self.ota.allowed_hosts.clone()
+        };
+        for h in &mut hosts {
+            *h = h.trim().to_ascii_lowercase();
+        }
+        hosts.retain(|h| !h.is_empty());
+        hosts.sort();
+        hosts.dedup();
+        hosts
     }
 
     /// The baked-in bundle key.
@@ -371,6 +408,9 @@ mod tests {
         assert!(Settings::from_toml_with_env("[agent]\nbuffer_capacity = 0", Vec::new()).is_err());
         assert!(Settings::from_toml_with_env("[ota]\nboot_control = \"x\"", Vec::new()).is_err());
         assert!(Settings::from_toml_with_env("[mqtt]\nbackoff_scale = -1.0", Vec::new()).is_err());
+        assert!(Settings::from_toml_with_env("[ota]\nbase_url = \"http://ota\"", Vec::new()).is_err());
+        assert!(Settings::from_toml_with_env("[ota]\nallowed_hosts = [\"*\"]", Vec::new()).is_err());
+        assert!(Settings::from_toml_with_env("[ota]\nallowed_hosts = [\"https://ota\"]", Vec::new()).is_err());
         assert!(Settings::from_toml_with_env("not toml [", Vec::new()).is_err());
         let ok = Settings::from_toml_with_env(
             &format!("[pki]\nbundle_pubkey = \"{}\"\nest_pins = [\"{}\"]", "11".repeat(32), "22".repeat(32)),
@@ -383,5 +423,18 @@ mod tests {
         r.rebase(Path::new("/tmp/x"));
         assert!(r.agent.state_dir.ends_with("state"));
         assert!(Settings::load(None).is_ok() || std::env::vars().any(|(k, _)| k.starts_with("IRONMESH_")));
+    }
+
+    #[test]
+    fn download_allowlist_defaults_to_configured_endpoints() {
+        let mut s = Settings::default();
+        assert_eq!(s.download_allowlist(), vec!["pki.ironmesh.local".to_string()], "empty list is not 'any host'");
+        s.pki.est_host = "PKI.Example".into();
+        s.ota.base_url = Some("https://ota.example:8443/artifacts".into());
+        assert_eq!(s.download_allowlist(), vec!["ota.example".to_string(), "pki.example".to_string()]);
+        s.ota.allowed_hosts = vec!["Cdn.Example".into()];
+        assert_eq!(s.download_allowlist(), vec!["cdn.example".to_string()], "an explicit list is authoritative");
+        let t = Settings::from_toml_with_env("[pki]\nest_host = \"pki\"\n[ota]\nbase_url = \"https://ota/x\"", Vec::new()).unwrap();
+        assert_eq!(t.download_allowlist(), vec!["ota".to_string(), "pki".to_string()]);
     }
 }
