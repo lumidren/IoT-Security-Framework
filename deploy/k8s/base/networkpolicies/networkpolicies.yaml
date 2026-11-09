@@ -136,7 +136,31 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: [pki, registry, ota, anomaly]
+                values: [pki, registry, ota, anomaly, registry-migrate, ota-migrate]
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# Migration Jobs (registry-migrate: alembic upgrade head, ota-migrate) only reach PostgreSQL.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-migrate
+  namespace: ironmesh
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [registry-migrate, ota-migrate]
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
       ports:
         - protocol: TCP
           port: 5432

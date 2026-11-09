@@ -1,6 +1,11 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: policy-config
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: policy
+data:
   # Names and defaults from services/policy/internal/config/config.go.
   POLICY_LISTEN: ":8081"
   POLICY_EMQX_API_URL: http://emqx:18083
@@ -14,6 +19,11 @@ metadata:
   POLICY_SERVICE_CIDRS: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8
   POLICY_STATE_DIR: /var/lib/ironmesh/policy
   POLICY_AUTHZ_CACHE_TTL: 10s
+  # Console OIDC tokens on the management API. No IdP in the dev stack: set the issuer to your
+  # Dex/Keycloak realm (JWKS discovered from <issuer>/.well-known/openid-configuration).
+  POLICY_OIDC_ISSUER: ""
+  POLICY_OIDC_AUDIENCE: ironmesh-api
+  POLICY_OIDC_ROLE_CLAIM: role
   POLICY_SHUTDOWN_TIMEOUT: 10s
   POLICY_LOG_LEVEL: debug
   OTEL_SERVICE_NAME: ironmesh-policy

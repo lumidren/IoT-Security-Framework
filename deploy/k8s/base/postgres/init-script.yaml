@@ -7,8 +7,12 @@ metadata:
     app.kubernetes.io/name: postgres
 data:
   # Runs once on an empty data directory (docker-entrypoint-initdb.d). Creates the four
-  # databases and the roles the services use: <db>_owner (migrations), <db>_app (runtime,
-  # never owns tables so row-level security applies) and ironmesh_backup (read-only).
+  # databases and the roles the services use: <db>_owner (migrations: the registry-migrate /
+  # ota-migrate Jobs, ANOMALY_DATABASE_MIGRATE_URL, PKI_MIGRATION_DATABASE_URL), <db>_app
+  # (runtime, NOBYPASSRLS, never owns tables so row-level security applies; pki_app is the
+  # PKI_DATABASE_URL user) and ironmesh_backup (read-only). Table grants for the app roles come
+  # from each service's migrations (append-only tables stay append-only), so there are no
+  # default privileges here (same layout as deploy/docker/postgres/10-ironmesh.sh).
   01-ironmesh.sh: |
     #!/usr/bin/env bash
     set -euo pipefail
@@ -20,19 +24,20 @@ data:
       owner="${db}_owner"
       app="${db}_app"
       psql_admin -d postgres -v owner="${owner}" -v app="${app}" -v pw="${IRONMESH_DEV_DB_PASSWORD}" -v db="${db}" <<'SQL'
-    SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'owner', :'pw')
+    SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD %L', :'owner', :'pw')
     WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'owner') \gexec
-    SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'app', :'pw')
+    SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD %L', :'app', :'pw')
     WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app') \gexec
+    SELECT format('ALTER ROLE %I NOBYPASSRLS', :'app') \gexec
     SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'owner')
     WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') \gexec
+    SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'db') \gexec
+    SELECT format('GRANT CONNECT, TEMPORARY ON DATABASE %I TO %I', :'db', :'app') \gexec
     SQL
       psql_admin -d "${db}" -v owner="${owner}" -v app="${app}" <<'SQL'
     REVOKE ALL ON SCHEMA public FROM PUBLIC;
     SELECT format('GRANT ALL ON SCHEMA public TO %I', :'owner') \gexec
     SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'app') \gexec
-    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', :'owner', :'app') \gexec
-    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %I', :'owner', :'app') \gexec
     SQL
     done
     psql_admin -d postgres -v pw="${IRONMESH_DEV_DB_PASSWORD}" <<'SQL'
@@ -42,3 +47,8 @@ data:
     -- pg_dump cannot read tables with forced row-level security without BYPASSRLS.
     ALTER ROLE ironmesh_backup BYPASSRLS;
     SQL
+    for db in registry ota pki anomaly; do
+      psql_admin -d postgres -v db="${db}" <<'SQL'
+    SELECT format('GRANT CONNECT ON DATABASE %I TO ironmesh_backup', :'db') \gexec
+    SQL
+    done

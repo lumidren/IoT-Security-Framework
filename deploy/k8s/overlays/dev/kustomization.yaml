@@ -44,8 +44,10 @@ secretGenerator:
       - IRONMESH_DEV_DB_PASSWORD=ironmesh-dev
   - name: pki-secret
     literals:
-      # The pki service migrates its own schema, so it connects as pki_owner.
-      - PKI_DATABASE_URL=postgres://pki_owner:ironmesh-dev@postgres:5432/pki?sslmode=verify-ca&sslrootcert=/etc/ironmesh/tls/ca.crt
+      # Runtime role pki_app (NOBYPASSRLS, forced RLS applies); the embedded migrations run at
+      # start as the schema owner pki_owner.
+      - PKI_DATABASE_URL=postgres://pki_app:ironmesh-dev@postgres:5432/pki?sslmode=verify-ca&sslrootcert=/etc/ironmesh/tls/ca.crt
+      - PKI_MIGRATION_DATABASE_URL=postgres://pki_owner:ironmesh-dev@postgres:5432/pki?sslmode=verify-ca&sslrootcert=/etc/ironmesh/tls/ca.crt
       - PKI_POLICY_TOKEN=dev-pki-policy-token
       - PKI_POLICY_HMAC_KEY=dev-pki-policy-hmac
       - PKI_REGISTRY_TOKEN=dev-registry-token-pki
@@ -60,21 +62,28 @@ secretGenerator:
       - POLICY_HOOK_TOKEN=dev-emqx-hook-token
   - name: bridge-secret
     literals:
+      # = the EMQX webhook action header in emqx-env below.
       - BRIDGE_EVENTS_TOKEN=dev-bridge-events-token
   - name: registry-secret
     literals:
       - REGISTRY_DB_PASSWORD=ironmesh-dev
-      # One distinct token per caller (pki, policy, anomaly); must equal PKI_REGISTRY_TOKEN,
-      # POLICY_REGISTRY_TOKEN and ANOMALY_INTERNAL_TOKEN.
-      - 'REGISTRY_INTERNAL_TOKENS={"pki": "dev-registry-token-pki", "policy": "dev-registry-token-policy", "anomaly": "dev-registry-token-anomaly"}'
+      # One distinct token per caller (pki, policy, anomaly, ota); must equal PKI_REGISTRY_TOKEN,
+      # POLICY_REGISTRY_TOKEN, ANOMALY_INTERNAL_TOKEN and OTA_REGISTRY_TOKEN.
+      - 'REGISTRY_INTERNAL_TOKENS={"pki": "dev-registry-token-pki", "policy": "dev-registry-token-policy", "anomaly": "dev-registry-token-anomaly", "ota": "dev-registry-token-ota"}'
       - REGISTRY_EMQX_API_KEY=registry
       - REGISTRY_EMQX_API_SECRET=dev-emqx-registry-secret
+      # Schema owner for the registry-migrate Job (alembic upgrade head).
+      - REGISTRY_MIGRATION_DATABASE_URL=postgresql+asyncpg://registry_owner:ironmesh-dev@postgres:5432/registry?ssl=require
   - name: ota-secret
     literals:
       - OTA_DB_PASSWORD=ironmesh-dev
       - OTA_INTERNAL_TOKEN=dev-ota-internal-token
+      # The "ota" entry of REGISTRY_INTERNAL_TOKENS.
+      - OTA_REGISTRY_TOKEN=dev-registry-token-ota
       - OTA_EMQX_API_KEY=ota
       - OTA_EMQX_API_SECRET=dev-emqx-ota-secret
+      # Schema owner for the ota-migrate Job (python -m ironmesh_ota.migrate).
+      - OTA_MIGRATION_DATABASE_URL=postgresql+asyncpg://ota_owner:ironmesh-dev@postgres:5432/ota?ssl=require
   - name: anomaly-secret
     literals:
       - ANOMALY_DB_PASSWORD=ironmesh-dev
@@ -90,6 +99,8 @@ secretGenerator:
       - EMQX_DASHBOARD__DEFAULT_PASSWORD=ironmesh-dev
       - EMQX_AUTHENTICATION__1__HEADERS__X-IRONMESH-HOOK-TOKEN=dev-emqx-hook-token
       - EMQX_AUTHORIZATION__SOURCES__1__HEADERS__X-IRONMESH-HOOK-TOKEN=dev-emqx-hook-token
+      # = BRIDGE_EVENTS_TOKEN in bridge-secret.
+      - EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__HEADERS__X-IRONMESH-HOOK-TOKEN=dev-bridge-events-token
   - name: emqx-api-keys
     files:
       - api-keys=emqx-api-keys.txt

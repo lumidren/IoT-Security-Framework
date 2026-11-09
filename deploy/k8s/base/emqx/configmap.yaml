@@ -57,6 +57,22 @@ data:
   EMQX_AUTHORIZATION__SOURCES__1__BODY__RETAIN: ${retain}
   EMQX_AUTHORIZATION__SOURCES__1__CONNECT_TIMEOUT: 5s
   EMQX_AUTHORIZATION__SOURCES__1__REQUEST_TIMEOUT: 5s
+  # Client lifecycle / authn / authz events -> bridge POST /emqx/events -> im.auth (connector,
+  # action and rule of services/policy/deploy/emqx/emqx.conf; string values HOCON-quoted). The
+  # action's X-IronMesh-Hook-Token header (= BRIDGE_EVENTS_TOKEN) comes from the emqx-env Secret.
+  EMQX_CONNECTORS__HTTP__IRONMESH_BRIDGE__ENABLE: "true"
+  EMQX_CONNECTORS__HTTP__IRONMESH_BRIDGE__URL: '"http://bridge:8082"'
+  EMQX_CONNECTORS__HTTP__IRONMESH_BRIDGE__CONNECT_TIMEOUT: 5s
+  EMQX_CONNECTORS__HTTP__IRONMESH_BRIDGE__POOL_SIZE: "8"
+  EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__ENABLE: "true"
+  EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__CONNECTOR: ironmesh_bridge
+  EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__PATH: '"/emqx/events"'
+  EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__METHOD: post
+  EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__HEADERS__CONTENT-TYPE: '"application/json"'
+  EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__MAX_RETRIES: "3"
+  EMQX_RULE_ENGINE__RULES__IRONMESH_AUTH_EVENTS__ENABLE: "true"
+  EMQX_RULE_ENGINE__RULES__IRONMESH_AUTH_EVENTS__SQL: '"SELECT * FROM \"$events/client_connected\", \"$events/client_disconnected\", \"$events/client_check_authn_complete\", \"$events/client_check_authz_complete\" WHERE event = ''client.connected'' OR event = ''client.disconnected'' OR (event = ''client.check_authn_complete'' AND reason_code != ''success'') OR (event = ''client.check_authz_complete'' AND result = ''deny'')"'
+  EMQX_RULE_ENGINE__RULES__IRONMESH_AUTH_EVENTS__ACTIONS: '["http:ironmesh_auth_events"]'
   EMQX_API_KEY__BOOTSTRAP_FILE: /etc/ironmesh/emqx-api-keys/api-keys
   EMQX_PROMETHEUS__ENABLE_BASIC_AUTH: "false"
   EMQX_OPENTELEMETRY__EXPORTER__ENDPOINT: http://otel-collector:4317

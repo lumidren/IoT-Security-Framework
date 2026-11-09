@@ -25,6 +25,8 @@ data:
   REGISTRY_KAFKA_CONSUMER_GROUP: registry-ingest
   REGISTRY_KAFKA_SASL_MECHANISM: none
   REGISTRY_KAFKA_TLS_ENABLED: "false"
+  # PKI management API over mTLS (registry-tls, CN svc-registry): the registry is the only
+  # holder of tenant command keys and pushes the public key + enrollment flag to the PKI.
   REGISTRY_PKI_URL: https://pki:8443
   REGISTRY_POLICY_URL: http://policy:8081
   REGISTRY_OTA_URL: http://ota:8001
@@ -153,3 +155,62 @@ spec:
       port: 8000
       targetPort: http
       protocol: TCP
+---
+# Schema migrations as the schema owner (registry-secret). Idempotent; finished Jobs are garbage-collected
+# after ttlSecondsAfterFinished, so the next `kubectl apply -k` re-runs them (a Job's pod template
+# is immutable: delete the Job first if it still exists after an image change).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: registry-migrate
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: registry-migrate
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry-migrate
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/lumidren/ironmesh-registry:latest
+          imagePullPolicy: IfNotPresent
+          workingDir: /srv
+          command: ["alembic", "-c", "/srv/alembic.ini", "upgrade", "head"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - secretRef:
+                name: registry-secret
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

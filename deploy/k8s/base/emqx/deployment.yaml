@@ -44,7 +44,8 @@ spec:
             - configMapRef:
                 name: emqx-config
             - secretRef:
-                # EMQX_DASHBOARD__DEFAULT_PASSWORD and the X-IronMesh-Hook-Token headers.
+                # EMQX_DASHBOARD__DEFAULT_PASSWORD, the policy X-IronMesh-Hook-Token headers
+                # and the bridge webhook action header (= BRIDGE_EVENTS_TOKEN).
                 name: emqx-env
           ports:
             - name: mqttssl

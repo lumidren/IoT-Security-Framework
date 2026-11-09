@@ -1,6 +1,11 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: pki-config
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: pki
+data:
   # Names and defaults from services/pki/internal/config/config.go.
   PKI_ENV: development
   PKI_LISTEN_MTLS: ":8443"
@@ -12,11 +17,14 @@ metadata:
   PKI_BUNDLE_KEY_FILE: /etc/ironmesh/ca/bundle.key.json
   PKI_PUBLIC_BASE_URL: https://pki.ironmesh.local
   PKI_POLICY_URL: http://policy:8081
+  # Lifecycle checks + synchronous enrolled callback (bearer PKI_REGISTRY_TOKEN in pki-secret).
   PKI_REGISTRY_URL: http://registry:8000
   PKI_NONCE_TTL: 120s
   PKI_OPERATIONAL_CERT_TTL: 336h
   PKI_SERVER_CERT_FILE: /etc/ironmesh/tls/tls.crt
   PKI_SERVER_KEY_FILE: /etc/ironmesh/tls/tls.key
+  # Tenant-policy writes are authorized by field owner on top of this list: svc-registry
+  # (command key, enrollment), svc-ota (firmware keys).
   PKI_MGMT_ALLOWED_CNS: svc-registry,svc-policy,svc-console,svc-anomaly,svc-ota
   PKI_DEFAULT_ALLOW_SOFTWARE_KEYS: "true"
   PKI_BROKER_HOST: mqtt.ironmesh.local

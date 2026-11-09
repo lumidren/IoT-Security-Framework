@@ -29,9 +29,21 @@ CRL `http://localhost:8444/crl/device-ca.crl`.
 * development credentials via `secretGenerator` (stable names, no hash suffix): `pki-secret`,
   `policy-secret`, `bridge-secret`, `registry-secret`, `ota-secret`, `anomaly-secret`,
   `console-secret`, `emqx-env`, `emqx-api-keys`, `postgres-admin`, `dev-db`. Shared pairs are
-  consistent (hook token, PKI<->policy token/HMAC, EMQX API key/secret) and
-  `REGISTRY_INTERNAL_TOKENS` holds one distinct token per caller (`pki` = `PKI_REGISTRY_TOKEN`,
-  `policy` = `POLICY_REGISTRY_TOKEN`, `anomaly` = `ANOMALY_INTERNAL_TOKEN`).
+  consistent (policy hook token, bridge webhook token = the EMQX `ironmesh_auth_events` action
+  header, PKI<->policy token/HMAC, EMQX API key/secret) and `REGISTRY_INTERNAL_TOKENS` holds one
+  distinct token per caller (`pki` = `PKI_REGISTRY_TOKEN`, `policy` = `POLICY_REGISTRY_TOKEN`,
+  `anomaly` = `ANOMALY_INTERNAL_TOKEN`, `ota` = `OTA_REGISTRY_TOKEN`).
+* `pki-secret` carries `PKI_DATABASE_URL` (runtime role `pki_app`, `NOBYPASSRLS`) and
+  `PKI_MIGRATION_DATABASE_URL` (schema owner `pki_owner`, used only to migrate at start);
+  `registry-secret` / `ota-secret` carry the owner DSNs of the migration Jobs.
+
+## Keys and tenant policy
+
+The registry is the only holder of tenant command keys (wrapped with `REGISTRY_KMS_*`); it pushes
+the public key and `allow_software_keys` to the PKI tenant-policy API over mTLS as
+`svc-registry`. The OTA service pushes its firmware signing keys there as `svc-ota`, requests
+OtaNotify downlinks from the registry (`OTA_REGISTRY_TOKEN`) and holds no tenant key. The PKI
+calls the registry's enrolled callback with `PKI_REGISTRY_URL` / `PKI_REGISTRY_TOKEN`.
 
 ## Dev PKI
 
@@ -69,20 +81,28 @@ annotations and the `allow-prometheus-scrape` NetworkPolicy admits any namespace
 
 ## Notes for service authors
 
-* OIDC: there is no identity provider in the dev stack; `*_OIDC_ISSUER` is empty. Point it at a
-  local Dex/Keycloak when working on authenticated routes.
+* OIDC: there is no identity provider in the dev stack; `*_OIDC_ISSUER` (including
+  `POLICY_OIDC_ISSUER`, which enables console tokens on the policy management API) is empty.
+  Point it at a local Dex/Keycloak when working on authenticated routes.
 * OTA: `OTA_ARTIFACT_STORE=filesystem` on a 10 Gi PVC and `OTA_SIGNING_PROVIDER=file` with
   `OTA_SIGNING_KEY_GENERATE_IF_MISSING=true` (a dev Ed25519 key is created on first start;
   test vectors live in `libs/python/ironmesh-wire/tests/keys`).
-* Kafka: Redpanda runs in `dev-container` mode (topic auto-creation on). No IronMesh service
-  creates topics; production topics (`im.ingest`, `im.auth`, `im.alerts`, `im.audit`,
-  `im.commands`, `im.campaigns`) are created out of band.
-* Migrations: the dev stack does not run the registry/ota Alembic migrations (the Helm chart's
-  `job-migrate.yaml` does); anomaly migrates itself via `ANOMALY_DATABASE_MIGRATE_URL`, pki via
-  `PKI_DATABASE_URL`.
+* Kafka: Redpanda runs in `dev-container` mode. The bridge creates the topics (`im.ingest`,
+  `im.auth`, `im.alerts`, `im.audit`, `im.commands`, `im.campaigns`) on boot
+  (`BRIDGE_KAFKA_TOPICS_CREATE=true`, 3 partitions, replication 1, `BRIDGE_KAFKA_SASL_MECHANISM=none`).
+* EMQX forwards client lifecycle / authn-failure / authz-deny events to the bridge
+  (`POST bridge:8082/emqx/events` -> `im.auth`) through the connector, action and rule set in
+  `base/emqx/configmap.yaml`; the action's token header lives in `emqx-env`.
+* Migrations: the `registry-migrate` (`alembic upgrade head`, all revisions incl.
+  `0002_downlink_sequences`) and `ota-migrate` Jobs in `base/services/{registry,ota}.yaml` run as
+  the schema owners and are garbage-collected 10 minutes after they finish (a Job's pod template
+  is immutable: `kubectl -n ironmesh delete job registry-migrate ota-migrate` before re-applying
+  with new images if they still exist); the services retry until the schema exists. anomaly
+  migrates itself via `ANOMALY_DATABASE_MIGRATE_URL`, pki via `PKI_MIGRATION_DATABASE_URL`.
 * Health endpoints: `/healthz` (liveness) and `/readyz` (readiness) on the service port; the PKI
   serves both, plus `/metrics` and the CRL, on the plain 8444 listener because 8443 is mTLS. The
-  console serves `/api/health` only.
+  console serves `/api/health` only. Probes stay HTTP here; the compose stack uses the binaries'
+  own `healthcheck` subcommands instead.
 
 ## Validation
 

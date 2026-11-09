@@ -32,7 +32,9 @@ data:
   OTA_SIGNING_KEY_ID: fw-ed25519-dev
   OTA_PQ_SIGNING_ENABLED: "false"
   OTA_PUBLIC_BASE_URL: https://ota.ironmesh.local
+  # Firmware-keys push to the PKI tenant policy (mTLS, ota-tls, CN svc-ota).
   OTA_PKI_URL: https://pki:8443
+  # Target resolution + OtaNotify downlink requests (bearer OTA_REGISTRY_TOKEN in ota-secret).
   OTA_REGISTRY_URL: http://registry:8000
   OTA_EMQX_API_URL: http://emqx:18083
   OTA_OIDC_ISSUER: ""
@@ -40,6 +42,7 @@ data:
   OTA_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
   OTA_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
   OTA_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+  OTA_NOTIFY_RETRY_S: "60"
   OTA_LOG_LEVEL: debug
   OTA_LOG_FORMAT: json
   OTEL_SERVICE_NAME: ironmesh-ota
@@ -170,3 +173,61 @@ spec:
       port: 8001
       targetPort: http
       protocol: TCP
+---
+# Schema migrations as the schema owner (ota-secret). Idempotent; finished Jobs are garbage-collected
+# after ttlSecondsAfterFinished, so the next `kubectl apply -k` re-runs them (a Job's pod template
+# is immutable: delete the Job first if it still exists after an image change).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ota-migrate
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: ota-migrate
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ota-migrate
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/lumidren/ironmesh-ota:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "ironmesh_ota.migrate"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - secretRef:
+                name: ota-secret
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

@@ -1,6 +1,11 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: bridge-config
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: bridge
+data:
   # Names and defaults from services/bridge/internal/config/config.go.
   BRIDGE_LISTEN: ":8082"
   BRIDGE_MQTT_URL: ssl://emqx:8883
@@ -15,7 +20,13 @@ metadata:
   BRIDGE_KAFKA_BROKERS: redpanda:9092
   BRIDGE_KAFKA_INGEST_TOPIC: im.ingest
   BRIDGE_KAFKA_AUTH_TOPIC: im.auth
-  BRIDGE_KAFKA_TLS: "false"
+  BRIDGE_KAFKA_TLS_ENABLED: "false"
+  BRIDGE_KAFKA_SASL_MECHANISM: none
+  # The bridge creates im.ingest, im.auth, im.alerts, im.audit, im.commands and im.campaigns on
+  # boot (single Redpanda node: replication 1).
+  BRIDGE_KAFKA_TOPICS_CREATE: "true"
+  BRIDGE_KAFKA_TOPIC_PARTITIONS: "3"
+  BRIDGE_KAFKA_TOPIC_REPLICATION: "1"
   BRIDGE_MAX_INFLIGHT: "1024"
   BRIDGE_LOG_LEVEL: debug
   OTEL_SERVICE_NAME: ironmesh-bridge
