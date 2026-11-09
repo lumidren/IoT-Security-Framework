@@ -500,3 +500,33 @@ func TestGuardCombinesServiceAndOIDC(t *testing.T) {
 		t.Fatalf("no verifiers: %d", rec.Code)
 	}
 }
+
+func TestOIDCExplicitJWKSURLSkipsDiscovery(t *testing.T) {
+	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	p := newIDP(t, ecJWK("ec-1", &ec.PublicKey))
+	clk := &clockT{now: fixedNow}
+	// Tokens name a browser-facing issuer the service cannot reach; keys come from the
+	// in-cluster JWKS URL instead, and the iss claim is still checked exactly.
+	const browserIssuer = "http://localhost:8180/realms/ironmesh"
+	v, err := NewOIDCVerifier(OIDCConfig{Issuer: browserIssuer, JWKSURL: p.issuerURL() + "/certs", Clock: clk.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	claims, err := v.VerifyToken(ctx, signJWT(t, "ES256", "ec-1", ec, p.claims(map[string]any{"iss": browserIssuer})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Role != RoleAdmin {
+		t.Fatalf("claims %+v", claims)
+	}
+	if p.discovery.Load() != 0 || p.jwks.Load() != 1 {
+		t.Fatalf("discovery=%d jwks=%d, want discovery skipped", p.discovery.Load(), p.jwks.Load())
+	}
+	if _, err := v.VerifyToken(ctx, signJWT(t, "ES256", "ec-1", ec, p.claims(nil))); !errors.Is(err, ErrIssuer) {
+		t.Fatalf("token from the in-cluster issuer must still fail the iss check: %v", err)
+	}
+	if _, err := NewOIDCVerifier(OIDCConfig{Issuer: browserIssuer, JWKSURL: "ftp://idp/certs"}); err == nil {
+		t.Fatal("non-http JWKS URL accepted")
+	}
+}

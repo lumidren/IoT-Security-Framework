@@ -55,6 +55,7 @@ retained device publishes, and cross-device/cross-tenant topics.
 | `POLICY_JWT_ISSUER` | — | Optional required `iss` of service JWTs |
 | `POLICY_OIDC_ISSUER` | — | IdP issuer URL; enables console OIDC access tokens on the management API. The JWKS is discovered from `<issuer>/.well-known/openid-configuration` on first use, cached (1 h) and refreshed when a token names an unknown `kid` (at most every 30 s); tokens must carry exactly this `iss` |
 | `POLICY_OIDC_AUDIENCE` | `ironmesh-api` | Value `aud` must contain for OIDC tokens |
+| `POLICY_OIDC_JWKS_URL` | - | Fetch signing keys from this URL instead of `<issuer>/.well-known/openid-configuration`; for an issuer URL that the service cannot reach (docker compose). The `iss` check is unchanged |
 | `POLICY_OIDC_ROLE_CLAIM` | `role` | Claim holding the role; dotted paths (`realm_access.roles`) and arrays are accepted (highest known role wins). Tenant comes from `tenant_id` |
 | `POLICY_LOG_LEVEL` | `info` | debug/info/warn/error (JSON logs: `ts, level, service, msg, tenant_id, device_id`) |
 

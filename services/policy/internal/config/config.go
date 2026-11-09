@@ -57,6 +57,9 @@ type Config struct {
 	// OIDCIssuer enables console OIDC access tokens on the management API (POLICY_OIDC_ISSUER);
 	// the JWKS is discovered from <issuer>/.well-known/openid-configuration.
 	OIDCIssuer string
+	// OIDCJWKSURL overrides JWKS discovery (POLICY_OIDC_JWKS_URL), for an issuer URL that is not
+	// reachable from the service.
+	OIDCJWKSURL string
 	// OIDCAudience must be contained in aud (POLICY_OIDC_AUDIENCE, default ironmesh-api).
 	OIDCAudience string
 	// OIDCRoleClaim names the role claim (POLICY_OIDC_ROLE_CLAIM, default role; dotted paths allowed).
@@ -122,6 +125,7 @@ func Load(getenv func(string) string) (Config, error) {
 		HookToken:         get("POLICY_HOOK_TOKEN", ""),
 		AuthzCacheTTL:     dur("POLICY_AUTHZ_CACHE_TTL", "10s"),
 		OIDCIssuer:        get("POLICY_OIDC_ISSUER", ""),
+		OIDCJWKSURL:       get("POLICY_OIDC_JWKS_URL", ""),
 		OIDCAudience:      get("POLICY_OIDC_AUDIENCE", "ironmesh-api"),
 		OIDCRoleClaim:     get("POLICY_OIDC_ROLE_CLAIM", "role"),
 		LogLevel:          get("POLICY_LOG_LEVEL", "info"),

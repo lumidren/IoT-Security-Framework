@@ -69,7 +69,7 @@ func buildGuard(cfg config.Config, servicePEM, serviceIssuer string, log *slog.L
 		verifiers = append(verifiers, v)
 	}
 	if cfg.OIDCIssuer != "" {
-		v, err := auth.NewOIDCVerifier(auth.OIDCConfig{Issuer: cfg.OIDCIssuer, Audience: cfg.OIDCAudience, RoleClaim: cfg.OIDCRoleClaim})
+		v, err := auth.NewOIDCVerifier(auth.OIDCConfig{Issuer: cfg.OIDCIssuer, JWKSURL: cfg.OIDCJWKSURL, Audience: cfg.OIDCAudience, RoleClaim: cfg.OIDCRoleClaim})
 		if err != nil {
 			return nil, fmt.Errorf("POLICY_OIDC_ISSUER: %w", err)
 		}

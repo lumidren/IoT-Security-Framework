@@ -54,6 +54,10 @@ var (
 type OIDCConfig struct {
 	// Issuer is the IdP issuer URL (POLICY_OIDC_ISSUER); tokens must carry exactly this iss.
 	Issuer string
+	// JWKSURL, when set (POLICY_OIDC_JWKS_URL), is used instead of discovery. It is needed when the
+	// issuer URL in tokens is the browser-facing address and is not reachable from the service
+	// (for example http://localhost:8180 in docker compose). The iss check is unchanged.
+	JWKSURL string
 	// Audience must be contained in aud (POLICY_OIDC_AUDIENCE, default ironmesh-api).
 	Audience string
 	// RoleClaim names the claim holding the role (POLICY_OIDC_ROLE_CLAIM, default role). Dotted
@@ -96,6 +100,12 @@ func NewOIDCVerifier(cfg OIDCConfig) (*OIDCVerifier, error) {
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, fmt.Errorf("oidc: issuer must be an http(s) URL, got %q", cfg.Issuer)
 	}
+	if cfg.JWKSURL != "" {
+		ju, err := url.Parse(cfg.JWKSURL)
+		if err != nil || ju.Host == "" || (ju.Scheme != "https" && ju.Scheme != "http") {
+			return nil, fmt.Errorf("oidc: JWKS URL must be an http(s) URL, got %q", cfg.JWKSURL)
+		}
+	}
 	if cfg.Audience == "" {
 		cfg.Audience = DefaultOIDCAudience
 	}
@@ -117,7 +127,7 @@ func NewOIDCVerifier(cfg OIDCConfig) (*OIDCVerifier, error) {
 	if cfg.MinRefresh <= 0 {
 		cfg.MinRefresh = DefaultJWKSMinRefresh
 	}
-	return &OIDCVerifier{cfg: cfg, issuer: strings.TrimRight(cfg.Issuer, "/")}, nil
+	return &OIDCVerifier{cfg: cfg, issuer: strings.TrimRight(cfg.Issuer, "/"), jwksURI: cfg.JWKSURL}, nil
 }
 
 // VerifyToken implements TokenVerifier.
