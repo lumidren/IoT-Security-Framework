@@ -109,6 +109,11 @@ output "kms_key_aliases" {
   value       = module.kms.alias_names
 }
 
+output "bundle_signing_secret_arn" {
+  description = "Secrets Manager secret (encrypted under ironmesh-bundle-kek) that holds the Ed25519 PKI bundle signing seed. Populated by the ceremony, never by Terraform."
+  value       = module.kms.bundle_signing_secret_arn
+}
+
 output "firmware_signing_secret_arn" {
   description = "Secrets Manager secret (encrypted under ironmesh-firmware-kek) that holds the Ed25519 firmware signing key. Populated by the ceremony, never by Terraform."
   value       = module.kms.firmware_signing_secret_arn
@@ -231,11 +236,10 @@ output "helm_values" {
       pki = {
         serviceAccount = { roleArn = module.iam.role_arns["pki"] }
         config = {
-          PKI_KMS_DEVICE_CA_KEY_ID   = module.kms.alias_names["device_ca"]
-          PKI_KMS_SERVICES_CA_KEY_ID = module.kms.alias_names["services_ca"]
-          PKI_KMS_BUNDLE_KEY_ID      = module.kms.alias_names["bundle_signing"]
-          PKI_KMS_FACTORY_CA_KEY_ID  = lookup(module.kms.alias_names, "factory_ca", "")
-          PKI_KMS_ROOT_CA_KEY_ID     = module.kms.alias_names["root_ca"]
+          # services/pki/internal/config/config.go: key references for PKI_KMS=awskms.
+          PKI_KMS             = "awskms"
+          PKI_KEY_DEVICE_CA   = module.kms.alias_names["device_ca"]
+          PKI_KEY_SERVICES_CA = module.kms.alias_names["services_ca"]
         }
       }
       ota = {

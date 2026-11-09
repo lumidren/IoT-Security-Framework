@@ -137,7 +137,7 @@ External Secrets Operator. Signing happens in the ota process memory and every u
 event. Signing-key rotation = add a new public key to the bundle's `fw_signing_pubkeys`, wrap the new
 private key, retire the old one after the fleet has received the new bundle.
 
-The PKI bundle key (`X-IronMesh-Bundle`) is ES256, so it does live in KMS (`bundle_signing`).
+The PKI bundle key (`X-IronMesh-Bundle`) is Ed25519 (COSE alg -8, kid `pki-bundle`), which KMS cannot hold, so it follows the firmware-key pattern: the seed lives in Secrets Manager (`<prefix>pki/bundle-signing-key`) encrypted under the symmetric CMK `bundle_kek` (`alias/<prefix>-bundle-kek`), readable only by the pki IRSA role and the ceremony role and decryptable only through Secrets Manager (`kms:ViaService`). The External Secrets role is explicitly denied, so the seed is never materialised as a Kubernetes Secret.
 
 ### Kafka
 

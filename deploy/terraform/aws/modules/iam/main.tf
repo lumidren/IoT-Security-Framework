@@ -61,7 +61,7 @@ locals {
 
   secrets_arn_prefix = "arn:${var.partition}:secretsmanager:${var.region}:${var.account_id}:secret:${var.secrets_path_prefix}"
 
-  signing_key_purposes = ["device_ca", "services_ca", "bundle_signing", "factory_ca"]
+  signing_key_purposes = ["device_ca", "services_ca", "factory_ca"]
   pki_signing_key_arns = [for k in local.signing_key_purposes : var.kms_key_arns[k] if contains(keys(var.kms_key_arns), k)]
   all_ca_key_arns      = [for k in concat(["root_ca"], local.signing_key_purposes) : var.kms_key_arns[k] if contains(keys(var.kms_key_arns), k)]
 
@@ -185,6 +185,26 @@ data "aws_iam_policy_document" "pki" {
     sid       = "ConnectPkiDatabase"
     actions   = ["rds-db:connect"]
     resources = [local.rds_connect_arns["pki"]]
+  }
+
+  # Ed25519 bundle signing seed (KMS has no Ed25519): read the wrapped secret and unwrap it
+  # through Secrets Manager only.
+  statement {
+    sid       = "ReadWrappedBundleSigningKey"
+    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+    resources = [var.bundle_signing_secret_arn]
+  }
+
+  statement {
+    sid       = "UnwrapBundleSigningKeyThroughSecretsManager"
+    actions   = ["kms:Decrypt", "kms:DescribeKey"]
+    resources = [var.kms_key_arns["bundle_kek"]]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
   }
 }
 
@@ -448,7 +468,7 @@ data "aws_iam_policy_document" "external_secrets" {
     sid       = "NeverSyncFirmwareSigningKey"
     effect    = "Deny"
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue"]
-    resources = [var.firmware_signing_secret_arn]
+    resources = [var.firmware_signing_secret_arn, var.bundle_signing_secret_arn]
   }
 }
 
@@ -503,9 +523,9 @@ data "aws_iam_policy_document" "ceremony" {
   }
 
   statement {
-    sid       = "WrapFirmwareSigningKeyThroughSecretsManager"
+    sid       = "WrapFirmwareAndBundleKeysThroughSecretsManager"
     actions   = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
-    resources = [var.kms_key_arns["firmware_kek"]]
+    resources = [var.kms_key_arns["firmware_kek"], var.kms_key_arns["bundle_kek"]]
 
     condition {
       test     = "StringEquals"
@@ -527,6 +547,7 @@ data "aws_iam_policy_document" "ceremony" {
     ]
     resources = [
       var.firmware_signing_secret_arn,
+      var.bundle_signing_secret_arn,
       "${local.secrets_arn_prefix}pki/root-ca-quorum-inventory*",
     ]
   }

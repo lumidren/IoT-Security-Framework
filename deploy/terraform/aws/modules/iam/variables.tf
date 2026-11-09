@@ -83,6 +83,11 @@ variable "firmware_signing_secret_arn" {
   type        = string
 }
 
+variable "bundle_signing_secret_arn" {
+  description = "Secrets Manager ARN of the wrapped Ed25519 PKI bundle signing seed."
+  type        = string
+}
+
 variable "artifacts_bucket_arn" {
   description = "Firmware artifacts bucket ARN."
   type        = string

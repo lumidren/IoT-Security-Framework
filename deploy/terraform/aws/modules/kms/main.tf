@@ -6,7 +6,12 @@
 #   factory_ca     ECC_NIST_P384  bootstrap certificates (10 y)                  (optional)
 #   device_ca      ECC_NIST_P256  operational device certificates (14 d)
 #   services_ca    ECC_NIST_P256  broker / EST / API server certificates (90 d)
-#   bundle_signing ECC_NIST_P256  signs the X-IronMesh-Bundle (COSE_Sign1 ES256)
+#
+# PKI bundle signing (X-IronMesh-Bundle, COSE_Sign1 EdDSA, kid "pki-bundle"): the PKI signs
+# with Ed25519 (services/pki/internal/est/bundle.go), which KMS cannot hold either, so the
+# seed follows the firmware-key pattern below: Secrets Manager secret
+# `<prefix>pki/bundle-signing-key` encrypted under the symmetric CMK `bundle_kek`, decryptable
+# only by the pki workload identity (and the ceremony role) through Secrets Manager.
 #
 # Firmware signing: the contract mandates Ed25519 (COSE alg -8) plus optional ML-DSA-65.
 # AWS KMS asymmetric keys do not support Ed25519 (only RSA, ECC NIST P-256/384/521,
@@ -37,10 +42,6 @@ locals {
         spec        = "ECC_NIST_P256"
         description = "IronMesh Services CA signing key (broker/EST/API server certificates)"
       }
-      bundle_signing = {
-        spec        = "ECC_NIST_P256"
-        description = "IronMesh PKI bundle signing key (X-IronMesh-Bundle COSE_Sign1 ES256)"
-      }
     },
     var.create_factory_ca_key ? {
       factory_ca = {
@@ -53,6 +54,7 @@ locals {
   symmetric_keys = merge(
     {
       firmware_kek = "IronMesh firmware signing KEK (wraps the Ed25519/ML-DSA signing keys in Secrets Manager)"
+      bundle_kek   = "IronMesh PKI bundle KEK (wraps the Ed25519 X-IronMesh-Bundle signing seed in Secrets Manager)"
       eks          = "IronMesh EKS secrets envelope encryption and node EBS volumes"
       rds          = "IronMesh RDS storage, Performance Insights and master credentials"
       s3           = "IronMesh S3 firmware artifacts and backups"
@@ -107,6 +109,7 @@ locals {
 
   symmetric_policies = {
     firmware_kek = data.aws_iam_policy_document.firmware_kek.json
+    bundle_kek   = data.aws_iam_policy_document.bundle_kek.json
     eks          = data.aws_iam_policy_document.eks.json
     rds          = data.aws_iam_policy_document.data_generic.json
     s3           = data.aws_iam_policy_document.s3.json
@@ -249,6 +252,57 @@ data "aws_iam_policy_document" "firmware_kek" {
       test     = "ArnEquals"
       variable = "aws:PrincipalArn"
       values   = [var.ota_role_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid       = "AllowCeremonyWrapViaSecretsManager"
+    actions   = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [local.account_root]
+    }
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:PrincipalArn"
+      values   = [var.ceremony_role_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
+  }
+}
+
+# The pki service may only unwrap the bundle seed through Secrets Manager (no direct Decrypt).
+data "aws_iam_policy_document" "bundle_kek" {
+  source_policy_documents = [data.aws_iam_policy_document.admin.json]
+
+  statement {
+    sid       = "AllowPkiUnwrapViaSecretsManager"
+    actions   = ["kms:Decrypt", "kms:DescribeKey"]
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [local.account_root]
+    }
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:PrincipalArn"
+      values   = [var.pki_role_arn]
     }
 
     condition {
@@ -602,4 +656,64 @@ data "aws_iam_policy_document" "firmware_signing_key" {
 resource "aws_secretsmanager_secret_policy" "firmware_signing_key" {
   secret_arn = aws_secretsmanager_secret.firmware_signing_key.arn
   policy     = data.aws_iam_policy_document.firmware_signing_key.json
+}
+
+#------------------------------------------------------------------------------
+# PKI bundle signing key container (Ed25519 seed for X-IronMesh-Bundle, COSE alg -8, kid
+# "pki-bundle"). Populated by the ceremony, never by Terraform; readable only by the pki
+# workload identity and the ceremony role, unwrapped through Secrets Manager.
+#------------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "bundle_signing_key" {
+  name                    = "${var.secrets_path_prefix}pki/bundle-signing-key"
+  description             = "Ed25519 PKI bundle signing seed, wrapped by ${aws_kms_alias.symmetric["bundle_kek"].name}. Written by the ceremony role only."
+  kms_key_id              = aws_kms_key.symmetric["bundle_kek"].arn
+  recovery_window_in_days = 30
+
+  tags = {
+    Name = "${var.name_prefix}-bundle-signing-key"
+  }
+}
+
+data "aws_iam_policy_document" "bundle_signing_key" {
+  statement {
+    sid       = "DenyReadToEveryoneElse"
+    effect    = "Deny"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "ArnNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [var.pki_role_arn, var.ceremony_role_arn]
+    }
+  }
+
+  statement {
+    sid       = "DenyWriteToEveryoneButCeremony"
+    effect    = "Deny"
+    actions   = ["secretsmanager:PutSecretValue", "secretsmanager:UpdateSecret", "secretsmanager:RestoreSecret"]
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    condition {
+      test     = "ArnNotEquals"
+      variable = "aws:PrincipalArn"
+      values   = [var.ceremony_role_arn]
+    }
+  }
+}
+
+resource "aws_secretsmanager_secret_policy" "bundle_signing_key" {
+  secret_arn = aws_secretsmanager_secret.bundle_signing_key.arn
+  policy     = data.aws_iam_policy_document.bundle_signing_key.json
 }

@@ -202,6 +202,7 @@ module "iam" {
   ceremony_require_mfa             = var.root_ca_require_mfa
   kms_key_arns                     = module.kms.key_arns
   firmware_signing_secret_arn      = module.kms.firmware_signing_secret_arn
+  bundle_signing_secret_arn        = module.kms.bundle_signing_secret_arn
   artifacts_bucket_arn             = module.s3.artifacts_bucket_arn
   artifacts_replica_bucket_arn     = module.s3.artifacts_replica_bucket_arn
   backups_bucket_arn               = module.s3.backups_bucket_arn
