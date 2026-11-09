@@ -12,7 +12,7 @@ use crate::util;
 
 /// After a renewal: the broker must accept a session with the new certificate (the DUT reconnects
 /// by itself or, if it keeps the old session, after an explicit disconnect/connect).
-async fn reconnect_with(ctx: &Ctx, dut: &crate::dut::Dut, new_serial: &str, since: Instant) -> Result<bool> {
+pub(crate) async fn reconnect_with(ctx: &Ctx, dut: &crate::dut::Dut, new_serial: &str, since: Instant) -> Result<bool> {
     let broker = ctx.cloud.broker("broker-side session check")?;
     let pred = |o: &crate::harness::broker::Obs| matches!(&o.kind, ObsKind::Connect { client_id, cert_serial: Some(s), authn_allow: true, .. } if client_id == dut.id() && s == new_serial);
     if broker.wait_obs(since, Duration::from_secs(8), pred).await.is_some() {
@@ -68,7 +68,17 @@ pub async fn rot_1(ctx: &Ctx) -> Result<Outcome> {
     ctx.measure("new_serial", &new_serial);
     ctx.measure("spki_changed", true);
     let auto = reconnect_with(ctx, &dut, &new_serial, since).await?;
-    ctx.measure("reconnected_automatically", auto);
+    // With the real PKI the previous certificate is superseded PKI_SUPERSEDE_GRACE after the
+    // renewal; a device still on it is then kicked by the policy and reconnects with the new one.
+    let kicked = ctx.cloud.broker("").is_ok_and(|b| {
+        b.observations_since(since).iter().any(|o| matches!(&o.kind, ObsKind::Kick { client_id, found: true } if client_id == dut.id()))
+    });
+    if kicked {
+        ctx.evidence(
+            "the session on the previous certificate was kicked after the PKI superseded it; the DUT reconnected with the renewed one",
+        );
+    }
+    ctx.measure("reconnected_automatically", auto && !kicked);
     // Uplinks are now signed with the new key, kid = new serial.
     let r = dut.ok("send_telemetry", json!({"count": 1})).await?;
     let last = r["last_seq"].as_u64().unwrap_or(0);
@@ -123,6 +133,16 @@ pub async fn rot_2(ctx: &Ctx) -> Result<Outcome> {
     ensure(new_serial != serial, "the serial did not change")?;
     let since = Instant::now() - Duration::from_secs(5);
     let auto = reconnect_with(ctx, &dut, &new_serial, since).await?;
-    ctx.measure("reconnected_automatically", auto);
+    // With the real PKI the previous certificate is superseded PKI_SUPERSEDE_GRACE after the
+    // renewal; a device still on it is then kicked by the policy and reconnects with the new one.
+    let kicked = ctx.cloud.broker("").is_ok_and(|b| {
+        b.observations_since(since).iter().any(|o| matches!(&o.kind, ObsKind::Kick { client_id, found: true } if client_id == dut.id()))
+    });
+    if kicked {
+        ctx.evidence(
+            "the session on the previous certificate was kicked after the PKI superseded it; the DUT reconnected with the renewed one",
+        );
+    }
+    ctx.measure("reconnected_automatically", auto && !kicked);
     Ok(Outcome::Pass)
 }

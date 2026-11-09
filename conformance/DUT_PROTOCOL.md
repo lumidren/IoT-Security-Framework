@@ -80,6 +80,7 @@ Error codes for failed operations: `unsupported`, `busy`, `invalid_args`, `not_p
 | C-ROT-1 | Certificate rotation (`renew`) keeps identity, changes key and serial | `cert_renewed`, new serial, new SPKI, reconnect succeeds |
 | C-ROT-2 | Automatic rotation at 50 % lifetime (short-lived test certs)         | `cert_renewed` without an explicit `renew` |
 | C-REV-1 | Revocation reaction time                                             | revoke -> broker disconnect -> DUT cannot reconnect with the revoked cert, measured < 10 s |
+| C-REV-2 | Single-certificate revocation refuses the serial, renewed certificate admitted | after `renew`, the superseded serial (single-certificate revocation, `device_deny=false`) is refused at CONNECT (policy reason `revoked_serial`) while the renewed certificate is admitted and its session is not kicked; a single-certificate revocation of the current serial refuses the device's own reconnect by serial within 10 s; the device id is never deny-listed |
 | C-ACL-1 | Publish to another device's topic                                    | `publish_result.ok=false` (or disconnect) and harness subscriber receives nothing |
 | C-ACL-2 | Subscribe to another device's command topic or wildcard              | `subscribe_result.granted=false` |
 | C-ACL-3 | Retained publish on telemetry                                        | rejected |

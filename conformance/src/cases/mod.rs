@@ -346,6 +346,13 @@ pub fn all() -> Vec<CaseDef> {
             15,
         ),
         m(
+            "C-REV-2",
+            "Single-certificate revocation refuses the serial, renewed certificate admitted",
+            "after a single-certificate revocation (`device_deny=false`) the revoked serial is refused at CONNECT (policy reason `revoked_serial`) while the renewed certificate is admitted and its session is not kicked; the device id is never deny-listed",
+            case_fn!(rev::rev_2),
+            4,
+        ),
+        m(
             "C-ACL-1",
             "Publish to another device's topic",
             "`publish_result.ok=false` (or disconnect) and harness subscriber receives nothing",
