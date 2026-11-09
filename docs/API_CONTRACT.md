@@ -14,7 +14,9 @@ is checked against those documents in CI.
   `aud` must contain `ironmesh-api`). Tenant is derived from the token claim `tenant_id`; users with
   the platform role `platform_admin` may pass `X-IronMesh-Tenant: <uuid>` to act in another tenant
   (audited). Service-to-service calls run over mTLS and authenticate with either an ES256 JWT
-  signed by the caller's Services CA key (`aud=<service name>`, 5 min lifetime) or a static token
+  signed by the caller's Services CA key (`aud=<service name>`, `iss`/`sub` = caller, required
+  `iat`, `exp` and `jti`, `exp - iat` at most 300 s; every receiver accepts a `jti` only once per
+  instance, so callers mint a fresh token for every request, 60 s lifetime) or a static token
   bound to exactly one calling service (registry: `REGISTRY_INTERNAL_TOKENS`, a JSON map of
   caller -> token). Each internal endpoint names the callers it accepts; a token or JWT for any
   other service gets `403`.
@@ -55,7 +57,16 @@ certificates: [{serial_hex, not_before, not_after, revoked_at, revocation_reason
 * `POST /v1/devices/{id}/quarantine` (operator) body `{reason}` -> `DeviceDetail`; side effects: PKI
   revoke-all, policy cache deny, EMQX kick; `409` if `decommissioned`.
 * `POST /v1/devices/{id}/release` (admin) body `{note}` -> `DeviceDetail` (state `active`;
-  device must re-enroll).
+  device must re-enroll). `409` unless `quarantined`. Side effects: the registry calls the PKI
+  `POST /v1/devices/{id}/release` (§5) while holding the device row, which pushes a
+  `device_release` event to the policy service and lifts the quarantine's device-level deny; the
+  certificates revoked by the quarantine stay revoked, so only a newly enrolled certificate is
+  admitted at CONNECT. If the PKI is unreachable the device still becomes `active`, the call is
+  queued in the action outbox (`pki_release`, retried with backoff, audited
+  `device.pki_release_failed` / `action.pki_release.completed`) and the device stays refused at
+  CONNECT until it succeeds; a later quarantine or decommission cancels a queued release. If the
+  quarantine's own PKI revoke-all is still queued and the PKI still cannot complete it, the release
+  is refused with `503` (`Retry-After: 30`) and the device stays `quarantined`.
 * `POST /v1/devices/{id}/decommission` (admin) body `{reason}` -> `DeviceDetail` (terminal).
 * `GET /v1/devices/{id}/timeline?from=&to=&kinds=&cursor=` -> page of
   `TimelineEvent {id, at, kind: "lifecycle"|"connect"|"disconnect"|"enroll"|"renew"|"revoke"|"command"|"ota"|"alert"|"config"|"twin"|"authz_denied", summary, data}`
@@ -211,6 +222,18 @@ instead present an ES256 service JWT with `aud=policy`.
 
 See `services/pki/README.md`: `POST /v1/certificates/{serial}/revoke`, `GET /v1/certificates/{serial}`,
 `GET /v1/devices/{id}/certificates`, `POST /v1/devices/{id}/revoke-all`, `GET /v1/ca/chain`, `GET /v1/stats`.
+
+* `POST /v1/devices/{id}/release` (registry only: Services CA cert CN `svc-registry` or service JWT
+  `sub` `registry`/`svc-registry`; other callers `403`, independent of the CN allow list) body
+  `{tenant_id, note?}` -> `202 {event_id, event: "device_release", device_id, tenant_id,
+  released_at, published, publish_error?}`; `409` if the device's certificates belong to another
+  tenant, `422` validation. Writes a `device_release` event into the revocation outbox (same
+  durable delivery as revocations: signed with the bearer + `X-IronMesh-Signature` HMAC, retried
+  with backoff, fanned out to every policy replica) as
+  `POST <policy>/internal/v1/revocations` body `{event_id, event: "device_release", device_id,
+  tenant_id, released_at}`. The policy service deduplicates by `event_id` and removes the
+  device-level deny of every revocation with `revoked_at <= released_at`; serial-level denies stay.
+  Revocation event bodies are unchanged and carry no `event` member.
 
 Tenant policy (what the EST bundle carries and what enrollment allows); callers authenticate with
 mTLS (Services CA, CN allowlist) or a service JWT, and each field has exactly one owner:
