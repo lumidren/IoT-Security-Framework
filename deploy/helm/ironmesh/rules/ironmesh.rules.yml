@@ -116,14 +116,25 @@ groups:
           runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#authfailureburst"
 
       - alert: RevocationLatencyHigh
-        expr: histogram_quantile(0.99, sum by (le) (rate(ironmesh_revocation_latency_seconds_bucket{job="ironmesh-policy"}[5m]))) > 8
+        expr: histogram_quantile(0.99, sum by (le, job) (rate(ironmesh_revocation_latency_seconds_bucket[5m]))) > 8
         for: 5m
         labels:
           severity: critical
-          service: policy
+          service: revocation
         annotations:
-          summary: "p99 revocation-to-kick latency above 8 s"
+          summary: "p99 revocation latency above 8 s ({{ $labels.job }})"
           description: "p99 of ironmesh_revocation_latency_seconds is {{ $value | humanizeDuration }} (contract budget 10 s end to end). Check the policy service, the EMQX management API and the PKI revocation publisher."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#revocationlatencyhigh"
+
+      - alert: RevocationOutboxStuck
+        expr: max(ironmesh_revocation_outbox_pending) > 0 and max(min_over_time(ironmesh_revocation_outbox_pending[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: pki
+        annotations:
+          summary: "Revocation or release events undelivered for more than 5 minutes"
+          description: "{{ $value }} revocation outbox rows have stayed pending for 5 minutes: at least one policy replica has not acknowledged them, so revoked devices may still connect there. Check PKI_POLICY_URL fan-out, the policy service and its PKI token/HMAC secret."
           runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#revocationlatencyhigh"
 
       - alert: RevocationPublishFailures
@@ -259,7 +270,7 @@ groups:
         annotations:
           summary: "EMQX clients are exceeding their per-client quotas"
           description: "EMQX dropped {{ $value | humanize }} messages per second over 10 minutes because clients exceeded their inflight / awaiting-rel quota or receive maximum (per-client limits, THREAT_MODEL T-40). Find the offending client ids with `emqx ctl clients list` / the dashboard and quarantine compromised devices."
-          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#brokermessagesdropped"
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#brokerclientquotaexceeded"
 
       - alert: ServiceDown
         expr: up{job=~"ironmesh-.*"} == 0
