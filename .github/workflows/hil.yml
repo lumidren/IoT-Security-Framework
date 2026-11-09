@@ -1,0 +1,160 @@
+# Hardware-in-the-loop conformance on the self-hosted ESP32-S3 + ATECC608B runner
+# (HARDWARE_SETUP.md section 4). Never runs for pull requests: the trigger is limited to manual
+# dispatch and pushes to main, and the job refuses to run outside this repository.
+#
+# Runner environment (/opt/actions-runner/.env): IDF_PATH, IRONMESH_HIL_PORT, IRONMESH_HIL_BAUD,
+# IRONMESH_HIL_TARGET. Secrets: HIL_SECURE_BOOT_KEY (Secure Boot v2 development-mode key of the
+# HIL board).
+name: hil
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "device/esp32/**"
+      - "device/common/**"
+      - "conformance/**"
+      - "services/**"
+      - "deploy/docker/**"
+      - ".github/workflows/hil.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hil-esp32
+  cancel-in-progress: false
+
+jobs:
+  hil:
+    name: esp32-hil conformance
+    if: github.repository == 'lumidren/IoT-Security-Framework' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, linux, hil, esp32]
+    timeout-minutes: 90
+    environment: hil
+    permissions:
+      contents: read
+    env:
+      COMPOSE_FILE: deploy/docker/docker-compose.yml
+      # Compose interpolation: the shell overrides deploy/docker/.env.
+      IRONMESH_DEVICE_BIND_ADDR: 0.0.0.0
+      IRONMESH_BROKER_HOST: mqtt.ironmesh.local
+      IRONMESH_PKI_EXTRA_SANS: pki.ironmesh.local
+      IRONMESH_FLEET_COUNT: "5"
+      IRONMESH_FLEET_ANOMALOUS: "0"
+      IRONMESH_STACK_ONLY: "1"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          clean: true
+
+      - name: check runner configuration
+        run: |
+          for v in IDF_PATH IRONMESH_HIL_PORT IRONMESH_HIL_BAUD IRONMESH_HIL_TARGET; do
+            [ -n "${!v:-}" ] || { echo "::error::${v} is not set on the runner"; exit 1; }
+          done
+          test -c "${IRONMESH_HIL_PORT}" || { echo "::error::${IRONMESH_HIL_PORT} is not a serial device"; exit 1; }
+
+      - name: build hil-profile firmware
+        working-directory: device/esp32
+        env:
+          HIL_SECURE_BOOT_KEY: ${{ secrets.HIL_SECURE_BOOT_KEY }}
+        run: |
+          umask 077
+          mkdir -p keys
+          printf '%s\n' "${HIL_SECURE_BOOT_KEY}" > keys/hil_secure_boot_signing_key.pem
+          source "${IDF_PATH}/export.sh"
+          idf.py -B build-hil -DSDKCONFIG=build-hil/sdkconfig \
+            -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.hil" build
+
+      - name: flash
+        working-directory: device/esp32/build-hil
+        run: |
+          source "${IDF_PATH}/export.sh"
+          esptool.py --chip "${IRONMESH_HIL_TARGET}" -p "${IRONMESH_HIL_PORT}" -b "${IRONMESH_HIL_BAUD}" \
+            --before default_reset --after no_reset write_flash @flash_args
+
+      - name: bring up the compose stack
+        run: scripts/demo/quickstart.sh
+
+      # The conformance harness's --stack backend (conformance/src/harness/stack.rs) performs the
+      # factory flow itself: pkictl issue-bootstrap against the stack's CA directory, registry
+      # POST /v1/devices with a factory-capable API key, then writes the fresh bootstrap
+      # certificate to the board through the esp32-hil DUT adapter.
+      - name: export stack material for the harness
+        id: stack
+        run: |
+          dir="${RUNNER_TEMP}/stack"
+          rm -rf "${dir}" && mkdir -p "${dir}"
+          project="$(docker compose -f "${COMPOSE_FILE}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+          for vol in pki-data trust tls-registry; do
+            docker run --rm -v "${project}_${vol}:/src:ro" -v "${dir}:/dst" busybox:1.37.0-musl \
+              sh -c "mkdir -p /dst/${vol} && cp -a /src/. /dst/${vol}/ && chown -R $(id -u):$(id -g) /dst/${vol}"
+          done
+          cid="$(docker create "ghcr.io/lumidren/ironmesh-pki-init:${IRONMESH_TAG:-dev}")"
+          docker cp "${cid}:/usr/local/bin/pkictl" "${dir}/pkictl"
+          docker rm "${cid}" >/dev/null
+          secrets="$(docker compose -f "${COMPOSE_FILE}" --profile tools run --rm --no-deps -T demo-tools harness-secrets | tail -n 1)"
+          registry_token="$(printf '%s' "${secrets}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["registry_token"])')"
+          tenant_seed="$(printf '%s' "${secrets}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tenant_key_seed_hex"])')"
+          tenant_id="$(printf '%s' "${secrets}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tenant_id"])')"
+          echo "::add-mask::${registry_token}"
+          echo "::add-mask::${tenant_seed}"
+          kms_pass="$(grep -E '^PKI_FILE_KMS_PASSPHRASE=' deploy/docker/.env | cut -d= -f2-)"
+          echo "::add-mask::${kms_pass}"
+          {
+            echo "IRONMESH_STACK_REGISTRY_TOKEN=${registry_token}"
+            echo "IRONMESH_STACK_TENANT_KEY_SEED_HEX=${tenant_seed}"
+            echo "IRONMESH_STACK_TENANT_ID=${tenant_id}"
+            echo "IRONMESH_STACK_BUNDLE_PUBKEY_HEX=$(cat "${dir}/trust/bundle-pubkey.hex")"
+            echo "PKI_FILE_KMS_PASSPHRASE=${kms_pass}"
+          } >> "${GITHUB_ENV}"
+          cat > "${dir}/stack.toml" <<EOF
+          anchors_pem = "${dir}/trust/ca-bundle.pem"
+          pkictl = "${dir}/pkictl"
+          pki_ca_dir = "${dir}/pki-data"
+          svc_cert = "${dir}/tls-registry/tls.crt"
+          svc_key = "${dir}/tls-registry/tls.key"
+          EOF
+          echo "dir=${dir}" >> "${GITHUB_OUTPUT}"
+
+      - name: conformance suite (esp32-hil DUT adapter, --stack)
+        env:
+          STACK_DIR: ${{ steps.stack.outputs.dir }}
+        run: |
+          if [ ! -f conformance/src/main.rs ]; then
+            echo "::error::conformance/src/main.rs (ironmesh-conformance CLI) is not in the repository yet"; exit 1
+          fi
+          mkdir -p reports
+          cargo run --locked --release --manifest-path conformance/Cargo.toml --bin ironmesh-conformance -- \
+            --dut esp32-hil --port "${IRONMESH_HIL_PORT}" --baud "${IRONMESH_HIL_BAUD}" \
+            --stack http://127.0.0.1 --stack-config "${STACK_DIR}/stack.toml" \
+            --serial-log reports/serial.log --junit reports/conformance-esp32-hil.xml
+
+      - name: collect stack logs
+        if: always()
+        run: |
+          mkdir -p reports
+          docker compose -f "${COMPOSE_FILE}" ps -a > reports/compose-ps.txt 2>&1 || true
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --timestamps > reports/compose.log 2>&1 || true
+
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        if: always()
+        with:
+          name: hil-esp32-${{ github.run_id }}
+          path: |
+            reports/serial.log
+            reports/conformance-esp32-hil.xml
+            reports/compose.log
+            reports/compose-ps.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: tear down
+        if: always()
+        run: |
+          docker compose -f "${COMPOSE_FILE}" --profile tools down -v --remove-orphans || true
+          rm -f deploy/docker/.env
+          rm -rf device/esp32/keys/hil_secure_boot_signing_key.pem device/esp32/build-hil "${RUNNER_TEMP}/stack"
