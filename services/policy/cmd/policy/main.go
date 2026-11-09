@@ -7,6 +7,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -53,16 +55,28 @@ func healthcheckMain(args []string, getenv func(string) string, stdout, stderr i
 	if listen == "" {
 		listen = ":8081"
 	}
-	return healthcheck.Run(context.Background(), "policy", args, healthcheck.DefaultURL(listen, "/healthz"), stdout, stderr)
+	url := healthcheck.DefaultURL(listen, "/healthz")
+	if strings.TrimSpace(getenv("POLICY_TLS_CERT_FILE")) != "" {
+		url = "https://" + strings.TrimPrefix(url, "http://")
+	}
+	return healthcheck.Run(context.Background(), "policy", args, url, stdout, stderr)
 }
 
 // buildGuard returns the management API guard: ES256 service JWTs (POLICY_JWT_PUBLIC_KEY_PEM,
-// aud=policy) and/or console OIDC access tokens (POLICY_OIDC_ISSUER). With neither configured
-// the API fails closed with 503.
-func buildGuard(cfg config.Config, servicePEM, serviceIssuer string, log *slog.Logger) (auth.Guard, error) {
+// aud=policy; single-use per instance with POLICY_JWT_SINGLE_USE) and/or console OIDC access
+// tokens (POLICY_OIDC_ISSUER). On the TLS listener a caller presenting a Services CA certificate
+// must present a token for the same service. With no verifier configured the API fails closed
+// with 503.
+func buildGuard(cfg config.Config, servicePEM, serviceIssuer string, servicesCA *x509.CertPool, log *slog.Logger) (auth.Guard, error) {
 	var verifiers []auth.TokenVerifier
 	if servicePEM != "" {
-		v, err := auth.NewVerifier(servicePEM, "policy", auth.WithIssuer(serviceIssuer))
+		opts := []auth.VerifierOption{auth.WithIssuer(serviceIssuer)}
+		if cfg.JWTSingleUse {
+			opts = append(opts, auth.WithReplayCache(auth.NewReplayCache(cfg.JWTReplayCacheSize)))
+		} else {
+			log.Warn("POLICY_JWT_SINGLE_USE=false: service JWTs can be replayed until they expire")
+		}
+		v, err := auth.NewVerifier(servicePEM, "policy", opts...)
 		if err != nil {
 			return nil, fmt.Errorf("POLICY_JWT_PUBLIC_KEY_PEM: %w", err)
 		}
@@ -80,7 +94,7 @@ func buildGuard(cfg config.Config, servicePEM, serviceIssuer string, log *slog.L
 		log.Warn("neither POLICY_JWT_PUBLIC_KEY_PEM nor POLICY_OIDC_ISSUER is set: the management API (/v1/*) answers 503")
 		return auth.DisabledGuard("management API disabled: configure POLICY_JWT_PUBLIC_KEY_PEM and/or POLICY_OIDC_ISSUER"), nil
 	}
-	return auth.NewGuard(verifiers...), nil
+	return auth.NewBoundGuard(servicesCA, verifiers...), nil
 }
 
 func run() error {
@@ -117,6 +131,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Session attributes and certificate serials recorded at authn; the revocation service uses
+	// the serials to skip kicks of sessions that already run on a renewed certificate.
+	identities := hooks.NewIdentityCache(0, 0, nil)
 	revocations, err := revocation.NewService(revocation.ServiceConfig{
 		Cache:      cache,
 		Kicker:     kicker,
@@ -125,6 +142,7 @@ func run() error {
 		Clock:      realClock,
 		Metrics:    m,
 		Logger:     log,
+		Sessions:   identities,
 	})
 	if err != nil {
 		return err
@@ -173,15 +191,28 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("POLICY_SERVICE_CIDRS: %w", err)
 	}
-	identities := hooks.NewIdentityCache(0, 0, nil)
+	deviceCAs, err := hooks.LoadCertificates(cfg.DeviceCAFile)
+	if err != nil {
+		return fmt.Errorf("POLICY_DEVICE_CA_FILE: %w", err)
+	}
+	servicesCAs, err := hooks.LoadCertificates(cfg.ServicesCAFile)
+	if err != nil {
+		return fmt.Errorf("POLICY_SERVICES_CA_FILE: %w", err)
+	}
+	if len(deviceCAs) == 0 || len(servicesCAs) == 0 {
+		log.Warn("POLICY_DEVICE_CA_FILE and/or POLICY_SERVICES_CA_FILE not set: the issuer of cert_pem is not checked at CONNECT for that identity kind")
+	}
 	authn, err := hooks.NewAuthn(hooks.AuthnConfig{
-		Registry:     reg2,
-		Revoked:      cache,
-		Identities:   identities,
-		Metrics:      m,
-		Logger:       log,
-		FailOpen:     cfg.RegistryFailOpen,
-		ServiceCIDRs: serviceCIDRs,
+		Registry:           reg2,
+		Revoked:            cache,
+		Identities:         identities,
+		Metrics:            m,
+		Logger:             log,
+		FailOpen:           cfg.RegistryFailOpen,
+		AllowMissingSerial: !cfg.RequireCertSerial,
+		DeviceCAs:          deviceCAs,
+		ServicesCAs:        servicesCAs,
+		ServiceCIDRs:       serviceCIDRs,
 	})
 	if err != nil {
 		return err
@@ -199,7 +230,8 @@ func run() error {
 	eng.OnSwap(authz.FlushCache)
 
 	// Management API guard.
-	guard, err := buildGuard(cfg, os.Getenv("POLICY_JWT_PUBLIC_KEY_PEM"), os.Getenv("POLICY_JWT_ISSUER"), log)
+	servicesPool := hooks.CertPool(servicesCAs)
+	guard, err := buildGuard(cfg, os.Getenv("POLICY_JWT_PUBLIC_KEY_PEM"), os.Getenv("POLICY_JWT_ISSUER"), servicesPool, log)
 	if err != nil {
 		return err
 	}
@@ -224,10 +256,20 @@ func run() error {
 		Logger: log,
 	})
 
-	log.Info("policy service starting", "listen", cfg.Listen, "emqx_api", cfg.EMQXAPIURL, "registry", cfg.RegistryURL,
+	var tlsCfg *tls.Config
+	if cfg.TLSCertFile != "" {
+		if tlsCfg, err = server.TLSConfig(cfg.TLSCertFile, cfg.TLSKeyFile, servicesPool); err != nil {
+			return err
+		}
+	}
+	ln, err := server.Listen(cfg.Listen, tlsCfg)
+	if err != nil {
+		return err
+	}
+	log.Info("policy service starting", "listen", cfg.Listen, "tls", tlsCfg != nil, "emqx_api", cfg.EMQXAPIURL, "registry", cfg.RegistryURL,
 		"crl_url", cfg.PKICRLURL, "crl_interval", cfg.CRLPollInterval.String(), "policy_version", eng.Current().Version,
-		"registry_fail_open", cfg.RegistryFailOpen)
-	err = server.Run(ctx, cfg.Listen, handler, cfg.ShutdownTimeout, log)
+		"registry_fail_open", cfg.RegistryFailOpen, "require_cert_serial", cfg.RequireCertSerial, "jwt_single_use", cfg.JWTSingleUse)
+	err = server.Serve(ctx, ln, handler, cfg.ShutdownTimeout, log)
 	stop()
 	waitCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()

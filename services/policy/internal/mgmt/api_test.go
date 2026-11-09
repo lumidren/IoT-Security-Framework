@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -76,7 +77,7 @@ func newEnv(t *testing.T) *env {
 
 func (e *env) token(role string) string {
 	e.t.Helper()
-	tok, err := e.signer.Sign(map[string]any{"sub": "user-" + role, "aud": "policy", "role": role, "exp": fixedNow.Add(time.Hour).Unix(), "tenant_id": tenant})
+	tok, err := e.signer.Sign(map[string]any{"sub": "user-" + role, "aud": "policy", "role": role, "iat": fixedNow.Unix(), "exp": fixedNow.Add(5 * time.Minute).Unix(), "jti": fmt.Sprintf("%s-%d", role, time.Now().UnixNano()), "tenant_id": tenant})
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -472,7 +473,7 @@ func TestInternalErrors(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	api.Register(mux)
-	tok, _ := signer.Sign(map[string]any{"sub": "o", "aud": "policy", "role": "owner", "exp": fixedNow.Add(time.Hour).Unix()})
+	tok, _ := signer.Sign(map[string]any{"sub": "o", "aud": "policy", "role": "owner", "iat": fixedNow.Unix(), "exp": fixedNow.Add(5 * time.Minute).Unix(), "jti": "internal-errors"})
 	call := func(method, path string, body string) int {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+tok)
@@ -521,13 +522,13 @@ func TestRevocationsScopedToTokenTenant(t *testing.T) {
 		decode(t, raw, &p)
 		return p.Items
 	}
-	exp := fixedNow.Add(time.Hour).Unix()
-	got := call(map[string]any{"sub": "u", "aud": "policy", "role": "viewer", "exp": exp, "tenant_id": tenant})
+	exp, iat := fixedNow.Add(5*time.Minute).Unix(), fixedNow.Unix()
+	got := call(map[string]any{"sub": "u", "aud": "policy", "role": "viewer", "iat": iat, "exp": exp, "jti": "scoped-1", "tenant_id": tenant})
 	if len(got) != 1 || got[0].TenantID != tenant {
 		t.Fatalf("tenant-scoped = %+v", got)
 	}
 	// A service token without tenant_id sees every tenant (and CRL-sourced entries).
-	if got := call(map[string]any{"sub": "registry", "aud": "policy", "role": "viewer", "exp": exp}); len(got) != 3 {
+	if got := call(map[string]any{"sub": "registry", "aud": "policy", "role": "viewer", "iat": iat, "exp": exp, "jti": "scoped-2"}); len(got) != 3 {
 		t.Fatalf("service view = %+v", got)
 	}
 }

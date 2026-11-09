@@ -212,6 +212,8 @@ func (v *OIDCVerifier) VerifyToken(ctx context.Context, token string) (Claims, e
 	case !containsString(claims.Audience, v.cfg.Audience):
 		return Claims{}, ErrAudience
 	}
+	// Browser access tokens are reused across requests: no jti single use, exp/aud/iss only.
+	claims.Source = SourceOIDC
 	return claims, nil
 }
 

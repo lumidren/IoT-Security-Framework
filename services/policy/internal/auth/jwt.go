@@ -57,7 +57,21 @@ type Claims struct {
 	ExpiresAt time.Time
 	IssuedAt  time.Time
 	NotBefore time.Time
+	// ID is the jti claim.
+	ID string
+	// Source is SourceService (ES256 service JWT) or SourceOIDC (console access token).
+	Source string
 }
+
+// Token sources.
+const (
+	SourceService = "service"
+	SourceOIDC    = "oidc"
+)
+
+// MaxServiceTokenLifetime bounds exp - iat of service JWTs (DESIGN_CONTRACT section 7: 5 minute
+// tokens; THREAT_MODEL T-50).
+const MaxServiceTokenLifetime = 300 * time.Second
 
 // Verification errors.
 var (
@@ -69,6 +83,11 @@ var (
 	ErrAudience    = errors.New("jwt: audience mismatch")
 	ErrIssuer      = errors.New("jwt: issuer mismatch")
 	ErrNoKeys      = errors.New("jwt: no verification keys configured")
+	ErrLifetime    = errors.New("jwt: service token lifetime (exp - iat) must be positive and at most 300s")
+	ErrReplay      = errors.New("jwt: token already used (jti replay)")
+	// ErrSubjectMismatch means a token presented with a Services CA client certificate names a
+	// different service than the certificate CN.
+	ErrSubjectMismatch = errors.New("jwt: token subject does not match the client certificate")
 )
 
 // Verifier validates ES256 tokens against one or more P-256 public keys.
@@ -78,6 +97,7 @@ type Verifier struct {
 	issuer   string
 	now      func() time.Time
 	leeway   time.Duration
+	replay   *ReplayCache
 }
 
 // VerifierOption customises a Verifier.
@@ -94,6 +114,10 @@ func WithClock(now func() time.Time) VerifierOption {
 
 // WithIssuer requires the iss claim to equal iss.
 func WithIssuer(iss string) VerifierOption { return func(v *Verifier) { v.issuer = iss } }
+
+// WithReplayCache makes every service JWT single-use on this instance (POLICY_JWT_SINGLE_USE):
+// a jti is remembered until exp + leeway.
+func WithReplayCache(c *ReplayCache) VerifierOption { return func(v *Verifier) { v.replay = c } }
 
 // WithLeeway tolerates clock skew of d on exp/nbf (default 30s).
 func WithLeeway(d time.Duration) VerifierOption {
@@ -166,7 +190,9 @@ type header struct {
 	Kid string `json:"kid"`
 }
 
-// Verify checks the signature and the exp/nbf/aud/iss claims of a compact JWT.
+// Verify checks the signature and the claims of a compact service JWT: exp, iat and jti are
+// required, exp - iat must not exceed MaxServiceTokenLifetime, iat must not lie in the future,
+// nbf/aud/iss are honoured and, with a ReplayCache, the jti must not have been used before.
 func (v *Verifier) Verify(token string) (Claims, error) {
 	parts := strings.Split(strings.TrimSpace(token), ".")
 	if len(parts) != 3 {
@@ -231,6 +257,22 @@ func (v *Verifier) Verify(token string) (Claims, error) {
 	if v.issuer != "" && claims.Issuer != v.issuer {
 		return Claims{}, ErrIssuer
 	}
+	if claims.IssuedAt.IsZero() {
+		return Claims{}, fmt.Errorf("%w: iat is required", ErrMalformed)
+	}
+	if claims.IssuedAt.After(now.Add(v.leeway)) {
+		return Claims{}, fmt.Errorf("%w: iat is in the future", ErrNotYetValid)
+	}
+	if life := claims.ExpiresAt.Sub(claims.IssuedAt); life <= 0 || life > MaxServiceTokenLifetime {
+		return Claims{}, ErrLifetime
+	}
+	if strings.TrimSpace(claims.ID) == "" || len(claims.ID) > 256 {
+		return Claims{}, fmt.Errorf("%w: jti is required", ErrMalformed)
+	}
+	claims.Source = SourceService
+	if v.replay != nil && !v.replay.Use(claims.Issuer+"\x00"+claims.ID, claims.ExpiresAt.Add(v.leeway), now) {
+		return Claims{}, ErrReplay
+	}
 	return claims, nil
 }
 
@@ -239,6 +281,7 @@ func claimsFromMap(raw map[string]any) (Claims, error) {
 	c.Subject, _ = raw["sub"].(string)
 	c.Issuer, _ = raw["iss"].(string)
 	c.TenantID, _ = raw["tenant_id"].(string)
+	c.ID, _ = raw["jti"].(string)
 	if role, ok := raw["role"].(string); ok {
 		if r, known := ParseRole(role); known {
 			c.Role = r

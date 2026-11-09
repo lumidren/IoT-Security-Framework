@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -33,6 +35,10 @@ func newSigner(t *testing.T) (*Signer, string) {
 	return s, pemKey
 }
 
+var jtiCounter atomic.Int64
+
+func nextJTI() string { return fmt.Sprintf("jti-%d", jtiCounter.Add(1)) }
+
 func baseClaims(role string) map[string]any {
 	return map[string]any{
 		"sub":  "user-1",
@@ -41,6 +47,7 @@ func baseClaims(role string) map[string]any {
 		"role": role,
 		"exp":  fixedNow.Add(5 * time.Minute).Unix(),
 		"iat":  fixedNow.Unix(),
+		"jti":  nextJTI(),
 	}
 }
 
@@ -199,6 +206,7 @@ func TestVerifyLeeway(t *testing.T) {
 	s, pemKey := newSigner(t)
 	claims := baseClaims("viewer")
 	claims["exp"] = fixedNow.Add(-10 * time.Second).Unix()
+	claims["iat"] = fixedNow.Add(-310 * time.Second).Unix()
 	tok := mustSign(t, s, claims)
 	if _, err := newVerifier(t, pemKey).Verify(tok); err != nil {
 		t.Errorf("30s default leeway should accept a token expired 10s ago: %v", err)

@@ -51,6 +51,33 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.OIDCIssuer != "" || cfg.OIDCAudience != "ironmesh-api" || cfg.OIDCRoleClaim != "role" {
 		t.Errorf("OIDC defaults = %q %q %q", cfg.OIDCIssuer, cfg.OIDCAudience, cfg.OIDCRoleClaim)
 	}
+	if !cfg.RequireCertSerial || !cfg.JWTSingleUse || cfg.JWTReplayCacheSize != 100000 || cfg.DeviceCAFile != "" || cfg.ServicesCAFile != "" || cfg.TLSCertFile != "" {
+		t.Errorf("hardening defaults = %+v", cfg)
+	}
+}
+
+func TestLoadHardeningSettings(t *testing.T) {
+	env := minimalEnv()
+	env["POLICY_CRL_ISSUER_CERT_FILE"] = "/etc/ironmesh/device-ca.pem"
+	cfg, err := Load(MapGetenv(env))
+	if err != nil || cfg.DeviceCAFile != "/etc/ironmesh/device-ca.pem" {
+		t.Fatalf("device CA defaults to the CRL issuer: %q %v", cfg.DeviceCAFile, err)
+	}
+	env["POLICY_DEVICE_CA_FILE"] = "/etc/ironmesh/device-ca-bundle.pem"
+	env["POLICY_SERVICES_CA_FILE"] = "/etc/ironmesh/services-ca.pem"
+	env["POLICY_REQUIRE_CERT_SERIAL"] = "false"
+	env["POLICY_JWT_SINGLE_USE"] = "false"
+	env["POLICY_JWT_REPLAY_CACHE_SIZE"] = "5000"
+	env["POLICY_TLS_CERT_FILE"] = "/tls/tls.crt"
+	env["POLICY_TLS_KEY_FILE"] = "/tls/tls.key"
+	cfg, err = Load(MapGetenv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DeviceCAFile != "/etc/ironmesh/device-ca-bundle.pem" || cfg.ServicesCAFile != "/etc/ironmesh/services-ca.pem" || cfg.RequireCertSerial ||
+		cfg.JWTSingleUse || cfg.JWTReplayCacheSize != 5000 || cfg.TLSCertFile != "/tls/tls.crt" || cfg.TLSKeyFile != "/tls/tls.key" {
+		t.Fatalf("settings = %+v", cfg)
+	}
 }
 
 func TestLoadOIDC(t *testing.T) {
@@ -125,6 +152,10 @@ func TestLoadValidation(t *testing.T) {
 		{"bad scheme", func(m map[string]string) { m["POLICY_REGISTRY_URL"] = "ftp://registry" }, "invalid URL"},
 		{"bad level", func(m map[string]string) { m["POLICY_LOG_LEVEL"] = "loud" }, "unknown level"},
 		{"bad oidc issuer", func(m map[string]string) { m["POLICY_OIDC_ISSUER"] = "idp.example/realms/x" }, "POLICY_OIDC_ISSUER"},
+		{"bad replay cache size", func(m map[string]string) { m["POLICY_JWT_REPLAY_CACHE_SIZE"] = "lots" }, "invalid integer"},
+		{"tiny replay cache", func(m map[string]string) { m["POLICY_JWT_REPLAY_CACHE_SIZE"] = "10" }, "at least 1000"},
+		{"tls cert without key", func(m map[string]string) { m["POLICY_TLS_CERT_FILE"] = "/tls/tls.crt" }, "POLICY_TLS_KEY_FILE"},
+		{"bad require serial", func(m map[string]string) { m["POLICY_REQUIRE_CERT_SERIAL"] = "sometimes" }, "invalid boolean"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

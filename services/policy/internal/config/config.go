@@ -48,6 +48,24 @@ type Config struct {
 	// (POLICY_SERVICE_CIDRS, comma-separated; default RFC 1918 ranges + loopback).
 	ServiceCIDRs []string
 
+	// RequireCertSerial denies CONNECTs whose authn body carries neither cert_pem nor cert_serial
+	// (POLICY_REQUIRE_CERT_SERIAL, default true), so serial revocations always apply.
+	RequireCertSerial bool
+	// DeviceCAFile / ServicesCAFile are PEM bundles of the Device CA and Services CA
+	// (POLICY_DEVICE_CA_FILE, default POLICY_CRL_ISSUER_CERT_FILE; POLICY_SERVICES_CA_FILE). When
+	// set, a cert_pem at CONNECT must be issued by the CA of its identity kind, and the Services CA
+	// also anchors service client certificates on the TLS listener.
+	DeviceCAFile   string
+	ServicesCAFile string
+	// JWTSingleUse makes service JWTs single-use per instance (POLICY_JWT_SINGLE_USE, default
+	// true); JWTReplayCacheSize bounds the jti cache (POLICY_JWT_REPLAY_CACHE_SIZE, default 100000).
+	JWTSingleUse       bool
+	JWTReplayCacheSize int
+	// TLSCertFile / TLSKeyFile enable a TLS 1.3 listener (POLICY_TLS_CERT_FILE,
+	// POLICY_TLS_KEY_FILE) that accepts optional client certificates from the Services CA.
+	TLSCertFile string
+	TLSKeyFile  string
+
 	// StateDir holds the revocation cache snapshot (POLICY_STATE_DIR); empty disables persistence.
 	StateDir string
 	// HookToken, when set, must be presented by EMQX in X-IronMesh-Hook-Token on /emqx/* calls.
@@ -104,6 +122,18 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		return b
 	}
+	integer := func(key string, def int) int {
+		raw := get(key, "")
+		if raw == "" {
+			return def
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: invalid integer %q", key, raw))
+			return def
+		}
+		return n
+	}
 
 	cfg := Config{
 		Listen:            get("POLICY_LISTEN", ":8081"),
@@ -115,6 +145,11 @@ func Load(getenv func(string) string) (Config, error) {
 		PKIToken:          get("POLICY_PKI_TOKEN", ""),
 		CRLPollInterval:   dur("POLICY_CRL_POLL_INTERVAL", "5s"),
 		CRLIssuerCertFile: get("POLICY_CRL_ISSUER_CERT_FILE", ""),
+		RequireCertSerial: boolean("POLICY_REQUIRE_CERT_SERIAL", true),
+		ServicesCAFile:    get("POLICY_SERVICES_CA_FILE", ""),
+		JWTSingleUse:      boolean("POLICY_JWT_SINGLE_USE", true),
+		TLSCertFile:       get("POLICY_TLS_CERT_FILE", ""),
+		TLSKeyFile:        get("POLICY_TLS_KEY_FILE", ""),
 		RegistryURL:       get("POLICY_REGISTRY_URL", ""),
 		RegistryToken:     get("POLICY_REGISTRY_TOKEN", ""),
 		RegistryFailOpen:  boolean("POLICY_REGISTRY_FAIL_OPEN", false),
@@ -132,6 +167,14 @@ func Load(getenv func(string) string) (Config, error) {
 		ShutdownTimeout:   dur("POLICY_SHUTDOWN_TIMEOUT", "10s"),
 	}
 
+	cfg.DeviceCAFile = get("POLICY_DEVICE_CA_FILE", cfg.CRLIssuerCertFile)
+	cfg.JWTReplayCacheSize = integer("POLICY_JWT_REPLAY_CACHE_SIZE", 100000)
+	if cfg.JWTReplayCacheSize < 1000 {
+		errs = append(errs, fmt.Errorf("POLICY_JWT_REPLAY_CACHE_SIZE: must be at least 1000, got %d", cfg.JWTReplayCacheSize))
+	}
+	if (cfg.TLSCertFile == "") != (cfg.TLSKeyFile == "") {
+		errs = append(errs, errors.New("POLICY_TLS_CERT_FILE and POLICY_TLS_KEY_FILE must be set together"))
+	}
 	if cfg.EMQXAPIKey == "" || cfg.EMQXAPISecret == "" {
 		errs = append(errs, errors.New("POLICY_EMQX_API_KEY and POLICY_EMQX_API_SECRET are required to kick revoked sessions"))
 	}

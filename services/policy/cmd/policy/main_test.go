@@ -39,6 +39,11 @@ func TestHealthcheckMain(t *testing.T) {
 	if code := healthcheckMain([]string{"--nope"}, config.MapGetenv(nil), &out, &errOut); code != 2 {
 		t.Fatalf("bad flag: %d", code)
 	}
+	// With the TLS listener the default URL is https (plain server -> handshake fails -> 1).
+	env["POLICY_TLS_CERT_FILE"] = "/tls/tls.crt"
+	if code := healthcheckMain(nil, config.MapGetenv(env), &out, &errOut); code != 1 {
+		t.Fatalf("https against a plain listener: %d", code)
+	}
 }
 
 func TestBuildGuard(t *testing.T) {
@@ -54,7 +59,7 @@ func TestBuildGuard(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/policy", nil))
 		return rec.Code
 	}
-	g, err := buildGuard(config.Config{}, "", "", log)
+	g, err := buildGuard(config.Config{}, "", "", nil, log)
 	if err != nil || status(g) != http.StatusServiceUnavailable {
 		t.Fatalf("disabled guard: %v", err)
 	}
@@ -63,18 +68,19 @@ func TestBuildGuard(t *testing.T) {
 		pem string
 	}{
 		"service only": {config.Config{}, pemKey},
+		"single use":   {config.Config{JWTSingleUse: true, JWTReplayCacheSize: 1000}, pemKey},
 		"oidc only":    {config.Config{OIDCIssuer: "https://idp.example/realms/x", OIDCAudience: "ironmesh-api", OIDCRoleClaim: "role"}, ""},
 		"both":         {config.Config{OIDCIssuer: "https://idp.example/realms/x"}, pemKey},
 	} {
-		g, err := buildGuard(c.cfg, c.pem, "", log)
+		g, err := buildGuard(c.cfg, c.pem, "", nil, log)
 		if err != nil || status(g) != http.StatusUnauthorized {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := buildGuard(config.Config{}, "not pem", "", log); err == nil {
+	if _, err := buildGuard(config.Config{}, "not pem", "", nil, log); err == nil {
 		t.Error("bad PEM accepted")
 	}
-	if _, err := buildGuard(config.Config{OIDCIssuer: "::bad"}, "", "", log); err == nil {
+	if _, err := buildGuard(config.Config{OIDCIssuer: "::bad"}, "", "", nil, log); err == nil {
 		t.Error("bad issuer accepted")
 	}
 }

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"net/http"
 	"strings"
@@ -42,7 +43,13 @@ func (v *Verifier) Guard() Guard { return NewGuard(v) }
 
 // NewGuard returns the middleware accepting a token that any of verifiers accepts (tried in
 // order; the first success wins).
-func NewGuard(verifiers ...TokenVerifier) Guard {
+func NewGuard(verifiers ...TokenVerifier) Guard { return NewBoundGuard(nil, verifiers...) }
+
+// NewBoundGuard is NewGuard plus certificate binding: when the caller presents a TLS client
+// certificate that chains to servicesCA, the token's sub must name the same service as the
+// certificate CN ("svc-" prefix ignored), otherwise the request is rejected with 401. A nil pool
+// disables the binding.
+func NewBoundGuard(servicesCA *x509.CertPool, verifiers ...TokenVerifier) Guard {
 	return func(min Role, next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, ok := bearer(r.Header.Get("Authorization"))
@@ -55,6 +62,11 @@ func NewGuard(verifiers ...TokenVerifier) Guard {
 			if err != nil {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="ironmesh-policy", error="invalid_token"`)
 				problem.Write(w, r, http.StatusUnauthorized, "invalid bearer token", err.Error())
+				return
+			}
+			if cn, ok := ServiceCertCN(r, servicesCA); ok && (ServiceName(claims.Subject) == "" || ServiceName(claims.Subject) != ServiceName(cn)) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="ironmesh-policy", error="invalid_token"`)
+				problem.Write(w, r, http.StatusUnauthorized, "invalid bearer token", ErrSubjectMismatch.Error())
 				return
 			}
 			if claims.Role == "" {
@@ -84,6 +96,27 @@ func verifyAny(ctx context.Context, verifiers []TokenVerifier, token string) (Cl
 	}
 	return Claims{}, errors.Join(errs...)
 }
+
+// ServiceCertCN returns the CN of the request's TLS client certificate when it chains to
+// servicesCA (a Services CA identity such as svc-registry).
+func ServiceCertCN(r *http.Request, servicesCA *x509.CertPool) (string, bool) {
+	if servicesCA == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return "", false
+	}
+	leaf := r.TLS.PeerCertificates[0]
+	inter := x509.NewCertPool()
+	for _, c := range r.TLS.PeerCertificates[1:] {
+		inter.AddCert(c)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: servicesCA, Intermediates: inter, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		return "", false
+	}
+	return leaf.Subject.CommonName, true
+}
+
+// ServiceName normalises a service identity: "svc-registry" and "registry" both yield
+// "registry".
+func ServiceName(s string) string { return strings.TrimPrefix(strings.TrimSpace(s), "svc-") }
 
 // DisabledGuard rejects every call with 503; used when no verification key is configured so the
 // management API fails closed instead of open.

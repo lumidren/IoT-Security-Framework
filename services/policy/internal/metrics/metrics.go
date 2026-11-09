@@ -25,7 +25,8 @@ type Metrics struct {
 	RevocationLatency prometheus.Histogram
 	// Revocations counts revocations applied to the cache by source (event|crl|snapshot).
 	Revocations *prometheus.CounterVec
-	// Kicks counts EMQX session kicks by result (ok|error).
+	// Kicks counts EMQX session kicks by result (ok|error|skipped; skipped = the live session already
+	// uses another certificate than the revoked serial).
 	Kicks *prometheus.CounterVec
 	// CRLPolls counts CRL poll attempts by result (updated|not_modified|error).
 	CRLPolls *prometheus.CounterVec
