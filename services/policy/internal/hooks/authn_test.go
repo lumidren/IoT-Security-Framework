@@ -105,11 +105,15 @@ func deviceReq() AuthnRequest {
 		PeerHost:       "10.0.0.7",
 		CertCommonName: dev,
 		CertSubject:    "CN=" + dev + ",OU=" + tenant + ",O=IronMesh",
+		CertSerial:     liveSerial,
 	}
 }
 
+// liveSerial is the certificate serial carried by the fixtures (cert_serial).
+const liveSerial = "0D:EC:AF"
+
 func serviceReq(cn string) AuthnRequest {
-	return AuthnRequest{ClientID: cn, Username: cn, PeerHost: "10.0.0.9", CertCommonName: cn, CertSubject: "CN=" + cn + ",OU=services,O=IronMesh"}
+	return AuthnRequest{ClientID: cn, Username: cn, PeerHost: "10.0.0.9", CertCommonName: cn, CertSubject: "CN=" + cn + ",OU=services,O=IronMesh", CertSerial: "5e"}
 }
 
 func TestNewAuthnValidation(t *testing.T) {
@@ -149,6 +153,9 @@ func TestDecideDeviceAllow(t *testing.T) {
 	}
 	if attrs, ok := env.identities.Get(dev); !ok || attrs.TenantID != tenant {
 		t.Error("identity cache should be populated on allow")
+	}
+	if s, ok := env.identities.LiveSerial(dev); !ok || s != "decaf" {
+		t.Errorf("live serial = %q %v", s, ok)
 	}
 	if got := testutil.ToFloat64(env.m.AuthnDecisions.WithLabelValues("allow", "device")); got != 1 {
 		t.Errorf("allow decisions = %v", got)
@@ -385,6 +392,7 @@ func TestDecideWithCertPEM(t *testing.T) {
 	env := newAuthnEnv(t, nil)
 	notAfter := fixedNow.Add(7 * 24 * time.Hour)
 	req := deviceReq()
+	req.CertSerial = ""  // the serial comes from the certificate
 	req.CertSubject = "" // the parsed certificate is authoritative when cert_pem is present
 	req.CertPEM = makeDeviceCert(t, dev, []string{tenant}, notAfter, 0xabc)
 	resp, reason := env.authn.Decide(context.Background(), req)

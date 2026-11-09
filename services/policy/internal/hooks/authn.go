@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -21,8 +22,14 @@ import (
 	"github.com/lumidren/IoT-Security-Framework/services/policy/internal/revocation"
 )
 
-// AuthnRequest is the body EMQX posts to /emqx/authn. cert_serial and cert_pem are optional and
-// used when the EMQX template provides them.
+// AuthnRequest is the body EMQX posts to /emqx/authn.
+//
+// The certificate serial is taken from cert_pem (the client certificate, parsed and authoritative)
+// and/or cert_serial (hex, e.g. extracted by mqtt.client_attrs_init and forwarded as
+// ${client_attrs.cert_serial}); when both are present they must agree. With
+// POLICY_REQUIRE_CERT_SERIAL (default) a CONNECT without either is denied (no_cert_serial), so
+// serial revocations (PKI push and CRL) always apply to live connects (THREAT_MODEL T-13, T-37).
+// Placeholders EMQX left unrendered ("${...}", "undefined") count as absent.
 type AuthnRequest struct {
 	ClientID       string `json:"clientid"`
 	Username       string `json:"username"`
@@ -57,6 +64,14 @@ type AuthnConfig struct {
 	Logger     *slog.Logger
 	// FailOpen admits devices when the Registry cannot be reached (POLICY_REGISTRY_FAIL_OPEN).
 	FailOpen bool
+	// AllowMissingSerial admits CONNECTs that carry neither cert_pem nor cert_serial
+	// (POLICY_REQUIRE_CERT_SERIAL=false). The zero value fails closed (no_cert_serial).
+	AllowMissingSerial bool
+	// DeviceCAs / ServicesCAs, when set, are the only issuers accepted for a cert_pem of a device
+	// (dev-*) or service (svc-*) identity (POLICY_DEVICE_CA_FILE, POLICY_SERVICES_CA_FILE); the
+	// certificate must name the CA as issuer and carry its signature (untrusted_issuer).
+	DeviceCAs   []*x509.Certificate
+	ServicesCAs []*x509.Certificate
 	// ServiceCIDRs are the networks service principals may connect from (default
 	// DefaultServiceCIDRs).
 	ServiceCIDRs []*net.IPNet
@@ -66,15 +81,18 @@ type AuthnConfig struct {
 
 // Authn is the EMQX authentication backend.
 type Authn struct {
-	registry     registry.Lookup
-	revoked      RevocationChecker
-	identities   *IdentityCache
-	metrics      *metrics.Metrics
-	log          *slog.Logger
-	failOpen     bool
-	serviceCIDRs []*net.IPNet
-	now          func() time.Time
-	maxBody      int64
+	registry      registry.Lookup
+	revoked       RevocationChecker
+	identities    *IdentityCache
+	metrics       *metrics.Metrics
+	log           *slog.Logger
+	failOpen      bool
+	allowNoSerial bool
+	deviceCAs     []*x509.Certificate
+	servicesCAs   []*x509.Certificate
+	serviceCIDRs  []*net.IPNet
+	now           func() time.Time
+	maxBody       int64
 }
 
 // NewAuthn validates cfg and returns the hook.
@@ -83,15 +101,18 @@ func NewAuthn(cfg AuthnConfig) (*Authn, error) {
 		return nil, errors.New("authn: registry, revocation checker and metrics are required")
 	}
 	a := &Authn{
-		registry:     cfg.Registry,
-		revoked:      cfg.Revoked,
-		identities:   cfg.Identities,
-		metrics:      cfg.Metrics,
-		log:          cfg.Logger,
-		failOpen:     cfg.FailOpen,
-		serviceCIDRs: cfg.ServiceCIDRs,
-		now:          cfg.Clock,
-		maxBody:      cfg.MaxBodyBytes,
+		registry:      cfg.Registry,
+		revoked:       cfg.Revoked,
+		identities:    cfg.Identities,
+		metrics:       cfg.Metrics,
+		log:           cfg.Logger,
+		failOpen:      cfg.FailOpen,
+		allowNoSerial: cfg.AllowMissingSerial,
+		deviceCAs:     cfg.DeviceCAs,
+		servicesCAs:   cfg.ServicesCAs,
+		serviceCIDRs:  cfg.ServiceCIDRs,
+		now:           cfg.Clock,
+		maxBody:       cfg.MaxBodyBytes,
 	}
 	if len(a.serviceCIDRs) == 0 {
 		nets, err := ParseCIDRs(DefaultServiceCIDRs)
@@ -111,6 +132,9 @@ func NewAuthn(cfg AuthnConfig) (*Authn, error) {
 	}
 	if a.failOpen {
 		a.log.Error("POLICY_REGISTRY_FAIL_OPEN=true: devices will be ADMITTED when the Registry is unreachable; never run production with this setting")
+	}
+	if a.allowNoSerial {
+		a.log.Warn("POLICY_REQUIRE_CERT_SERIAL=false: CONNECTs without cert_pem/cert_serial are admitted and serial revocations do not apply to them")
 	}
 	return a, nil
 }
@@ -177,10 +201,11 @@ func (a *Authn) decide(ctx context.Context, req AuthnRequest) (kind string, resp
 	if dn.CN != "" && dn.CN != cn {
 		return kind, deny, "bad_subject"
 	}
-	serial := revocation.NormalizeSerial(req.CertSerial)
+	var serial string
+	var cert *x509.Certificate
 	var expireAt *int64
-	if req.CertPEM != "" {
-		cert, err := parseCertPEM(req.CertPEM)
+	if pemText := rendered(req.CertPEM); pemText != "" {
+		cert, err = parseCertPEM(pemText)
 		if err != nil {
 			return kind, deny, "cert_pem_invalid"
 		}
@@ -195,6 +220,16 @@ func (a *Authn) decide(ctx context.Context, req AuthnRequest) (kind string, resp
 		exp := cert.NotAfter.Unix()
 		expireAt = &exp
 	}
+	if raw := rendered(req.CertSerial); raw != "" {
+		s := revocation.NormalizeSerial(raw)
+		switch {
+		case s == "":
+			return kind, deny, "cert_serial_invalid"
+		case serial != "" && s != serial:
+			return kind, deny, "cert_serial_mismatch"
+		}
+		serial = s
+	}
 
 	switch {
 	case identity.IsDeviceID(cn):
@@ -208,6 +243,12 @@ func (a *Authn) decide(ctx context.Context, req AuthnRequest) (kind string, resp
 			return kind, deny, "bootstrap_cert"
 		case err != nil:
 			return kind, deny, "no_tenant"
+		}
+		if cert != nil && len(a.deviceCAs) > 0 && !issuedByAny(cert, a.deviceCAs) {
+			return kind, deny, "untrusted_issuer"
+		}
+		if serial == "" && !a.allowNoSerial {
+			return kind, deny, "no_cert_serial"
 		}
 		if a.revoked.IsRevokedDevice(cn) {
 			return kind, deny, "revoked"
@@ -234,7 +275,7 @@ func (a *Authn) decide(ctx context.Context, req AuthnRequest) (kind string, resp
 		}
 		attrs := engine.Attrs{TenantID: tenant, DeviceID: cn, Kind: kind}
 		if a.identities != nil {
-			a.identities.Put(cn, attrs)
+			a.identities.PutSession(cn, attrs, serial)
 		}
 		return kind, allowResponse(attrs, expireAt), "allow"
 
@@ -244,6 +285,12 @@ func (a *Authn) decide(ctx context.Context, req AuthnRequest) (kind string, resp
 			a.log.Warn("service principal rejected", "client_id", cn, "peerhost", req.PeerHost, "detail", detail)
 			return kind, deny, "service_origin"
 		}
+		if cert != nil && len(a.servicesCAs) > 0 && !issuedByAny(cert, a.servicesCAs) {
+			return kind, deny, "untrusted_issuer"
+		}
+		if serial == "" && !a.allowNoSerial {
+			return kind, deny, "no_cert_serial"
+		}
 		if a.revoked.IsRevokedDevice(cn) {
 			return kind, deny, "revoked"
 		}
@@ -252,7 +299,7 @@ func (a *Authn) decide(ctx context.Context, req AuthnRequest) (kind string, resp
 		}
 		attrs := engine.Attrs{Kind: kind}
 		if a.identities != nil {
-			a.identities.Put(cn, attrs)
+			a.identities.PutSession(cn, attrs, serial)
 		}
 		return kind, allowResponse(attrs, expireAt), "allow"
 	}
@@ -326,6 +373,29 @@ func attrOr(a *engine.Attrs) engine.Attrs {
 		return engine.Attrs{}
 	}
 	return *a
+}
+
+// rendered returns v unless it is empty or a placeholder EMQX did not render (a literal
+// "${...}", "undefined" or "null"), which count as absent.
+func rendered(v string) string {
+	v = strings.TrimSpace(v)
+	switch {
+	case v == "", v == "undefined", v == "null":
+		return ""
+	case strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}"):
+		return ""
+	}
+	return v
+}
+
+// issuedByAny reports whether cert names one of cas as its issuer and carries its signature.
+func issuedByAny(cert *x509.Certificate, cas []*x509.Certificate) bool {
+	for _, ca := range cas {
+		if ca != nil && bytes.Equal(cert.RawIssuer, ca.RawSubject) && cert.CheckSignatureFrom(ca) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func parseCertPEM(s string) (*x509.Certificate, error) {

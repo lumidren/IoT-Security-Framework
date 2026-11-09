@@ -21,6 +21,7 @@ type IdentityCache struct {
 
 type identityEntry struct {
 	attrs   engine.Attrs
+	serial  string
 	expires time.Time
 }
 
@@ -40,7 +41,11 @@ func NewIdentityCache(ttl time.Duration, max int, now func() time.Time) *Identit
 }
 
 // Put stores attrs for clientID.
-func (c *IdentityCache) Put(clientID string, attrs engine.Attrs) {
+func (c *IdentityCache) Put(clientID string, attrs engine.Attrs) { c.PutSession(clientID, attrs, "") }
+
+// PutSession stores attrs and the certificate serial of the session just admitted for clientID
+// (serial "" when the CONNECT carried none).
+func (c *IdentityCache) PutSession(clientID string, attrs engine.Attrs, serial string) {
 	if clientID == "" {
 		return
 	}
@@ -60,7 +65,19 @@ func (c *IdentityCache) Put(clientID string, attrs engine.Attrs) {
 			delete(c.entries, k)
 		}
 	}
-	c.entries[clientID] = identityEntry{attrs: attrs, expires: now.Add(c.ttl)}
+	c.entries[clientID] = identityEntry{attrs: attrs, serial: serial, expires: now.Add(c.ttl)}
+}
+
+// LiveSerial returns the certificate serial of the last session admitted for clientID; known is
+// false when no fresh entry or no serial is recorded. It implements revocation.SessionSerials.
+func (c *IdentityCache) LiveSerial(clientID string) (serial string, known bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[clientID]
+	if !ok || e.serial == "" || !c.now().Before(e.expires) {
+		return "", false
+	}
+	return e.serial, true
 }
 
 // Get returns the attributes stored for clientID if present and fresh.
