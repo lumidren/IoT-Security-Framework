@@ -1,11 +1,11 @@
 # IronMesh conformance summary
 
-Generated 2026-11-09T20:47:10.6978026Z from `git rev-parse HEAD` = `8904ed970ffcb9fbbf516fb6cd9b1d79c7509427`.
+Generated 2026-11-09T23:06:08.9817664Z from `git rev-parse HEAD` = `12c456ca9357771a67989557787bdab201342b2a`.
 
 | Target | Run started | Commit | Mode | Passed | Failed | N/A | Errors |
 |---|---|---|---|---|---|---|---|
-| `agent-rs` | 2026-11-09T20:36:05.0603466Z | `8904ed970ffc` | hermetic | 27 | 0 | 0 | 0 |
-| `esp32-host` | 2026-11-09T20:37:54.742941Z | `8904ed970ffc` | hermetic | 26 | 0 | 1 | 0 |
+| `agent-rs` | 2026-11-09T22:53:12.5177074Z | `12c456ca9357` | hermetic | 28 | 0 | 0 | 0 |
+| `esp32-host` | 2026-11-09T22:55:09.1845245Z | `12c456ca9357` | hermetic | 27 | 0 | 1 | 0 |
 
 ## Matrix
 
@@ -15,12 +15,13 @@ Generated 2026-11-09T20:47:10.6978026Z from `git rev-parse HEAD` = `8904ed970ffc
 | C-TLS-2 | Broker presents cert from an unpinned CA (rogue broker) | pass | pass |
 | C-TLS-3 | Broker offers TLS 1.2 only | pass | pass |
 | C-TLS-4 | Session resumption on reconnect | pass (broker_observed_resumed: true) | pass (broker_observed_resumed: true) |
-| C-TLS-5 | Bounded reconnect backoff | pass (attempts_observed: 13, max gap 4.178 s) | pass (attempts_observed: 5, max gap 5.092 s) |
+| C-TLS-5 | Bounded reconnect backoff | pass (attempts_observed: 13, max gap 4.619 s) | pass (attempts_observed: 5, max gap 15.981 s) |
 | C-ENR-1 | Zero-touch enrollment with attestation | pass | pass |
 | C-ENR-2 | Enrollment refused for quarantined device | pass (http_status: 403) | pass (http_status: 403) |
 | C-ROT-1 | Certificate rotation (`renew`) keeps identity, changes key and serial | pass | pass |
-| C-ROT-2 | Automatic rotation at 50 % lifetime (short-lived test certs) | pass (renewed_at_fraction_of_lifetime: 0.524) | pass (renewed_at_fraction_of_lifetime: 0.575) |
-| C-REV-1 | Revocation reaction time | pass (denied p50 0.007 s, p95 0.017 s, max 0.018 s) | pass (denied p50 0.605 s, p95 0.957 s, max 1.000 s) |
+| C-ROT-2 | Automatic rotation at 50 % lifetime (short-lived test certs) | pass (renewed_at_fraction_of_lifetime: 0.574) | pass (renewed_at_fraction_of_lifetime: 0.600) |
+| C-REV-1 | Revocation reaction time | pass (denied p50 0.015 s, p95 0.018 s, max 0.026 s) | pass (denied p50 0.538 s, p95 0.999 s, max 0.999 s) |
+| C-REV-2 | Single-certificate revocation refuses the serial, renewed certificate admitted | pass (superseded serial refused, renewed admitted; own serial refused in 0.004 s) | pass (superseded serial refused, renewed admitted; own serial refused in 0.944 s) |
 | C-ACL-1 | Publish to another device's topic | pass | pass |
 | C-ACL-2 | Subscribe to another device's command topic or wildcard | pass | pass |
 | C-ACL-3 | Retained publish on telemetry | pass | pass |
@@ -43,8 +44,19 @@ Generated 2026-11-09T20:47:10.6978026Z from `git rev-parse HEAD` = `8904ed970ffc
 
 | Target | revoke -> broker disconnect | revoke -> reconnect denied (end to end) | revoke -> kick call |
 |---|---|---|---|
-| `agent-rs` | n=20 p50 0.003 s, p95 0.012 s, max 0.012 s | n=20 p50 0.007 s, p95 0.017 s, max 0.018 s | n=20 p50 0.003 s, p95 0.012 s, max 0.012 s |
-| `esp32-host` | n=20 p50 0.004 s, p95 0.014 s, max 0.016 s | n=20 p50 0.605 s, p95 0.957 s, max 1.000 s | n=20 p50 0.004 s, p95 0.014 s, max 0.016 s |
+| `agent-rs` | n=20 p50 0.002 s, p95 0.004 s, max 0.011 s | n=20 p50 0.015 s, p95 0.018 s, max 0.026 s | n=20 p50 0.002 s, p95 0.004 s, max 0.011 s |
+| `esp32-host` | n=20 p50 0.003 s, p95 0.015 s, max 0.015 s | n=20 p50 0.538 s, p95 0.999 s, max 0.999 s | n=20 p50 0.003 s, p95 0.015 s, max 0.015 s |
+| `agent-rs` (real PKI) | n=20 p50 0.004 s, p95 0.013 s, max 0.014 s | n=20 p50 0.008 s, p95 0.018 s, max 0.018 s | n=20 p50 0.004 s, p95 0.013 s, max 0.014 s |
+| `esp32-host` (real PKI) | n=20 p50 0.004 s, p95 0.016 s, max 0.016 s | n=20 p50 0.401 s, p95 0.898 s, max 0.921 s | n=20 p50 0.004 s, p95 0.016 s, max 0.016 s |
+
+### Single-certificate revocation (C-REV-2)
+
+| Target | Verdict | CONNECT presenting the superseded serial | renewed certificate | revoke current serial -> own reconnect refused | device-level denials |
+|---|---|---|---|---|---|
+| `agent-rs` | pass | deny, reason revoked_serial | allow | 0.004 s | +0 |
+| `esp32-host` | pass | deny, reason revoked_serial | allow | 0.944 s | +0 |
+| `agent-rs` (real PKI) | pass | deny, reason revoked_serial | allow | 0.017 s | +0 |
+| `esp32-host` (real PKI) | pass | deny, reason revoked_serial | allow | 0.824 s | +0 |
 
 ## OTA rejection evidence
 
@@ -71,12 +83,12 @@ Generated 2026-11-09T20:47:10.6978026Z from `git rev-parse HEAD` = `8904ed970ffc
 
 ## Real PKI interoperability probe (`--pki-bin`)
 
-The same suite with the real `services/pki` binary (key ceremony by the real `pkictl`, in-memory store, file KMS) as the enrollment authority instead of the in-process EST server; everything else as above. Downlink / OTA cases are not applicable in this mode: the harness does not yet provision the tenant command key and firmware keys through the PKI tenant-policy API (`PUT /v1/tenants/{t}/command-key`, `/firmware-keys`), so the real PKI's bundles carry none.
+The same suite with the real `services/pki` binary (key ceremony by the real `pkictl`, in-memory store, file KMS) as the enrollment authority instead of the in-process EST server; everything else as above. Before any device enrolls, the harness provisions the tenant policy through the PKI tenant-policy API exactly as the owning services do - `PUT /v1/tenants/{t}/command-key` and `/enrollment` as `svc-registry`, `PUT /v1/tenants/{t}/firmware-keys` as `svc-ota` (Services CA client certificates from the `pkictl` ceremony plus a fresh single-use ES256 JWT per request) - so the PKI's trust bundles carry the tenant command key and firmware key and the downlink / OTA cases apply. `PKI_SUPERSEDE_GRACE` is 5 s, so C-REV-2 observes the PKI's own supersede-on-renewal revocation. C-ROT-2 stays not applicable (`PKI_OPERATIONAL_CERT_TTL` is bounded to 168h-720h).
 
 | Target | Run started | Passed | Failed | N/A | Errors |
 |---|---|---|---|---|---|
-| `agent-rs` | 2026-11-09T20:43:15.397666Z | 15 | 0 | 12 | 0 |
-| `esp32-host` | 2026-11-09T20:44:24.1083713Z | 14 | 0 | 13 | 0 |
+| `agent-rs` | 2026-11-09T22:59:46.6495246Z | 27 | 0 | 1 | 0 |
+| `esp32-host` | 2026-11-09T23:02:04.3342141Z | 26 | 0 | 2 | 0 |
 
 | Case | `agent-rs` | `esp32-host` |
 |---|---|---|
@@ -90,26 +102,29 @@ The same suite with the real `services/pki` binary (key ceremony by the real `pk
 | C-ROT-1 | pass | pass |
 | C-ROT-2 | n/a | n/a |
 | C-REV-1 | pass | pass |
+| C-REV-2 | pass | pass |
 | C-ACL-1 | pass | pass |
 | C-ACL-2 | pass | pass |
 | C-ACL-3 | pass | pass |
-| C-OTA-1 | n/a | n/a |
-| C-OTA-2 | n/a | n/a |
-| C-OTA-3 | n/a | n/a |
-| C-OTA-4 | n/a | n/a |
-| C-OTA-5 | n/a | n/a |
-| C-OTA-6 | n/a | n/a |
-| C-OTA-7 | n/a | n/a |
-| C-RPL-1 | n/a | n/a |
-| C-RPL-2 | n/a | n/a |
-| C-RPL-3 | n/a | n/a |
+| C-OTA-1 | pass | pass |
+| C-OTA-2 | pass | pass |
+| C-OTA-3 | pass | pass |
+| C-OTA-4 | pass | pass |
+| C-OTA-5 | pass | pass |
+| C-OTA-6 | pass | pass |
+| C-OTA-7 | pass | pass |
+| C-RPL-1 | pass | pass |
+| C-RPL-2 | pass | pass |
+| C-RPL-3 | pass | pass |
 | C-RPL-4 | pass | pass |
 | C-OFF-1 | pass | pass |
-| C-CFG-1 | n/a | n/a |
+| C-CFG-1 | pass | pass |
 | C-HOOK-1 | pass | n/a |
 
 ## Warnings (contract deviations outside the pass criteria)
 
 - `agent-rs` C-ENR-1: a fresh, never-enrolled device reports status.state="offline" (DUT_PROTOCOL: unprovisioned = no usable certificate)
+- `agent-rs` C-REV-2: policy GET /v1/revocations reports kicked=true (with kicked_at) for the superseded serial although no kick was sent: the cache records KickSkipped (internal/revocation/cache.go markKicked) but internal/mgmt/api.go revocationItem does not expose it
 - `esp32-host` C-TLS-5: no clock scaling on this target: bound and jitter verified for 5 attempts (up to 16 s); the 300 s cap was not reached
+- `esp32-host` C-REV-2: policy GET /v1/revocations reports kicked=true (with kicked_at) for the superseded serial although no kick was sent: the cache records KickSkipped (internal/revocation/cache.go markKicked) but internal/mgmt/api.go revocationItem does not expose it
 - `esp32-host` C-OTA-6: no signed OtaStatus{state=6 rolled_back} reached the broker after reconnecting

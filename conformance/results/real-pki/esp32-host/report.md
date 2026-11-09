@@ -2,51 +2,57 @@
 
 | | |
 |---|---|
-| Run started | 2026-11-09T20:44:24.1083713Z |
-| Duration | 78 s |
-| Git commit | `8904ed970ffcb9fbbf516fb6cd9b1d79c7509427 (working tree modified)` |
+| Run started | 2026-11-09T23:02:04.3342141Z |
+| Duration | 244 s |
+| Git commit | `12c456ca9357771a67989557787bdab201342b2a (working tree modified)` |
 | Cloud mode | hermetic + real PKI |
 | Host | MUSTAFAGOMAA (windows x86_64) |
-| tenant_id | 275a7dc9-91de-40a2-8d47-7412a31004fc |
-| run_dir | C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\runs\esp32-host-1794257064 |
-| policy_service | C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\bin\policy.exe (sha256 2965de8111b46a59) |
+| tenant_id | d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4 |
+| run_dir | C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\runs\esp32-host-1794265324 |
+| policy_service | C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\bin\policy.exe (sha256 6408a8a7a0cc94c2) |
 | signing_keys | test-vector keys from C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\libs\python\ironmesh-wire\tests\keys |
-| dut_binary | C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\duts\esp32-host\debug\im-dut-shim.exe (sha256 bbfccb0e331ff831), real-network mode |
-| pki_service | target/bin/pki.exe (sha256 a66e8ce986730a79): real PKI is the enrollment authority |
+| policy_wiring | authn bodies carry cert_pem + cert_serial (emqx.conf template); POLICY_REQUIRE_CERT_SERIAL=true, POLICY_DEVICE_CA_FILE / POLICY_SERVICES_CA_FILE set, POLICY_JWT_PUBLIC_KEY_PEM + POLICY_JWT_SINGLE_USE=true; svc-registry authenticated with a Services CA client certificate |
+| policy_mgmt_jwt_single_use | GET /v1/revocations with one token twice -> 200 then 401 (want 200 then 401) |
+| pki_tenant_policy | provisioned via the PKI tenant-policy API: {"allow_software_keys":true,"command_key_b64":"TmfAMF93PueOwcIf+bYLXktO6/UtQnF5iOVbg07GLsE=","firmware_keys_b64":["n6tpyGkMUcANm4+/51p5BnVtuanVsgmopuBEWlW8lpU="],"updated_at":"2026-11-09T23:02:06.2005368Z"} |
+| pki_mgmt_authorization | svc-ota PUT command-key -> 403 (want 403); one operator token used twice -> 200 then 401 (want 200 then 401) |
+| pki_supersede_grace | 5 s |
+| dut_binary | C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\duts\esp32-host\debug\im-dut-shim.exe (sha256 773f2aaaec6f5d22), real-network mode |
+| pki_service | target/bin/pki.exe (sha256 3511a91248979d40): real PKI is the enrollment authority |
 | product | sensor-esp32 |
 | reconnect_backoff_clock_scale | 1 |
 | ota_health_timeout_s | 120 |
 
-**Result: 14 passed, 0 failed, 13 not applicable, 0 errors** (of 27).
+**Result: 26 passed, 0 failed, 2 not applicable, 0 errors** (of 28).
 
 | Case | Title | Verdict | Measured | Time |
 |---|---|---|---|---|
-| C-TLS-1 | mTLS handshake with valid operational cert | pass | tls_version: TLSv1.3, alpn mqtt | 0.3 s |
+| C-TLS-1 | mTLS handshake with valid operational cert | pass | tls_version: TLSv1.3, alpn mqtt | 0.1 s |
 | C-TLS-2 | Broker presents cert from an unpinned CA (rogue broker) | pass |  | 0.5 s |
 | C-TLS-3 | Broker offers TLS 1.2 only | pass |  | 0.3 s |
 | C-TLS-4 | Session resumption on reconnect | pass | broker_observed_resumed: true | 0.4 s |
-| C-TLS-5 | Bounded reconnect backoff | pass | attempts_observed: 5, max gap 5.977 s | 8.8 s |
+| C-TLS-5 | Bounded reconnect backoff | pass | attempts_observed: 5, max gap 13.809 s | 21.9 s |
 | C-ENR-1 | Zero-touch enrollment with attestation | pass |  | 0.1 s |
 | C-ENR-2 | Enrollment refused for quarantined device | pass | http_status: 403 | 0.1 s |
-| C-ROT-1 | Certificate rotation (`renew`) keeps identity, changes key and serial | pass |  | 8.2 s |
+| C-ROT-1 | Certificate rotation (`renew`) keeps identity, changes key and serial | pass |  | 5.8 s |
 | C-ROT-2 | Automatic rotation at 50 % lifetime (short-lived test certs) | n/a |  | 0.1 s |
-| C-REV-1 | Revocation reaction time | pass | denied p50 0.364 s, p95 1.024 s, max 1.029 s | 43.4 s |
+| C-REV-1 | Revocation reaction time | pass | denied p50 0.401 s, p95 0.898 s, max 0.921 s | 43.2 s |
+| C-REV-2 | Single-certificate revocation refuses the serial, renewed certificate admitted | pass | superseded serial refused, renewed admitted; own serial refused in 0.824 s | 10.8 s |
 | C-ACL-1 | Publish to another device's topic | pass |  | 7.5 s |
 | C-ACL-2 | Subscribe to another device's command topic or wildcard | pass |  | 0.4 s |
 | C-ACL-3 | Retained publish on telemetry | pass |  | 3.8 s |
-| C-OTA-1 | Unsigned image | n/a |  | 0.0 s |
-| C-OTA-2 | Tampered image (1 byte flipped, valid manifest) | n/a |  | 0.0 s |
-| C-OTA-3 | Manifest signed by an untrusted key | n/a |  | 0.0 s |
-| C-OTA-4 | Downgrade (`version_code` not greater) | n/a |  | 0.0 s |
-| C-OTA-5 | Valid update applies and is marked healthy | n/a |  | 0.0 s |
-| C-OTA-6 | Update that fails its health check rolls back | n/a |  | 0.0 s |
-| C-OTA-7 | Delta update | n/a |  | 0.0 s |
-| C-RPL-1 | Replayed command (same `seq`) | n/a |  | 0.0 s |
-| C-RPL-2 | Command with stale timestamp | n/a |  | 0.0 s |
-| C-RPL-3 | Command signed by a non-tenant key | n/a |  | 0.0 s |
-| C-RPL-4 | Device `seq` strictly increases across reboot | pass | seq_out 5 -> 18 | 0.2 s |
-| C-OFF-1 | Offline buffering and resync | pass |  | 2.3 s |
-| C-CFG-1 | Encrypted config delivery | n/a |  | 0.0 s |
+| C-OTA-1 | Unsigned image | pass | rejected (unsigned) | 1.2 s |
+| C-OTA-2 | Tampered image (1 byte flipped, valid manifest) | pass | rejected (image_hash) | 1.2 s |
+| C-OTA-3 | Manifest signed by an untrusted key | pass | rejected (untrusted_key) | 1.2 s |
+| C-OTA-4 | Downgrade (`version_code` not greater) | pass | rejected (downgrade) | 1.2 s |
+| C-OTA-5 | Valid update applies and is marked healthy | pass | new_version_code: 10001 | 0.3 s |
+| C-OTA-6 | Update that fails its health check rolls back | pass | seconds_apply_to_rollback: 120.0 | 130.6 s |
+| C-OTA-7 | Delta update | pass | patch 16670 B / image 69745 B | 0.3 s |
+| C-RPL-1 | Replayed command (same `seq`) | pass | rejection_code: ENV_REPLAY | 2.2 s |
+| C-RPL-2 | Command with stale timestamp | pass | rejection_code: ENV_TS_SKEW | 2.2 s |
+| C-RPL-3 | Command signed by a non-tenant key | pass | rejection_code: COSE_SIGNATURE | 2.2 s |
+| C-RPL-4 | Device `seq` strictly increases across reboot | pass | seq_out 5 -> 18 | 0.3 s |
+| C-OFF-1 | Offline buffering and resync | pass |  | 1.9 s |
+| C-CFG-1 | Encrypted config delivery | pass |  | 2.2 s |
 | C-HOOK-1 | Release build has no control channel | n/a |  | 0.0 s |
 
 ## Revocation reaction time (C-REV-1)
@@ -56,23 +62,23 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 | Interval | Value |
 |---|---|
 | iterations | 20 |
-| revoke -> policy 202 | p50 0.004 s, p95 0.014 s, max 0.014 s |
-| revoke -> kick (EMQX API) | p50 0.004 s, p95 0.013 s, max 0.014 s |
-| revoke -> broker disconnect | p50 0.004 s, p95 0.013 s, max 0.014 s |
-| revoke -> DUT disconnected event | p50 0.020 s, p95 0.022 s, max 0.023 s |
-| revoke -> reconnect denied (end to end) | p50 0.364 s, p95 1.024 s, max 1.029 s |
+| revoke -> policy 202 | p50 0.005 s, p95 0.016 s, max 0.017 s |
+| revoke -> kick (EMQX API) | p50 0.004 s, p95 0.016 s, max 0.016 s |
+| revoke -> broker disconnect | p50 0.004 s, p95 0.016 s, max 0.016 s |
+| revoke -> DUT disconnected event | p50 0.021 s, p95 0.022 s, max 0.022 s |
+| revoke -> reconnect denied (end to end) | p50 0.401 s, p95 0.898 s, max 0.921 s |
 
 ## OTA results
 
 | Case | Verdict | Outcome | Evidence |
 |---|---|---|---|
-| C-OTA-1 | n/a |  |  |
-| C-OTA-2 | n/a |  |  |
-| C-OTA-3 | n/a |  |  |
-| C-OTA-4 | n/a |  |  |
-| C-OTA-5 | n/a |  |  |
-| C-OTA-6 | n/a |  |  |
-| C-OTA-7 | n/a |  |  |
+| C-OTA-1 | pass | rejected (unsigned) | ota_state sequence: ["received", "rejected(unsigned)"]; ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} |
+| C-OTA-2 | pass | rejected (image_hash) | ota_state sequence: ["received", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "verifying", "rejected(image_hash)"]; ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} |
+| C-OTA-3 | pass | rejected (untrusted_key) | ota_state sequence: ["received", "rejected(untrusted_key)"]; ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} |
+| C-OTA-4 | pass | rejected (downgrade) | ota_state sequence: ["received", "rejected(downgrade)"]; ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} |
+| C-OTA-5 | pass | new_version_code: 10001 | ota_state sequence: ["received", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "verifying", "applying", "rebooting", "success"]; ota_slots after: {"active_slot":"ota_1","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":"7494cc55244861bf6f4903a4c620ebc7d886ff50a4d9d882fd3a3071f65413d5",... |
+| C-OTA-6 | pass | seconds_apply_to_rollback: 120.0 | ota_state sequence: ["received", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "verifying", "applying", "rebooting", "rolled_back(health_check)"]; ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":"dcb2411c57a37836ef5bac0e25cd170936721d7cd8a34fce7fe18fa50dc72719",... |
+| C-OTA-7 | pass | patch 16670 B / image 69745 B | delta base: the factory image (hash verified against ota_slots); ota_state sequence: ["received", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "verifying", "applying", "rebooting", "success"] |
 
 ## Case details
 
@@ -85,9 +91,9 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 | tls_version | TLSv1.3 |
 | alpn | mqtt |
 
-- DUT dev-7c41d0cd1b8d1b5f (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 79d75fce1e90eb4629f2689d04e77eae
+- DUT dev-88f0b1f35ac79f92 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial edf2eeafd43d622a5e3b1630661187b2
 - connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- broker handshake: version Some("TLSv1.3"), alpn Some("mqtt"), client cert serial Some("c6c1c5aa29692200fc656e3bb4c0960b")
+- broker handshake: version Some("TLSv1.3"), alpn Some("mqtt"), client cert serial Some("2c8f9aada434c53710c0398c38c94a24")
 - CONNECT: client id = CN, clean_start=false, session_expiry=Some(604800), keep_alive=60, receive_maximum=Some(32); policy authn allow=true
 
 ### C-TLS-2 Broker presents cert from an unpinned CA (rogue broker) - pass
@@ -101,7 +107,7 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 | Rogue: connect_failed.reason | tls_pin_mismatch |
 | Rogue: CONNECT packets observed | 0 |
 
-- DUT dev-92f07f982fee16f6 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial f29a6b91fff7dbef2b24dffd32d60787
+- DUT dev-ad2cfa1b7985975f (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 0ca56e36cbcae4fd81761dbbf34f2f8f
 - broker mode RogueUnknownCa: connect_failed {"reason":"tls_pin_mismatch"}
 - broker-side handshakes in mode RogueUnknownCa: ["ok=false version=None error=Some(\"received fatal alert: UnknownCA\")"]
 - broker mode Rogue: connect_failed {"reason":"tls_pin_mismatch"}
@@ -116,7 +122,7 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 | Tls12Only: connect_failed.reason | tls_handshake |
 | Tls12Only: CONNECT packets observed | 0 |
 
-- DUT dev-7f2b150a9b13d152 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 142f87e6fe6e24af65ec4ee295bbb6ab
+- DUT dev-7b0b60d63fab535c (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial a488410e8977fa06fd76b40bc6ee5306
 - broker mode Tls12Only: connect_failed {"reason":"tls_handshake"}
 - broker-side handshakes in mode Tls12Only: ["ok=false version=None error=Some(\"peer is incompatible: Tls12NotOfferedOrEnabled\")"]
 
@@ -130,8 +136,8 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 | broker_observed_resumed | true |
 | session_present | true |
 
-- DUT dev-a7afacb9b68916fa (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial ee93af7e9cf2c59dbf754e5f6fcd90a9
-- enrolled {"cert_serial_hex":"d981737158bffa5b301fd6bb8e20fece","not_after":1795466667,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-fc28c7b423ec9b8a (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 974d44a91799f784a7473fb0e0c9b7a0
+- enrolled {"cert_serial_hex":"64609feb7109a93e9b05e974ee4bb91e","not_after":1795474927,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
 - second connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":true,"session_present":true,"tls_version":"TLSv1.3"}
 - target semantics: ticket offered (the broker-side resumed handshake is the criterion)
 
@@ -143,13 +149,13 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 |---|---|
 | clock_scale | 1 |
 | attempts_observed | 5 |
-| max_gap_s | 5.977 |
+| max_gap_s | 13.809 |
 | capped_gaps_checked | 0 |
 
-- DUT dev-a579c3dedb054a93 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial de52e60de65e6db8a9d06845d2ccfe75
-- enrolled {"cert_serial_hex":"1c2ae4d337c7be6581643cdb6b6f1cc0","not_after":1795466667,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-50ac6d6a1217e8e0 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial bcdd92c996dd82623d507759aad66aec
+- enrolled {"cert_serial_hex":"85ecc6a20648b8c46e428f975e9de8c7","not_after":1795474927,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
 - connect_failed reasons (first 3): ["not_authorized", "not_authorized", "not_authorized"]; status.state=backoff observed: true
-- gap_k <= min(300, 2^k) x scale [s]: 0.390<=1.000, 0.044<=2.000, 0.928<=4.000, 1.237<=8.000, 5.977<=16.000
+- gap_k <= min(300, 2^k) x scale [s]: 0.911<=1.000, 1.448<=2.000, 0.727<=4.000, 4.750<=8.000, 13.809<=16.000
 - **warning:** no clock scaling on this target: bound and jitter verified for 5 attempts (up to 16 s); the 300 s cap was not reached
 
 ### C-ENR-1 Zero-touch enrollment with attestation - pass
@@ -158,13 +164,13 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 
 | Measurement | Value |
 |---|---|
-| issued_serial | 50052bf38b6716b3d64c9eed6c5cd739 |
+| issued_serial | 01e50fb971bcd06912b9b60580c3e018 |
 | attestation_verified_by | services/pki EST handler (real PKI) |
 
-- DUT dev-6626a72584c3a5b2 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 7ceaf63a3603b890b62a76cf5049e5d3
-- enrolled {"cert_serial_hex":"50052bf38b6716b3d64c9eed6c5cd739","not_after":1795466676,"se_type":"software"}
-- issued by the real PKI: subject O=IronMesh, OU=assurance:software + OU=275a7dc9-91de-40a2-8d47-7412a31004fc, CN=dev-6626a72584c3a5b2, issuer O=IronMesh, CN=IronMesh Device CA, SAN ["urn:ironmesh:tenant:275a7dc9-91de-40a2-8d47-7412a31004fc:device:dev-6626a72584c3a5b2"]
-- PKI record: {"assurance_level":"software","device_id":"dev-6626a72584c3a5b2","issuer":"IronMesh Device CA","kind":"operational","not_after":"2026-11-23T20:44:36Z","not_before":"2026-11-09T20:44:36Z","serial":"50052bf38b6716b3d64c9eed6c5cd739","status":"valid","tenant_id":"275a7dc9-91de-40a2-8d47-7412a31004fc"}
+- DUT dev-d86aa0095da45c23 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial c9918b795a1a8968bcfc4a9977e282e5
+- enrolled {"cert_serial_hex":"01e50fb971bcd06912b9b60580c3e018","not_after":1795474949,"se_type":"software"}
+- issued by the real PKI: subject O=IronMesh, OU=assurance:software + OU=d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4, CN=dev-d86aa0095da45c23, issuer O=IronMesh, CN=IronMesh Device CA, SAN ["urn:ironmesh:tenant:d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4:device:dev-d86aa0095da45c23"]
+- PKI record: {"assurance_level":"software","device_id":"dev-d86aa0095da45c23","issuer":"IronMesh Device CA","kind":"operational","not_after":"2026-11-23T23:02:29Z","not_before":"2026-11-09T23:02:29Z","serial":"01e50fb971bcd06912b9b60580c3e018","status":"valid","tenant_id":"d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4"}
 
 ### C-ENR-2 Enrollment refused for quarantined device - pass
 
@@ -174,7 +180,7 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 |---|---|
 | http_status | 403 |
 
-- DUT dev-44bc851f18314c9a (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial ff780e736fec4c28013b1bacab409431
+- DUT dev-6d249a69ecd4e500 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 6b5ee4676712932f35af357e8adf9fc5
 - enroll_failed {"http_status":403,"reason":"device lifecycle state \"quarantined\" does not permit enrollment\n"}
 
 ### C-ROT-1 Certificate rotation (`renew`) keeps identity, changes key and serial - pass
@@ -183,15 +189,16 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 
 | Measurement | Value |
 |---|---|
-| old_serial | 0f7f41abc5c6d721f616a180e0495f2c |
-| new_serial | 6164acfbd1d6d7c1f540a9b90cc10f97 |
+| old_serial | bdcdee54fd13b76edc4b9dae9a611a85 |
+| new_serial | 2b5fd5861a9678955b252b488d3a9855 |
 | spki_changed | true |
 | reconnected_automatically | false |
 
-- DUT dev-b52b0aa804268e7a (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 15d40a1fff18779396b7e7f49bd919d3
-- enrolled {"cert_serial_hex":"0f7f41abc5c6d721f616a180e0495f2c","not_after":1795466676,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- cert_renewed {"new_serial_hex":"6164acfbd1d6d7c1f540a9b90cc10f97","not_after":1795466676,"old_serial_hex":"0f7f41abc5c6d721f616a180e0495f2c"}
-- telemetry seq 3 verified with the renewed key (kid 6164acfbd1d6d7c1f540a9b90cc10f97)
+- DUT dev-4e44492cd3beccf9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 45c2bdce8c6024b1762ae8051414d882
+- enrolled {"cert_serial_hex":"bdcdee54fd13b76edc4b9dae9a611a85","not_after":1795474949,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- cert_renewed {"new_serial_hex":"2b5fd5861a9678955b252b488d3a9855","not_after":1795474949,"old_serial_hex":"bdcdee54fd13b76edc4b9dae9a611a85"}
+- the session on the previous certificate was kicked after the PKI superseded it; the DUT reconnected with the renewed one
+- telemetry seq 3 verified with the renewed key (kid 2b5fd5861a9678955b252b488d3a9855)
 
 ### C-ROT-2 Automatic rotation at 50 % lifetime (short-lived test certs) - n/a
 
@@ -199,7 +206,7 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 
 **Reason:** short-lived operational certificates (the real PKI bounds PKI_OPERATIONAL_CERT_TTL to 168h-720h) needs the in-process EST server (the real PKI handles EST in this run)
 
-- DUT dev-eefa0d962848145b (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d78a9dd7bd2d9c55d50cf1088d803a9f
+- DUT dev-24bb79644febe45f (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 74ff6b17d6afc712a865a808f79bb39f
 
 ### C-REV-1 Revocation reaction time - pass
 
@@ -208,57 +215,84 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 | Measurement | Value |
 |---|---|
 | iterations | 20 |
-| revoke -> policy 202 | p50 0.004 s, p95 0.014 s, max 0.014 s |
-| revoke -> kick (EMQX API) | p50 0.004 s, p95 0.013 s, max 0.014 s |
-| revoke -> broker disconnect | p50 0.004 s, p95 0.013 s, max 0.014 s |
-| revoke -> DUT disconnected event | p50 0.020 s, p95 0.022 s, max 0.023 s |
-| revoke -> reconnect denied (end to end) | p50 0.364 s, p95 1.024 s, max 1.029 s |
+| revoke -> policy 202 | p50 0.005 s, p95 0.016 s, max 0.017 s |
+| revoke -> kick (EMQX API) | p50 0.004 s, p95 0.016 s, max 0.016 s |
+| revoke -> broker disconnect | p50 0.004 s, p95 0.016 s, max 0.016 s |
+| revoke -> DUT disconnected event | p50 0.021 s, p95 0.022 s, max 0.022 s |
+| revoke -> reconnect denied (end to end) | p50 0.401 s, p95 0.898 s, max 0.921 s |
 
-- DUT dev-3553e6d3b3b583aa (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d2622436a15ea5d54cfb29fab223a2be
-- enrolled {"cert_serial_hex":"1ae94b7d3c90fb5ff8d8691230bd37d3","not_after":1795466685,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- revocation path: real PKI POST /v1/certificates/{serial}/revoke (ES256 JWT) -> PKI publisher -> real policy -> EMQX API kick
+- DUT dev-711776a62cd2dd6f (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 0ee429de4c36648712322775f52f0f4f
+- enrolled {"cert_serial_hex":"cb0d0ab04076923e46a425e3b702f4bf","not_after":1795474955,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- revocation path: real PKI POST /v1/certificates/{serial}/revoke (reason keyCompromise, single-use ES256 JWT) -> outbox -> PKI publisher (device_deny=false) -> real policy -> EMQX API kick
 - DUT disconnected {"reason":"broker","reason_code":152} then connect_failed {"reason":"not_authorized"}
-- reconnect with revoked serial Some("1ae94b7d3c90fb5ff8d8691230bd37d3") answered CONNACK 0x87 by the policy authn hook
-- DUT dev-3ccd9dd79a8fa6ff (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d8d4ea1d361aeb2f33a7018ae820ae80
-- enrolled {"cert_serial_hex":"c0fe281025a78dec77035a02c4ab80b6","not_after":1795466686,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-06e4692b2e01b480 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 515ce5e87c6f9a433aaa9d6005310572
-- enrolled {"cert_serial_hex":"4d78d23d159809404a6e08cb900d6dd2","not_after":1795466688,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-b9f650fbaa9f8f56 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial b607c0f04e2d2ff572069a502316fe1f
-- enrolled {"cert_serial_hex":"9291fe893d37c488be39e953cf2103c8","not_after":1795466690,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-069ad84dedc51b6e (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 3fe1257d1af15d2253f3cf94102ebcf3
-- enrolled {"cert_serial_hex":"3b2a958a09b6c9b52ca7f904f5b8f1dd","not_after":1795466693,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-db8592c94df5cf4d (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial c1930cd4f8e67cf0e538a168cd3bdd08
-- enrolled {"cert_serial_hex":"c0f7a41ac74c9a6186200fdbdeac36c7","not_after":1795466695,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-636ff72a90777ab9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d6ee68629b0aaccf0962f8e3f7439463
-- enrolled {"cert_serial_hex":"a1810b1380a0dd66700e214c27fec0fc","not_after":1795466697,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-41ed9b3f3988763f (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 0cd670e02033214b61d883fefdc88ed9
-- enrolled {"cert_serial_hex":"752ec30f4cda9a55587acedf0e94596f","not_after":1795466700,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-a1047f7e198c8492 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial a983e279e782ea948d5276b8cc06af1d
-- enrolled {"cert_serial_hex":"27251a2ef3976dbfb00a499274f68e6d","not_after":1795466702,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-d2d27c2f2065edeb (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 0c76daa49df30f85a29da33bf084dec5
-- enrolled {"cert_serial_hex":"2c49e44de24e2bc5991bb8b0d0cf5eff","not_after":1795466703,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-9c59118688112ea6 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 7725e2bef10712bfd27016cab98a1c37
-- enrolled {"cert_serial_hex":"55b37afd866819e5e3b1ac026568b4cc","not_after":1795466706,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-5e2f599b7f6ed6f9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 306d78d409d4c04df7e851721815f03d
-- enrolled {"cert_serial_hex":"5b4d5c0804c2af2c9a010647adbe4c55","not_after":1795466708,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-89d31c1f117606ba (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 875f142950fe6c83c70a3d22ab436c09
-- enrolled {"cert_serial_hex":"a5d53148c14b828dddc65afe8561d331","not_after":1795466711,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-e790983f43cbbbf9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 8f16d348b2e67cd6a5c5067f824bd130
-- enrolled {"cert_serial_hex":"054afccdff4f11759110fec98cc4dca3","not_after":1795466713,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-97249ed8ca96b8c4 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial b00290cf7f9e5991cd7a18791d050c72
-- enrolled {"cert_serial_hex":"617160d6ad9192d9a5857d28e4380124","not_after":1795466715,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-92345905adf5ccf1 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial f048f632e4d262c17104794a0bc9b241
-- enrolled {"cert_serial_hex":"7783dd3b7caf93fa3274c2b85dd28ba6","not_after":1795466717,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-5c63ff285e4fd348 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial fbba62130d8a88c997fe82f15a4d58cd
-- enrolled {"cert_serial_hex":"0703674b8a7327236ee3a299c66d06ad","not_after":1795466720,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-e18e59d3427c3287 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial de17c0bd7a9c162bde7fb4895c86fa11
-- enrolled {"cert_serial_hex":"53b11bad193ce229698d28560a84d2c5","not_after":1795466722,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-87f3c439b6a82799 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial f63ea16aa791eb0d62f50ed2d0c6d05d
-- enrolled {"cert_serial_hex":"e617e70504d429c84a600ad1456e6d0b","not_after":1795466724,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- DUT dev-0b2374c99fe22eed (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 4518c7024cc4d03999ff60cc2fb262db
-- enrolled {"cert_serial_hex":"145e0f93bcd8a9325c314f7a829971e9","not_after":1795466726,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- policy /metrics: ironmesh_kick_total{result=ok} +20, ironmesh_revocation_latency_seconds count 20 sum 0.049 s (mean 0.002 s, revoked_at -> kick)
-- policy log: {"ts":"2026-11-09T22:45:26.471906+02:00","level":"info","msg":"revoked session kicked","service":"policy","device_id":"dev-0b2374c99fe22eed","tenant_id":"275a7dc9-91de-40a2-8d47-7412a31004fc","event_id":"5d382ff5-2d74-431c-a617-787b4583c7c5
+- reconnect with revoked serial Some("cb0d0ab04076923e46a425e3b702f4bf") answered CONNACK 0x87 by the policy authn hook
+- DUT dev-1ce247a1a40757a2 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 7364c92a7d44fad8b64a0e10bacb3f45
+- enrolled {"cert_serial_hex":"d5afc4d4f4e543b7d388d8aa434fb68b","not_after":1795474958,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-1aec1891a59827e9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 9c8ed6c48fbb2363c5f1fde3e07fc3fd
+- enrolled {"cert_serial_hex":"9ce6173e51808d915f45691ca00af08a","not_after":1795474960,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-2189bc8403972787 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial a0182f4a12d13cf01787fc910cc98772
+- enrolled {"cert_serial_hex":"1e799c39cf07fb0a6ca3d553d7db9368","not_after":1795474962,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-088c97e91a5168d2 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 4b93817b2b531960d618b29067484bb7
+- enrolled {"cert_serial_hex":"03c3a6ee16d50d85e055fa8cf58e3830","not_after":1795474964,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-a4915f0f4f0f681a (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 569836c0aef4c3c8b006e98bbfc30440
+- enrolled {"cert_serial_hex":"bb6111f314708109604634af637a18c9","not_after":1795474967,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-1290d9e5d2aa4d4b (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 386b42179a414c5960127cc12e03392a
+- enrolled {"cert_serial_hex":"9e896b0ac5920a8f51c7fc9dc83bf531","not_after":1795474969,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-4c1f599ada4ce2b9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial e97f6805ce0d89b178f9b16e281a1531
+- enrolled {"cert_serial_hex":"497ef136d398a28444d4f68f3ce7f52c","not_after":1795474971,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-f8819e66f839e698 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial eb0ff5042644f9392b0b30b27b937e68
+- enrolled {"cert_serial_hex":"1b87db777cfb1ba9682cd850db90d98a","not_after":1795474973,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-beffaa8f0cf9dc8b (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial a388b8465a8f0a9969b00f68d08fab42
+- enrolled {"cert_serial_hex":"2f3c5a8343c2eedd51cd35bf56825edf","not_after":1795474976,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-c3fd77ebad03ba7d (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial a4e2797d0552a6d0c0799d1bcffb168a
+- enrolled {"cert_serial_hex":"e2f41ac11ff1a4f28161f067a1d48184","not_after":1795474977,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-2d1d4a514093b0fd (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial a859faf8daf4e8b6b927b34542648b55
+- enrolled {"cert_serial_hex":"c025c3763415ca1d6226075a58e04aab","not_after":1795474980,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-18269be6ff2be1b3 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 68f03f035e0d239af3d2b56032637f95
+- enrolled {"cert_serial_hex":"c170e3f3f29d8673814f64a397fb1171","not_after":1795474982,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-59f7c63ad911a376 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 41553349ce9483229c2aaf454343dc3f
+- enrolled {"cert_serial_hex":"8fee7360757e5c04ef8d8df96e8a6622","not_after":1795474984,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-a1b11adcd0a00cf0 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial f4d2446337479d831f195ccd4ea4e1cb
+- enrolled {"cert_serial_hex":"c58b430cfbab58c840aad53f194d6e2c","not_after":1795474986,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-dc16c1e18e111bf3 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 78790d69aee4f950f1a48588b84c3891
+- enrolled {"cert_serial_hex":"05d377add816a6da70e347e0fb3d443b","not_after":1795474988,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-e2c4d4dc0d53bfe6 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 548b981376b08aedcce69f26d0fe225c
+- enrolled {"cert_serial_hex":"67c6c8eda0814e10d503b8568eb73ee6","not_after":1795474990,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-049ae21b2d7820ed (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial f3c5085c2e6e9e15642cf842477936e3
+- enrolled {"cert_serial_hex":"5a8d43d0538566bbd325a085bf2ba4ff","not_after":1795474992,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-b1918a636ef487e0 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial c5e16f69d5a9e524714c0102a33698be
+- enrolled {"cert_serial_hex":"39ae5bff28a9e0e7742b60fc6c339c8f","not_after":1795474995,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-ced0e8f842e89e1b (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 397ec816bec22ce89d77a917af78b05b
+- enrolled {"cert_serial_hex":"6bdfe89772b1525a72041d651c159a1e","not_after":1795474997,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- policy /metrics: ironmesh_kick_total{result=ok} +20, ironmesh_revocation_latency_seconds count 21 sum 0.062 s (mean 0.003 s, revoked_at -> kick)
+- policy log: {"ts":"2026-11-10T01:03:17.0535011+02:00","level":"info","msg":"revoked session kicked","service":"policy","device_id":"dev-ced0e8f842e89e1b","tenant_id":"d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4","event_id":"0624e454-16a0-4852-bf1c-145537455eb
+
+### C-REV-2 Single-certificate revocation refuses the serial, renewed certificate admitted - pass
+
+*Criterion:* after a single-certificate revocation (`device_deny=false`) the revoked serial is refused at CONNECT (policy reason `revoked_serial`) while the renewed certificate is admitted and its session is not kicked; the device id is never deny-listed
+
+| Measurement | Value |
+|---|---|
+| serial A (renewed away) | 54c77c8663bf41097ad7f4bb4fa7d694 |
+| serial B (renewed) | cd3fbd93ece2cadba9e1fb480fc38820 |
+| CONNECT presenting A (cert_pem + cert_serial) | deny, reason revoked_serial |
+| CONNECT presenting B after A was revoked | allow |
+| revoke B -> kick | 0.014 s |
+| revoke B -> DUT reconnect presenting B refused | 0.824 s |
+| ironmesh_auth_failures_total{reason=revoked_serial} | +3 |
+| ironmesh_auth_failures_total{reason=revoked} (device-level) | +0 |
+
+- DUT dev-e97cc9a3fcd65dca (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 61f517dee54c738cf00ccd1d78069515
+- enrolled {"cert_serial_hex":"54c77c8663bf41097ad7f4bb4fa7d694","not_after":1795474998,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- real PKI supersede-on-renewal (PKI_SUPERSEDE_GRACE 5 s): GET /v1/certificates/54c77c8663bf41097ad7f4bb4fa7d694 -> status "revoked", revocation {"reason":"superseded","revoked_at":"2026-11-09T23:03:24.0336837Z","revoked_by":"pki:supersede:cd3fbd93ece2cadba9e1fb480fc38820"}
+- policy GET /v1/revocations (single-use service JWT) entry for A: {"applied_at":"2026-11-10T01:03:24.034191+02:00","device_id":"dev-e97cc9a3fcd65dca","event_id":"cee538c3-579f-40e1-b607-1c063da3c477","kicked":true,"kicked_at":"2026-11-10T01:03:24.0354783+02:00","reason":"superseded","revoked_at":"2026-11-09T23:03:24.0336837Z","serial_hex":"54c77c8663bf41097ad7f4bb...
+- policy log: {"ts":"2026-11-10T01:03:24.0359919+02:00","level":"info","msg":"revoked certificate is not the live session's; kick skipped","service":"policy","device_id":"dev-e97cc9a3fcd65dca","tenant_id":"d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4","event_id":"cee538c3-579f-40e1
+- reconnect presenting B: authn allow, CONNACK 0x00, session_present true
+- revocation of B: real PKI POST /v1/certificates/{serial}/revoke (reason affiliationChanged, single-use ES256 JWT) -> outbox -> PKI publisher (device_deny=false) -> real policy -> EMQX API kick
+- policy GET /v1/revocations entry for B: {"applied_at":"2026-11-10T01:03:27.2724154+02:00","device_id":"dev-e97cc9a3fcd65dca","event_id":"358a6aba-ee47-41cb-bb3d-c306804001b2","kicked":true,"kicked_at":"2026-11-10T01:03:27.2741242+02:00","reason":"affiliationChanged","revoked_at":"2026-11-09T23:03:27.2718265Z","serial_hex":"cd3fbd93ece2cad...
+- policy log: {"ts":"2026-11-10T01:03:27.2259279+02:00","level":"info","msg":"authn deny","service":"policy","client_id":"dev-e97cc9a3fcd65dca","username":"dev-e97cc9a3fcd65dca","peerhost":"127.0.0.1","cert_cn":"dev-e97cc9a3fcd65dca","kind":"device","reason":"revoked_serial
+- policy log: {"ts":"2026-11-10T01:03:28.0839607+02:00","level":"info","msg":"authn deny","service":"policy","client_id":"dev-e97cc9a3fcd65dca","username":"dev-e97cc9a3fcd65dca","peerhost":"127.0.0.1","cert_cn":"dev-e97cc9a3fcd65dca","kind":"device","reason":"revoked_serial
+- **warning:** policy GET /v1/revocations reports kicked=true (with kicked_at) for the superseded serial although no kick was sent: the cache records KickSkipped (internal/revocation/cache.go markKicked) but internal/mgmt/api.go revocationItem does not expose it
 
 ### C-ACL-1 Publish to another device's topic - pass
 
@@ -266,17 +300,17 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 
 | Measurement | Value |
 |---|---|
-| outcome im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-c0e6e66e95edd139/telemetry | disconnected |
-| outcome im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-c0e6e66e95edd139/cmd/ack | disconnected |
-| outcome im/v1/b9d9d14f-e973-4010-84a8-634dc5443d44/dev-b7ba7f514adbe8b9/telemetry | disconnected |
-| outcome im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-b7ba7f514adbe8b9/cmd/req | disconnected |
+| outcome im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-b4597a63500cbb62/telemetry | disconnected |
+| outcome im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-b4597a63500cbb62/cmd/ack | disconnected |
+| outcome im/v1/d3181fca-2a0d-46f5-9a93-de04678d8641/dev-5dfd8caef6b668a2/telemetry | disconnected |
+| outcome im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-5dfd8caef6b668a2/cmd/req | disconnected |
 
-- DUT dev-b7ba7f514adbe8b9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial ffa5e5c6242d463b7c58dc02c85d3bac
-- enrolled {"cert_serial_hex":"86fe64007cc850098fb9fa1967f92bc5","not_after":1795466728,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-c0e6e66e95edd139/telemetry retain=false: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
-- publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-c0e6e66e95edd139/cmd/ack retain=false: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
-- publish_raw im/v1/b9d9d14f-e973-4010-84a8-634dc5443d44/dev-b7ba7f514adbe8b9/telemetry retain=false: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
-- publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-b7ba7f514adbe8b9/cmd/req retain=false: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
+- DUT dev-5dfd8caef6b668a2 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 7f77f2203cce2c06bf515792d25751eb
+- enrolled {"cert_serial_hex":"8be74b8e68a3dd07612581b2e837296d","not_after":1795475009,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- publish_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-b4597a63500cbb62/telemetry retain=false: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
+- publish_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-b4597a63500cbb62/cmd/ack retain=false: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
+- publish_raw im/v1/d3181fca-2a0d-46f5-9a93-de04678d8641/dev-5dfd8caef6b668a2/telemetry retain=false: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
+- publish_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-5dfd8caef6b668a2/cmd/req retain=false: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
 
 ### C-ACL-2 Subscribe to another device's command topic or wildcard - pass
 
@@ -284,27 +318,27 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 
 | Measurement | Value |
 |---|---|
-| reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/cmd/req | 135 |
-| reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/config | 135 |
-| reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/# | 135 |
-| reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/+/cmd/req | 135 |
-| reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/# | 135 |
+| reason_code im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-bcdf693be263e8d2/cmd/req | 135 |
+| reason_code im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-bcdf693be263e8d2/config | 135 |
+| reason_code im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/# | 135 |
+| reason_code im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/+/cmd/req | 135 |
+| reason_code im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-2564f2cf97594314/# | 135 |
 | reason_code # | 135 |
 | reason_code $SYS/# | 135 |
 | reason_code $share/bridge/im/v1/# | 135 |
-| reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/telemetry | 135 |
+| reason_code im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-2564f2cf97594314/telemetry | 135 |
 
-- DUT dev-e1c58215a88b991d (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial ecace9fe72588b0ae986e16be45719cb
-- enrolled {"cert_serial_hex":"d7dc6651b18be3297a520ef27e03121f","not_after":1795466735,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/cmd/req: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/cmd/req"}
-- subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/config: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/config"}
-- subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/#: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/#"}
-- subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/+/cmd/req: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/+/cmd/req"}
-- subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/#: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/#"}
+- DUT dev-2564f2cf97594314 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 7b6b50c9a7dee0020dbeec3182382a19
+- enrolled {"cert_serial_hex":"b8449ddfa1267ac3bcf10f40c3632c9d","not_after":1795475017,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- subscribe_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-bcdf693be263e8d2/cmd/req: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-bcdf693be263e8d2/cmd/req"}
+- subscribe_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-bcdf693be263e8d2/config: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-bcdf693be263e8d2/config"}
+- subscribe_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/#: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/#"}
+- subscribe_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/+/cmd/req: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/+/cmd/req"}
+- subscribe_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-2564f2cf97594314/#: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-2564f2cf97594314/#"}
 - subscribe_raw #: subscribe_result {"granted":false,"reason_code":135,"topic":"#"}
 - subscribe_raw $SYS/#: subscribe_result {"granted":false,"reason_code":135,"topic":"$SYS/#"}
 - subscribe_raw $share/bridge/im/v1/#: subscribe_result {"granted":false,"reason_code":135,"topic":"$share/bridge/im/v1/#"}
-- subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/telemetry: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/telemetry"}
+- subscribe_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-2564f2cf97594314/telemetry: subscribe_result {"granted":false,"reason_code":135,"topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-2564f2cf97594314/telemetry"}
 
 ### C-ACL-3 Retained publish on telemetry - pass
 
@@ -315,80 +349,177 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 | outcome | disconnected |
 | outcome events (retained) | disconnected |
 
-- DUT dev-732809f2c280ff4a (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d722be561e72b17f6f114ca11d937344
-- enrolled {"cert_serial_hex":"0cec08521c94c3309cdc054c4a9dbd01","not_after":1795466736,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
-- publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-732809f2c280ff4a/telemetry retain=true: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
-- publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-732809f2c280ff4a/events retain=true: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
+- DUT dev-7af67e4daa65372a (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 987b3f3e8e0663d9578b873196eccb41
+- enrolled {"cert_serial_hex":"acf5feae0197181360cd731846798c2a","not_after":1795475017,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- publish_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-7af67e4daa65372a/telemetry retain=true: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
+- publish_raw im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-7af67e4daa65372a/events retain=true: first event disconnected {"reason":"broker","reason_code":135}; publish_result (none); policy authz allowed=false
 
-### C-OTA-1 Unsigned image - n/a
+### C-OTA-1 Unsigned image - pass
 
 *Criterion:* `ota_state{state=rejected}`; active slot unchanged
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| final_state | rejected |
+| error | unsigned |
+| artifact_downloads | 0 |
 
+- DUT dev-dfe07e567154e5bf (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial e5c963fcd1aa837ca7ce02eb892ebfc8
+- enrolled {"cert_serial_hex":"0a3c5106596f068ff8d80ca1448049db","not_after":1795475021,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- OtaNotify campaign 9b755b20-7b42-4881-bcc2-bd68e8c62739: version_code 10001, image 66048 B sha256 ecc44f3bde99acc90d2ea10e7fb14bb9e968c55147c7e7c9c905b9321aff4a47, served 66048 B
+- ota_state sequence: ["received", "rejected(unsigned)"]
+- ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]}
+- signed OtaStatus uplinks (state, error): [(0, None), (7, Some("unsigned"))]
 
-### C-OTA-2 Tampered image (1 byte flipped, valid manifest) - n/a
+### C-OTA-2 Tampered image (1 byte flipped, valid manifest) - pass
 
 *Criterion:* `ota_state{state=rejected, error=image_hash}`
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| final_state | rejected |
+| error | image_hash |
+| artifact_downloads | 1 |
 
+- DUT dev-41f6afb64c008b17 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial fcebfa1b1d430adfdb95838bc196da32
+- enrolled {"cert_serial_hex":"7c1f8c4b1790bdd39c0a43fe92fb7212","not_after":1795475022,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- OtaNotify campaign e1e3661c-c5fc-4036-b87b-c34d130f127e: version_code 10001, image 66048 B sha256 ecc44f3bde99acc90d2ea10e7fb14bb9e968c55147c7e7c9c905b9321aff4a47, served 66048 B
+- ota_state sequence: ["received", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "verifying", "rejected(image_hash)"]
+- ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]}
+- signed OtaStatus uplinks (state, error): [(0, None), (1, None), (1, None), (1, None), (1, None), (1, None), (1, None), (1, None), (1, None), (1, None), (1, None), (1, None), (2, None), (7, Some("image_hash"))]
 
-### C-OTA-3 Manifest signed by an untrusted key - n/a
+### C-OTA-3 Manifest signed by an untrusted key - pass
 
 *Criterion:* rejected
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| final_state | rejected |
+| error | untrusted_key |
+| artifact_downloads | 0 |
 
+- DUT dev-cca5607f79a2ce97 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d087b946ed171edeb568037d6a2f91f4
+- enrolled {"cert_serial_hex":"9417de4d2dadaeda592c34b2571c1ce9","not_after":1795475023,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- OtaNotify campaign 69fb33b9-8731-47ae-8e7c-b8cc3cbcee0f: version_code 10001, image 66048 B sha256 ecc44f3bde99acc90d2ea10e7fb14bb9e968c55147c7e7c9c905b9321aff4a47, served 66048 B
+- ota_state sequence: ["received", "rejected(untrusted_key)"]
+- ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]}
+- signed OtaStatus uplinks (state, error): [(0, None), (7, Some("untrusted_key"))]
 
-### C-OTA-4 Downgrade (`version_code` not greater) - n/a
+### C-OTA-4 Downgrade (`version_code` not greater) - pass
 
 *Criterion:* rejected
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| final_state | rejected |
+| error | downgrade |
+| artifact_downloads | 0 |
 
+- DUT dev-6635d922099e0966 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 5de4b9452a33e7adfca4eee4d8f06582
+- enrolled {"cert_serial_hex":"e8741f9fb14703f176fdfa1cd5aa5802","not_after":1795475025,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- OtaNotify campaign e9356012-c775-4311-9612-50cc3d47b1d7: version_code 10000, image 66048 B sha256 ecc44f3bde99acc90d2ea10e7fb14bb9e968c55147c7e7c9c905b9321aff4a47, served 66048 B
+- ota_state sequence: ["received", "rejected(downgrade)"]
+- ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]}
+- signed OtaStatus uplinks (state, error): [(0, None), (7, Some("downgrade"))]
 
-### C-OTA-5 Valid update applies and is marked healthy - n/a
+### C-OTA-5 Valid update applies and is marked healthy - pass
 
 *Criterion:* `rebooted{reason=ota_apply}`, new `version_code`, `ota_state=success`
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| new_version_code | 10001 |
+| image_sha256 | 7494cc55244861bf6f4903a4c620ebc7d886ff50a4d9d882fd3a3071f65413d5 |
 
+- DUT dev-046b6dbf3ff0c00c (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 0c0e6297281b4b9b26100c809976e5ab
+- enrolled {"cert_serial_hex":"a2b890fdfcff2700d6579d93169d25c7","not_after":1795475026,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- OtaNotify campaign 458020d1-5941-4525-8dde-e93eedb3f955: version_code 10001, image 69713 B sha256 7494cc55244861bf6f4903a4c620ebc7d886ff50a4d9d882fd3a3071f65413d5, served 69713 B
+- ota_state sequence: ["received", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "verifying", "applying", "rebooting", "success"]
+- rebooted {"active_slot":"ota_1","reason":"ota_apply","version_code":10001}
+- ota_slots after: {"active_slot":"ota_1","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":"7494cc55244861bf6f4903a4c620ebc7d886ff50a4d9d882fd3a3071f65413d5",...
+- signed OtaStatus{state=5 success} uplink, fw_hash matches the image: true
 
-### C-OTA-6 Update that fails its health check rolls back - n/a
+### C-OTA-6 Update that fails its health check rolls back - pass
 
 *Criterion:* `rebooted{reason=rollback}`, previous slot active, `ota_state=rolled_back`
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| rollback_error | health_check |
+| seconds_apply_to_rollback | 120.0 |
 
+- DUT dev-331ba785e93f6222 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial b819ab7f95ecd75b2ff879c472a5e7e3
+- enrolled {"cert_serial_hex":"2da4461aa92de0540cfb2e41b367e310","not_after":1795475026,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- OtaNotify campaign 6b234b75-19cd-4cad-aee6-284bed22c08a: version_code 10001, image 66236 B sha256 dcb2411c57a37836ef5bac0e25cd170936721d7cd8a34fce7fe18fa50dc72719, served 66236 B
+- rebooted {"active_slot":"ota_1","reason":"ota_apply","version_code":10001} then health check without broker access
+- rebooted {"active_slot":"ota_0","reason":"rollback","version_code":10000}
+- ota_state sequence: ["received", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "verifying", "applying", "rebooting", "rolled_back(health_check)"]
+- ota_slots before {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":null,"state":"empty","version":"","version_code":0}]} after {"active_slot":"ota_0","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":"dcb2411c57a37836ef5bac0e25cd170936721d7cd8a34fce7fe18fa50dc72719",...
+- **warning:** no signed OtaStatus{state=6 rolled_back} reached the broker after reconnecting
 
-### C-OTA-7 Delta update - n/a
+### C-OTA-7 Delta update - pass
 
 *Criterion:* applied image hash equals full image hash
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| patch_bytes | 16670 |
+| image_bytes | 69745 |
+| applied_image_sha256 | ab6c3c73366a946fa00993e3bf2db03bf722ca3105f59474be5a652db16ecdd1 |
 
+- DUT dev-ec50a87202673e8d (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 7aa22e7b27720be9f8fd91865e8df4fa
+- enrolled {"cert_serial_hex":"b91913bf447fe8a54174939a653c9cae","not_after":1795475157,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- delta base: the factory image (hash verified against ota_slots)
+- OtaNotify campaign 392b0d2c-1166-4ed0-a508-461770a03a68: version_code 10001, image 69745 B sha256 ab6c3c73366a946fa00993e3bf2db03bf722ca3105f59474be5a652db16ecdd1, served 16670 B (IMDELTA1 patch)
+- ota_state sequence: ["received", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "downloading", "verifying", "applying", "rebooting", "success"]
+- rebooted {"active_slot":"ota_1","reason":"ota_apply","version_code":10001}
+- ota_slots after: {"active_slot":"ota_1","pending_slot":null,"slots":[{"name":"ota_0","sha256_hex":"1b2d78b146a6f1ce33abe773a24dc5a105baac88c9739e7e0dce845d73f74f22","state":"valid","version":"1.0.0","version_code":10000},{"name":"ota_1","sha256_hex":"ab6c3c73366a946fa00993e3bf2db03bf722ca3105f59474be5a652db16ecdd1",...
+- signed OtaStatus{state=5 success} uplink, fw_hash matches the image: true
 
-### C-RPL-1 Replayed command (same `seq`) - n/a
+### C-RPL-1 Replayed command (same `seq`) - pass
 
 *Criterion:* `message_rejected{code=ENV_REPLAY}`; command not executed twice
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| rejection_code | ENV_REPLAY |
+| command_executed_count | 1 |
+| command_acks_on_wire | 1 |
 
+- DUT dev-b196ab5e193fceb8 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 860d7f5ae7fce4c43967d7cd185c5706
+- enrolled {"cert_serial_hex":"fa0da8c0711680c7184fb46f31ae2afe","not_after":1795475157,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- original seq 1000: command_executed {"cmd_id":"e5ff3356-4579-4731-87e8-67b43aeaf1ea","status":0}
+- signed CommandAck seq 2 echoes cmd_id and nonce
+- message_rejected {"code":"ENV_REPLAY","topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-b196ab5e193fceb8/cmd/req"}
 
-### C-RPL-2 Command with stale timestamp - n/a
+### C-RPL-2 Command with stale timestamp - pass
 
 *Criterion:* `message_rejected{code=ENV_TS_SKEW}`
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| rejection_code | ENV_TS_SKEW |
+| rejection_code | ENV_TS_SKEW |
 
+- DUT dev-aef2816ab94e0e96 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 6ed3f20d10776764ae57c3b6ea112e86
+- enrolled {"cert_serial_hex":"06efdf9fffd2a82108bdb34e222863f4","not_after":1795475159,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- command seq 1001 with ts = now - 400 s (window 300 s)
+- message_rejected {"code":"ENV_TS_SKEW","topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-aef2816ab94e0e96/cmd/req"}
+- message_rejected {"code":"ENV_TS_SKEW","topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-aef2816ab94e0e96/cmd/req"}
 
-### C-RPL-3 Command signed by a non-tenant key - n/a
+### C-RPL-3 Command signed by a non-tenant key - pass
 
 *Criterion:* `message_rejected{code=COSE_SIGNATURE}`
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| rejection_code | COSE_SIGNATURE |
 
+- DUT dev-384da3a633a33203 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 3b3e65bf5a0402915247d969c1fbb7e7
+- enrolled {"cert_serial_hex":"346b0707422936a0b219164f8a87b1d3","not_after":1795475161,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- command seq 1003 with kid tenant-cmd-<tenant> signed by a non-tenant Ed25519 key
+- message_rejected {"code":"COSE_SIGNATURE","topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-384da3a633a33203/cmd/req"}
+- a genuine command with the forged seq was executed afterwards (store not advanced by the forgery)
 
 ### C-RPL-4 Device `seq` strictly increases across reboot - pass
 
@@ -401,10 +532,10 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 | last_seq_sent_before | 4 |
 | first_seq_sent_after | 18 |
 
-- DUT dev-64c5f405b4af7277 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 5ce84d164b4ca628b19474682a71bf78
-- enrolled {"cert_serial_hex":"0e3720205d77dd3af61787ac8d07273e","not_after":1795466740,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-b105d901e410691e (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 41af851dd61dda26fc76d1cb7494a4b2
+- enrolled {"cert_serial_hex":"a6ecdca142cf5e349ce51ba0d670ae88","not_after":1795475164,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
 - rebooted {"active_slot":"ota_0","reason":"requested","version_code":10000}
-- telemetry seqs on the wire: [2, 18]
+- telemetry seqs on the wire: [2, 3, 4, 18]
 
 ### C-OFF-1 Offline buffering and resync - pass
 
@@ -415,19 +546,28 @@ Path: harness PKI revokes the certificate (CRL regenerated) and pushes the signe
 | buffered_and_flushed | 25 |
 | telemetry_on_wire | 32 |
 
-- DUT dev-03be2490d4224dab (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 68ab284300f4c89e34a1dc068e7f9041
-- enrolled {"cert_serial_hex":"dc496a2fabc26de5def5b00696bb0de1","not_after":1795466740,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- DUT dev-c5a856dd26dc0f38 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 3ba8b3c6ca4ede59017ed73f71582c04
+- enrolled {"cert_serial_hex":"44e422ed6c9b62a3987b14da248b021a","not_after":1795475164,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
 - net_down -> disconnected {"reason":"network","reason_code":0}
 - offline send_telemetry 25 -> {"first_seq":4,"last_seq":28}, status.buffered=25
 - net_up -> buffer_flushed {"count":25,"first_seq":4,"last_seq":28}
 - telemetry seqs on the wire (32): [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
 
-### C-CFG-1 Encrypted config delivery - n/a
+### C-CFG-1 Encrypted config delivery - pass
 
 *Criterion:* DUT applies config; retained broker copy is ciphertext only
 
-**Reason:** the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update
+| Measurement | Value |
+|---|---|
+| applied | yes (replay of the same ciphertext rejected with ENV_REPLAY) |
+| retained_bytes | 352 |
+| retained_ciphertext_bytes | 204 |
 
+- DUT dev-cf6890577959cc5b (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial c5fcbe377ec7abcf2ad4d216fe051da1
+- enrolled {"cert_serial_hex":"a6e27ba9290ba8ef0c476f4ef848109c","not_after":1795475166,"se_type":"software"}; connected {"alpn":"mqtt","broker":"127.0.0.1","resumed":false,"session_present":false,"tls_version":"TLSv1.3"}
+- Config v7 (tenant-signed, seq 1000) HPKE-wrapped to the certificate key of a6e27ba9290ba8ef0c476f4ef848109c, published retained
+- re-delivery: message_rejected {"code":"ENV_REPLAY","topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-cf6890577959cc5b/config"}
+- config wrapped to a foreign key: message_rejected {"code":"HPKE_OPEN","topic":"im/v1/d8d37e84-0f9a-4a8d-97ef-f1e4a114b0a4/dev-cf6890577959cc5b/config"}
 
 ### C-HOOK-1 Release build has no control channel - n/a
 
