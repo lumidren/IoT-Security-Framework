@@ -1,0 +1,61 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[package]
+name = "ironmesh-conformance"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "IronMesh device conformance suite: one suite, every firmware target, driven through the DUT control protocol"
+publish = false
+default-run = "ironmesh-conformance"
+
+[lib]
+name = "ironmesh_conformance"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ironmesh-conformance"
+path = "src/main.rs"
+
+[dependencies]
+# The wire format (CBOR/COSE/envelope/manifest/delta/HPKE), the MQTT 5 codec and client, the EST
+# bundle/PKCS#7 helpers and the X.509 helpers of the Rust agent are reused as a library so the
+# harness and the DUT never disagree on encodings. Harness unit tests cross-check the builders
+# against the shared vectors in device/common/vectors so a bug there cannot hide.
+ironmesh-agent = { path = "../device/agent-rs", default-features = false }
+
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+base64 = "0.22"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+hex = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+rand = "0.8"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem", "x509-parser"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serialport = { version = "4", default-features = false }
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+time = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs", "process", "signal"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+toml = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+x509-parser = "0.18"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
