@@ -38,8 +38,8 @@ Environment variables follow the Helm chart table (`deploy/helm/ironmesh/README.
 | `ANOMALY_KAFKA_{BROKERS,CONSUMER_GROUP,TLS_ENABLED,SASL_MECHANISM,SASL_USERNAME,SASL_PASSWORD}` | `redpanda:9092`, `anomaly-engine` | bus (`none`/`PLAIN`/`SCRAM-*`/`AWS_MSK_IAM`) |
 | `ANOMALY_KAFKA_TOPIC_{INGEST,AUTH,ALERTS,AUDIT}` | `im.*` | topics |
 | `ANOMALY_{REGISTRY,POLICY,OTA,PKI}_URL` | cluster DNS | upstream services |
-| `ANOMALY_TLS_{CERT,KEY,CA}_FILE` | – | Services CA identity for outbound mTLS; the key also signs ES256 service JWTs |
-| `ANOMALY_INTERNAL_TOKEN` | – | bearer for registry internal endpoints (= `REGISTRY_INTERNAL_TOKEN`) |
+| `ANOMALY_TLS_{CERT,KEY,CA}_FILE` | – | Services CA identity for outbound mTLS; the key also signs ES256 service JWTs (`iss = sub = anomaly`, `kid = svc-anomaly`) |
+| `ANOMALY_INTERNAL_TOKEN` (secret) | – | bearer for the registry's internal endpoints (`lifecycle`, `quarantine`): the `anomaly` entry of the registry's `REGISTRY_INTERNAL_TOKENS` map; without it a service JWT is sent |
 | `ANOMALY_AUTO_QUARANTINE`, `ANOMALY_QUARANTINE_MIN_SEVERITY` | `false`, `high` | defaults for tenants without stored settings |
 | `ANOMALY_QUARANTINE_MAX_PER_HOUR`, `ANOMALY_QUARANTINE_BREAKER_COOLDOWN_S` | `10`, `3600` | circuit breaker |
 | `ANOMALY_MODEL_DIR` / `ANOMALY_MODEL_S3_BUCKET` | `/var/lib/ironmesh/anomaly/models` | model store |
@@ -74,7 +74,8 @@ Environment variables follow the Helm chart table (`deploy/helm/ironmesh/README.
   replays too. If the PKI is unreachable, the record is retried and not committed.
 * **`im.auth`** carries `connected`, `disconnected`, `authn_failed` and `authz_denied` events. The
   client id must be a device id. The tenant comes from the registry directory
-  (`/internal/v1/devices/{id}/lifecycle`, cached).
+  (`/internal/v1/devices/{id}/lifecycle`, callers `policy` and `anomaly`, cached), whose
+  `product` is the device class that selects the per-class model and known-hash set.
 * **`im.audit`** (optional) carries `device.quarantine` and `device.release` decisions taken by
   users. They are recorded with `by: "user:<id>"` and keep quarantined devices out of training.
 * **State**: an in-memory store keyed by `(tenant, device)`. All buffers are bounded. Dirty

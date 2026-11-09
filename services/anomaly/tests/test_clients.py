@@ -68,7 +68,8 @@ def test_service_token_signer(tmp_path: Path) -> None:
     tok = s.token("pki")
     assert tok is not None and s.token("pki") == tok  # cached
     claims = jwt.decode(tok, key.public_key(), algorithms=["ES256"], audience="pki")
-    assert claims["iss"] == claims["sub"] == "svc-anomaly" and claims["exp"] - claims["iat"] == 300
+    # the registry and OTA identify the caller by iss/sub and allow-list "anomaly"
+    assert claims["iss"] == claims["sub"] == "anomaly" and claims["exp"] - claims["iat"] == 300
     assert jwt.get_unverified_header(tok)["kid"] == "svc-anomaly"
     assert s.headers("registry") == {"Authorization": "Bearer shared-token"}
     assert ServiceTokenSigner(None).headers("pki") == {}

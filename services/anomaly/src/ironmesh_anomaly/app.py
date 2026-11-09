@@ -70,16 +70,22 @@ async def _iam_password(settings: Settings) -> str:  # pragma: no cover - needs 
     return token
 
 
+def service_signer(settings: Settings) -> ServiceTokenSigner:
+    """Registry calls (lifecycle, quarantine) carry ``ANOMALY_INTERNAL_TOKEN`` (the ``anomaly``
+    entry of ``REGISTRY_INTERNAL_TOKENS``) when set; every other call a service JWT."""
+    static_tokens: dict[str, str] = {}
+    if settings.internal_token is not None:
+        static_tokens["registry"] = settings.internal_token.get_secret_value()
+    return ServiceTokenSigner.from_file(
+        settings.jwt_key_file(), settings.service_jwt_kid, static_tokens
+    )
+
+
 async def build_components(settings: Settings) -> Components:  # pragma: no cover - needs infra
     """Production wiring (Kafka, Postgres, upstream HTTP services)."""
     from .pg_repository import PostgresRepository, migrate
 
-    static_tokens: dict[str, str] = {}
-    if settings.internal_token is not None:
-        static_tokens["registry"] = settings.internal_token.get_secret_value()
-    signer = ServiceTokenSigner.from_file(
-        settings.jwt_key_file(), settings.service_jwt_kid, static_tokens
-    )
+    signer = service_signer(settings)
     http = build_http_client(
         settings.http_timeout_s, settings.tls_ca_file, settings.tls_cert_file, settings.tls_key_file
     )

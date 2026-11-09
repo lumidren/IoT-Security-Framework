@@ -39,13 +39,19 @@ SERVICE_JWT_TTL_S: Final = 300
 # --------------------------------------------------------------------------------------------
 
 
+SERVICE_NAME = "anomaly"
+"""Caller identity in service JWTs: the registry matches ``iss`` against its trusted-key map and
+the ``internal("anomaly")`` allowlists, OTA checks ``sub`` against
+``OTA_INTERNAL_ALLOWED_SERVICES`` and the PKI accepts ``anomaly`` or ``svc-anomaly``."""
+
+
 class ServiceTokenSigner:
     """Service credentials per audience.
 
-    A static bearer configured for an audience wins (``ANOMALY_INTERNAL_TOKEN`` for the registry,
-    the chart's ``*_INTERNAL_TOKEN = REGISTRY_INTERNAL_TOKEN`` convention); otherwise an ES256
-    service JWT (``iss = sub = svc-anomaly``, ``aud = <service>``, 5 min) is minted with the
-    Services CA key.
+    A static bearer configured for an audience wins (``ANOMALY_INTERNAL_TOKEN`` for the registry:
+    the ``anomaly`` entry of ``REGISTRY_INTERNAL_TOKENS``); otherwise an ES256 service JWT
+    (``iss = sub = anomaly``, ``kid = svc-anomaly``, ``aud = <service>``, 5 min) is minted with
+    the Services CA key.
     """
 
     def __init__(
@@ -85,8 +91,8 @@ class ServiceTokenSigner:
         exp = now + SERVICE_JWT_TTL_S
         token = jwt.encode(
             {
-                "iss": SERVICE_ACTOR_ID,
-                "sub": SERVICE_ACTOR_ID,
+                "iss": SERVICE_NAME,
+                "sub": SERVICE_NAME,
                 "aud": audience,
                 "iat": int(now),
                 "nbf": int(now) - 5,
@@ -338,7 +344,9 @@ class DeviceDirectory(Protocol):
 
 
 class HttpDeviceDirectory:
-    """``GET /internal/v1/devices/{id}/lifecycle`` (``product`` read when the registry sends it)."""
+    """``GET /internal/v1/devices/{id}/lifecycle`` (callers ``policy`` and ``anomaly``) ->
+    ``{device_id, tenant_id, state, assurance_level, product}``. ``product`` is the device class
+    the engine keeps per-class Isolation Forest models and known-hash sets for."""
 
     def __init__(
         self,

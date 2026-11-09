@@ -73,7 +73,8 @@ class Settings(BaseSettings):
     tls_key_file: str | None = None
     tls_ca_file: str | None = None
     internal_token: SecretStr | None = None
-    """Shared bearer for registry internal endpoints (= ``REGISTRY_INTERNAL_TOKEN``)."""
+    """Bearer for the registry's internal endpoints (lifecycle, quarantine): the ``anomaly``
+    entry of the registry's ``REGISTRY_INTERNAL_TOKENS`` map."""
     service_jwt_key_file: str | None = None
     """ES256 key for service JWTs; defaults to ``ANOMALY_TLS_KEY_FILE`` (Services CA key)."""
     service_jwt_kid: str = "svc-anomaly"
