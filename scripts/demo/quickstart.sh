@@ -47,6 +47,19 @@ else
   if grep -q '=__GENERATE__' "${ENV_FILE}"; then
     die "${ENV_FILE} still contains __GENERATE__ placeholders"
   fi
+  # Top up variables added to .env.example since this .env was generated (e.g. OTA_REGISTRY_TOKEN);
+  # existing values are never touched, obsolete ones (OTA_TENANT_KEYS_PASSPHRASE) are ignored.
+  added=()
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%$'\r'}"
+    [[ "${line}" =~ ^([A-Z0-9_]+)=(.*)$ ]] || continue
+    name="${BASH_REMATCH[1]}" value="${BASH_REMATCH[2]}"
+    grep -qE "^${name}=" "${ENV_FILE}" && continue
+    [[ "${value}" == "__GENERATE__" ]] && value="$(random_hex)"
+    printf '%s=%s\n' "${name}" "${value}" >> "${ENV_FILE}"
+    added+=("${name}")
+  done < "${DOCKER_DIR}/.env.example"
+  if (( ${#added[@]} )); then log "added to ${ENV_FILE}: ${added[*]}"; fi
 fi
 
 env_value() { grep -E "^$1=" "${ENV_FILE}" | tail -n1 | cut -d= -f2-; }
@@ -58,7 +71,8 @@ build_flag=(--build)
 [[ "${IRONMESH_NO_BUILD:-0}" == "1" ]] && build_flag=()
 log "starting the stack (first run builds every image; this takes a few minutes)"
 # `up -d` returns once every depends_on condition is met: migrations, PKI bootstrap, topic
-# creation, registry seed and the fleet registration (service `seed`) have completed.
+# creation (bridge), registry seed and the fleet registration (service `seed`, which also waits
+# until the registry and the OTA service have pushed their keys to the PKI tenant policy).
 if ! "${COMPOSE[@]}" up -d ${build_flag[@]+"${build_flag[@]}"}; then
   "${COMPOSE[@]}" ps -a || true
   die "docker compose up failed; inspect with: docker compose -f deploy/docker/docker-compose.yml logs <service>"
@@ -77,7 +91,7 @@ wait_healthy() {
     sleep 3
   done
 }
-for svc in pki emqx registry ota anomaly console keycloak grafana; do
+for svc in pki policy emqx bridge registry ota anomaly console keycloak grafana; do
   wait_healthy "${svc}"
 done
 log "stack healthy"

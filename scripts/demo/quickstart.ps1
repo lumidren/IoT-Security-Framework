@@ -68,6 +68,28 @@ if (-not (Test-Path -LiteralPath $EnvFile)) {
     if (Select-String -LiteralPath $EnvFile -Pattern '=__GENERATE__' -Quiet) {
         Stop-WithError "$EnvFile still contains __GENERATE__ placeholders"
     }
+    # Top up variables added to .env.example since this .env was generated (e.g. OTA_REGISTRY_TOKEN);
+    # existing values are never touched, obsolete ones (OTA_TENANT_KEYS_PASSPHRASE) are ignored.
+    $existing = @{}
+    foreach ($line in Get-Content -LiteralPath $EnvFile) {
+        if ($line -match '^([A-Z0-9_]+)=') { $existing[$Matches[1]] = $true }
+    }
+    $added = @()
+    $append = foreach ($line in Get-Content -LiteralPath (Join-Path $DockerDir '.env.example')) {
+        if ($line -match '^([A-Z0-9_]+)=(.*)$' -and -not $existing.ContainsKey($Matches[1])) {
+            $name = $Matches[1]
+            $value = $Matches[2]
+            if ($value -eq '__GENERATE__') { $value = New-RandomHex }
+            $added += $name
+            "$name=$value"
+        }
+    }
+    if ($added.Count -gt 0) {
+        $current = [System.IO.File]::ReadAllText($EnvFile)
+        $sep = if ($current.Length -gt 0 -and -not $current.EndsWith("`n")) { "`n" } else { '' }
+        [System.IO.File]::AppendAllText($EnvFile, $sep + (($append -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        Write-Step "added to ${EnvFile}: $($added -join ' ')"
+    }
 }
 $FleetCount = Get-EnvValue 'IRONMESH_FLEET_COUNT'
 if ([string]::IsNullOrEmpty($FleetCount)) { $FleetCount = '500' }
@@ -98,7 +120,7 @@ function Wait-Healthy([string]$Service) {
         Start-Sleep -Seconds 3
     }
 }
-foreach ($svc in 'pki', 'emqx', 'registry', 'ota', 'anomaly', 'console', 'keycloak', 'grafana') { Wait-Healthy $svc }
+foreach ($svc in 'pki', 'policy', 'emqx', 'bridge', 'registry', 'ota', 'anomaly', 'console', 'keycloak', 'grafana') { Wait-Healthy $svc }
 Write-Step 'stack healthy'
 
 # 3. Demo ---------------------------------------------------------------------------------------

@@ -1,20 +1,26 @@
 """IronMesh compose demo driver (runs inside the compose network, see deploy/docker).
 
 Executed by the ``seed`` and ``demo-tools`` services with the OTA image's Python environment
-(httpx, asyncpg and cryptography are dependencies of that image), so the host needs nothing but
-Docker. Every call goes through the public contract (docs/API_CONTRACT.md) with an OIDC access
-token from the local Keycloak demo realm, except the PKI tenant policy, which the PKI service has
-no API for yet and is therefore written to its ``tenant_policies`` table as the schema owner.
+(httpx is a dependency of that image), so the host needs nothing but Docker. Every call goes
+through the public contract (docs/API_CONTRACT.md) with an OIDC access token from the local
+Keycloak demo realm. The PKI tenant policy is never written here: the registry (the only holder
+of tenant command keys) pushes the command key and ``allow_software_keys``, the OTA service pushes
+its firmware signing keys (API_CONTRACT §5). ``seed`` only reads the policy back
+(``GET /v1/tenants/{t}/policy`` over mTLS with the svc-ota identity) and waits until both keys are
+there, so the fleet never enrolls with an incomplete trust bundle.
 
 Subcommands::
 
-    seed             register the virtual fleet (factory flow) and the PKI tenant policy
+    seed             register the virtual fleet (factory flow), upload the baseline firmware so
+                     the OTA service publishes its keys, wait for the PKI tenant policy
     campaign         upload a demo firmware image and start a 1% -> 10% -> 100% campaign
     wait-active N    wait until N fleet devices are active in the registry
     wait-quarantine  wait until the anomaly engine has auto-quarantined a device
     status           print a short fleet / campaign / alert summary
     harness-secrets  print JSON for the conformance --stack harness: a fresh registry API key
-                     (role admin: factory + operator) and the tenant command key seed (hex)
+                     (role admin: factory + operator) and the tenant id. The tenant command key
+                     stays KMS-wrapped inside the registry, so ``tenant_key_seed_hex`` is empty
+                     and the harness skips the cases that need to sign downlinks itself.
 
 Configuration comes from the environment set in docker-compose.yml (IRONMESH_*).
 """
@@ -22,11 +28,11 @@ Configuration comes from the environment set in docker-compose.yml (IRONMESH_*).
 from __future__ import annotations
 
 import argparse
-import asyncio
 import base64
 import hashlib
 import json
 import os
+import ssl
 import sys
 import time
 from pathlib import Path
@@ -127,17 +133,6 @@ def fleet_devices() -> list[tuple[str, str]]:
     return out
 
 
-def tenant_command_pubkey() -> bytes:
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import ed25519
-
-    pem = Path(env("IRONMESH_TENANT_KEY_FILE")).read_bytes()
-    key = serialization.load_pem_private_key(pem, password=env("OTA_TENANT_KEYS_PASSPHRASE").encode())
-    if not isinstance(key, ed25519.Ed25519PrivateKey):
-        sys.exit("demo: tenant command key is not Ed25519")
-    return key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-
-
 def firmware_pubkeys(s: Session) -> list[bytes]:
     keys = check(s.request("GET", f"{env('IRONMESH_OTA_URL')}/v1/signing-keys"), 200)
     out = [base64.b64decode(k["public_key_b64"]) for k in keys if k.get("algorithm") == "Ed25519"]
@@ -146,32 +141,81 @@ def firmware_pubkeys(s: Session) -> list[bytes]:
     return out
 
 
-async def upsert_pki_tenant_policy(tenant: str, cmd_pub: bytes, fw_pubs: list[bytes]) -> None:
-    import asyncpg
+def demo_image(version: str) -> bytes:
+    """Deterministic demo image bytes, so the hash is reproducible for a given version."""
+    seed = hashlib.sha256(f"ironmesh-demo-firmware:{version}".encode()).digest()
+    return b"".join(hashlib.sha256(seed + i.to_bytes(4, "big")).digest() for i in range(8192))
 
-    conn = await asyncpg.connect(env("IRONMESH_PKI_DSN"))
-    try:
-        await conn.execute(
-            """
-            INSERT INTO tenant_policies (tenant_id, allow_software_keys, tenant_cmd_pubkey,
-                                         fw_signing_pubkeys, broker_host, broker_port, updated_at)
-            VALUES ($1::uuid, true, $2, $3, $4, $5, now())
-            ON CONFLICT (tenant_id) DO UPDATE SET
-                allow_software_keys = EXCLUDED.allow_software_keys,
-                tenant_cmd_pubkey = EXCLUDED.tenant_cmd_pubkey,
-                fw_signing_pubkeys = EXCLUDED.fw_signing_pubkeys,
-                broker_host = EXCLUDED.broker_host,
-                broker_port = EXCLUDED.broker_port,
-                updated_at = now()
-            """,
-            tenant,
-            cmd_pub,
-            fw_pubs,
-            env("IRONMESH_BROKER_HOST", "emqx"),
-            int(env("IRONMESH_BROKER_PORT", "8883")),
-        )
-    finally:
-        await conn.close()
+
+def upload_baseline_firmware(s: Session) -> None:
+    """Upload the version the fleet already runs (fleet.toml: 1.0.0 / code 1), once.
+
+    The OTA service pushes its firmware signing keys to the PKI for every tenant that has firmware
+    (its key-sync outbox is keyed on the first stored image), so this is what puts
+    ``firmware_keys_b64`` into the tenant policy before the fleet enrolls.
+    """
+    product = env("IRONMESH_FLEET_PRODUCT", "fleet-sim")
+    metadata = {
+        "product": product,
+        "version": "1.0.0",
+        "version_code": 1,
+        "notes": "IronMesh quickstart baseline image (the version the virtual fleet reports)",
+        "severity": "normal",
+    }
+    resp = s.request(
+        "POST",
+        f"{env('IRONMESH_OTA_URL')}/v1/firmware",
+        files={"image": ("firmware.bin", demo_image("1.0.0"), "application/octet-stream")},
+        data={"metadata": json.dumps(metadata)},
+    )
+    if resp.status_code == 409:
+        log(f"baseline firmware {product}/1.0.0 already uploaded")
+        return
+    fw = check(resp, 201)
+    log(f"baseline firmware {fw['product']}/{fw['version']} uploaded (key {fw['signing_key_id']})")
+
+
+def pki_client() -> httpx.Client:
+    """mTLS client for the PKI management API with the Services CA identity in IRONMESH_PKI_TLS_DIR."""
+    tls_dir = Path(env("IRONMESH_PKI_TLS_DIR", "/etc/ironmesh/tls"))
+    ctx = ssl.create_default_context(cafile=str(tls_dir / "ca.crt"))
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(str(tls_dir / "tls.crt"), str(tls_dir / "tls.key"))
+    return httpx.Client(base_url=env("IRONMESH_PKI_URL"), verify=ctx, timeout=TIMEOUT)
+
+
+def wait_pki_tenant_policy(tenant: str, fw_pubs: list[bytes], timeout_s: float = 300.0) -> dict[str, Any]:
+    """Poll GET /v1/tenants/{t}/policy until the registry's command key and the OTA firmware keys
+    are both present (and software keys are allowed for the simulated fleet)."""
+    want_fw = {base64.b64encode(k).decode() for k in fw_pubs}
+    deadline = time.time() + timeout_s
+    with pki_client() as pki:
+        while True:
+            try:
+                resp = pki.get(f"/v1/tenants/{tenant}/policy")
+                if resp.status_code == 200:
+                    pol = resp.json()
+                    have_fw = set(pol.get("firmware_keys_b64") or [])
+                    missing = []
+                    if not pol.get("command_key_b64"):
+                        missing.append("command key (registry)")
+                    if not want_fw <= have_fw:
+                        missing.append("firmware keys (ota)")
+                    if not pol.get("allow_software_keys"):
+                        missing.append("allow_software_keys (registry)")
+                    if not missing:
+                        return dict(pol)
+                    reason = "waiting for " + ", ".join(missing)
+                elif resp.status_code == 404:
+                    reason = "no tenant policy yet"
+                else:
+                    reason = f"HTTP {resp.status_code}: {resp.text[:200]}"
+            except httpx.HTTPError as exc:
+                reason = str(exc)
+            if time.time() > deadline:
+                sys.exit(f"demo: PKI tenant policy incomplete after {int(timeout_s)}s ({reason})")
+            log(f"PKI tenant policy: {reason}")
+            time.sleep(3)
 
 
 def cmd_seed(_: argparse.Namespace) -> None:
@@ -207,12 +251,14 @@ def cmd_seed(_: argparse.Namespace) -> None:
             check(resp, 201, 409)
     log(f"factory registration: {created} created, {existing} already registered")
 
-    cmd_pub = tenant_command_pubkey()
+    upload_baseline_firmware(s)
     fw_pubs = firmware_pubkeys(s)
-    asyncio.run(upsert_pki_tenant_policy(tenant, cmd_pub, fw_pubs))
+    pol = wait_pki_tenant_policy(tenant, fw_pubs)
+    cmd_pub = base64.b64decode(pol["command_key_b64"])
     log(
-        "PKI tenant policy: software keys allowed, tenant_cmd_pubkey "
-        f"{hashlib.sha256(cmd_pub).hexdigest()[:16]}…, {len(fw_pubs)} firmware key(s)"
+        "PKI tenant policy: software keys allowed, command key "
+        f"{hashlib.sha256(cmd_pub).hexdigest()[:16]}... (registry), "
+        f"{len(pol.get('firmware_keys_b64') or [])} firmware key(s) (ota)"
     )
 
 
@@ -225,9 +271,7 @@ def cmd_campaign(args: argparse.Namespace) -> None:
     product = env("IRONMESH_FLEET_PRODUCT", "fleet-sim")
     version_code = int(time.time())
     version = f"1.1.{version_code}"
-    # Demo image: deterministic bytes so the hash is reproducible for a given version_code.
-    seed = hashlib.sha256(f"ironmesh-demo-firmware:{version}".encode()).digest()
-    image = b"".join(hashlib.sha256(seed + i.to_bytes(4, "big")).digest() for i in range(8192))
+    image = demo_image(version)
     metadata = {
         "product": product,
         "version": version,
@@ -344,9 +388,6 @@ def cmd_status(_: argparse.Namespace) -> None:
 
 
 def cmd_harness_secrets(_: argparse.Namespace) -> None:
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import ed25519
-
     s = Session()
     created = check(
         s.request(
@@ -356,12 +397,10 @@ def cmd_harness_secrets(_: argparse.Namespace) -> None:
         ),
         201,
     )
-    pem = Path(env("IRONMESH_TENANT_KEY_FILE")).read_bytes()
-    key = serialization.load_pem_private_key(pem, password=env("OTA_TENANT_KEYS_PASSPHRASE").encode())
-    if not isinstance(key, ed25519.Ed25519PrivateKey):
-        sys.exit("demo: tenant command key is not Ed25519")
-    seed = key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
-    print(json.dumps({"registry_token": created["secret"], "tenant_key_seed_hex": seed.hex(), "tenant_id": env("IRONMESH_TENANT_ID")}))
+    # The tenant command key never leaves the registry (KMS-wrapped, the only downlink signer),
+    # so no seed is exported: an empty value keeps the JSON shape the HIL workflow parses and
+    # makes the conformance harness skip the cases that sign downlinks themselves.
+    print(json.dumps({"registry_token": created["secret"], "tenant_key_seed_hex": "", "tenant_id": env("IRONMESH_TENANT_ID")}))
 
 
 def main(argv: list[str] | None = None) -> None:
