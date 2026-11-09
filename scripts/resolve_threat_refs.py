@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Resolve ``path::symbol`` code references in THREAT_MODEL.md.
+"""Resolve ``path::symbol`` code references in the security documents.
 
-The threat model cites the code that implements each mitigation as a backticked
-reference of the form ``path::symbol`` (for example
-``services/pki/internal/est/handlers.go::verifyAttestation``).  This script
-checks those references against the repository and, on request, rewrites them
-to ``path:line (symbol)`` so a reviewer can jump straight to the line.
+THREAT_MODEL.md, COMPLIANCE_MATRIX.md and ARCHITECTURE.md cite the code that
+implements each mitigation or control as a backticked reference of the form ``path::symbol``
+(for example ``services/pki/internal/est/handler.go::rejectReusedKey``).  This
+script checks those references against the repository and, on request, rewrites
+them to ``path:line (symbol)`` so a reviewer can jump straight to the line.
+
+Backticked bare repository paths (``device/esp32/partitions.csv``,
+``sbom/README.md``) are checked too: a token whose first segment is an existing
+top-level entry of the repository, or a root-level ``UPPERCASE.md`` name, must
+exist as a file or directory.  Bare paths are never rewritten.
 
 Modes
 -----
@@ -13,11 +18,14 @@ Modes
 --rewrite   additionally rewrite resolved references in place.  Unresolved
             references are left untouched.  Already-resolved references are
             re-resolved so line numbers stay fresh after refactors.
+--file F    scan F instead of the default set (THREAT_MODEL.md,
+            COMPLIANCE_MATRIX.md, ARCHITECTURE.md); repeatable.
 
 Exit status
 -----------
 0  every reference resolved (or --strict not given)
-1  --strict given and at least one reference is unresolved
+1  --strict given and at least one reference is unresolved or a bare path
+   does not exist
 2  usage error (markdown file or repository root missing)
 
 Only the Python standard library is used.  Python 3.8 or newer.
@@ -38,11 +46,18 @@ from typing import Dict, List, Optional, Tuple
 _PATH = r"(?P<path>(?=[^`:]*[./])[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)"
 UNRESOLVED_RE = re.compile(r"`" + _PATH + r"::(?P<symbol>[^`]+?)`")
 RESOLVED_RE = re.compile(r"`" + _PATH + r":(?P<line>\d+) \((?P<symbol>[^`]+?)\)`")
+# Any other backticked token that looks like a repository path.
+BARE_RE = re.compile(r"`(?P<path>\.?[A-Za-z0-9_-][A-Za-z0-9_./-]*)`")
+ROOT_DOC_RE = re.compile(r"^[A-Z][A-Z0-9_]*\.md$")
+
+DEFAULT_FILES = ["THREAT_MODEL.md", "COMPLIANCE_MATRIX.md", "ARCHITECTURE.md"]
 
 STATUS_OK = "RESOLVED"
 STATUS_PARTIAL = "RESOLVED (last segment)"
 STATUS_NO_FILE = "MISSING FILE"
 STATUS_NO_SYMBOL = "SYMBOL NOT FOUND"
+STATUS_PATH_OK = "PATH EXISTS"
+STATUS_NO_PATH = "MISSING PATH"
 
 
 def _definition_patterns(ext: str, name: str) -> List[re.Pattern]:
@@ -94,6 +109,7 @@ def _definition_patterns(ext: str, name: str) -> List[re.Pattern]:
         ],
     }
     generic = [
+        re.compile(r"^\s*" + n + r"\s*$"),            # whole line, e.g. a YAML `name: x` entry
         re.compile(r"^\s*" + n + r"\s*[:=]"),          # yaml / conf / toml / csv keys
         re.compile(r"^\s*CONFIG_[A-Z0-9_]*" + n + r"\b"),  # sdkconfig keys
     ]
@@ -180,6 +196,24 @@ class Resolver:
         self._cache[rel] = lines
         return lines
 
+    def is_repo_path(self, token: str) -> bool:
+        """True when ``token`` should be checked as a bare repository path."""
+        if "/" not in token:
+            return bool(ROOT_DOC_RE.match(token))
+        first = token.split("/", 1)[0]
+        return bool(first) and first not in (".", "..") and (self.root / first).exists()
+
+    def path_exists(self, rel: str) -> bool:
+        target = self.root / rel.rstrip("/")
+        try:
+            target_resolved = target.resolve()
+        except OSError:
+            return False
+        root_resolved = self.root.resolve()
+        if root_resolved not in target_resolved.parents and target_resolved != root_resolved:
+            return False
+        return target_resolved.exists()
+
     def resolve(self, rel: str, symbol: str) -> Tuple[str, Optional[int]]:
         lines = self._read(rel)
         if lines is None:
@@ -191,9 +225,15 @@ class Resolver:
         return (STATUS_PARTIAL if partial else STATUS_OK), line
 
 
-def scan(text: str) -> List[dict]:
+def scan(text: str, resolver: Optional["Resolver"] = None) -> List[dict]:
     """Collect every reference in ``text`` with its span and current form."""
     refs: List[dict] = []
+    if resolver is not None:
+        for m in BARE_RE.finditer(text):
+            token = m.group("path")
+            if resolver.is_repo_path(token):
+                refs.append({"span": m.span(), "path": token, "symbol": "",
+                             "line": None, "form": "path"})
     for m in UNRESOLVED_RE.finditer(text):
         refs.append({"span": m.span(), "path": m.group("path"), "symbol": m.group("symbol"),
                      "line": None, "form": "unresolved"})
@@ -210,12 +250,23 @@ def line_of(text: str, offset: int) -> int:
 
 def process_file(md_path: Path, resolver: Resolver, rewrite: bool) -> Tuple[List[dict], bool]:
     text = md_path.read_text(encoding="utf-8")
-    refs = scan(text)
+    refs = scan(text, resolver)
     report: List[dict] = []
     pieces: List[str] = []
     cursor = 0
     changed = False
     for ref in refs:
+        if ref["form"] == "path":
+            ok = resolver.path_exists(ref["path"])
+            report.append({
+                "file": str(md_path),
+                "md_line": line_of(text, ref["span"][0]),
+                "path": ref["path"],
+                "symbol": "",
+                "status": STATUS_PATH_OK if ok else STATUS_NO_PATH,
+                "line": 0 if ok else None,
+            })
+            continue
         status, line = resolver.resolve(ref["path"], ref["symbol"])
         entry = {
             "file": str(md_path),
@@ -243,13 +294,19 @@ def process_file(md_path: Path, resolver: Resolver, rewrite: bool) -> Tuple[List
     return report, changed
 
 
+def _label(r: dict) -> str:
+    if r["status"] in (STATUS_PATH_OK, STATUS_NO_PATH):
+        return r["path"]
+    return r["path"] + "::" + r["symbol"]
+
+
 def print_report(report: List[dict], quiet: bool) -> None:
-    width = max([len(r["path"] + "::" + r["symbol"]) for r in report] + [10])
+    width = max([len(_label(r)) for r in report] + [10])
     for r in report:
-        if quiet and r["status"] in (STATUS_OK, STATUS_PARTIAL):
+        if quiet and r["status"] in (STATUS_OK, STATUS_PARTIAL, STATUS_PATH_OK):
             continue
-        ref = r["path"] + "::" + r["symbol"]
-        where = "" if r["line"] is None else " -> {}:{}".format(r["path"], r["line"])
+        ref = _label(r)
+        where = "" if not r["line"] else " -> {}:{}".format(r["path"], r["line"])
         print("  [{:<23}] L{:<5} {:<{w}}{}".format(r["status"], r["md_line"], ref, where, w=width))
 
 
@@ -261,7 +318,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     mode.add_argument("--rewrite", action="store_true", help="rewrite resolved references in place")
     parser.add_argument("--root", default=str(here.parent), help="repository root (default: parent of scripts/)")
     parser.add_argument("--file", action="append", default=None,
-                        help="markdown file to scan, relative to root (default: THREAT_MODEL.md); repeatable")
+                        help="markdown file to scan, relative to root "
+                             "(default: THREAT_MODEL.md, COMPLIANCE_MATRIX.md, ARCHITECTURE.md); repeatable")
     parser.add_argument("--strict", action="store_true", help="exit 1 if any reference is unresolved")
     parser.add_argument("--json", action="store_true", help="emit a JSON report instead of text")
     parser.add_argument("--quiet", action="store_true", help="only list unresolved references and the summary")
@@ -271,7 +329,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not root.is_dir():
         print("error: repository root not found: {}".format(root), file=sys.stderr)
         return 2
-    files = args.file or ["THREAT_MODEL.md"]
+    files = args.file or DEFAULT_FILES
     md_paths = [root / f for f in files]
     missing = [p for p in md_paths if not p.is_file()]
     if missing:
@@ -287,20 +345,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         full_report.extend(report)
         any_changed = any_changed or changed
 
-    resolved = [r for r in full_report if r["line"] is not None]
-    unresolved = [r for r in full_report if r["line"] is None]
+    paths = [r for r in full_report if r["status"] in (STATUS_PATH_OK, STATUS_NO_PATH)]
+    symbols = [r for r in full_report if r["status"] not in (STATUS_PATH_OK, STATUS_NO_PATH)]
+    resolved = [r for r in symbols if r["line"] is not None]
+    unresolved = [r for r in symbols if r["line"] is None]
     no_file = [r for r in unresolved if r["status"] == STATUS_NO_FILE]
     no_symbol = [r for r in unresolved if r["status"] == STATUS_NO_SYMBOL]
+    no_path = [r for r in paths if r["status"] == STATUS_NO_PATH]
 
     if args.json:
         json.dump({
             "mode": "rewrite" if args.rewrite else "check",
             "root": str(root),
-            "total": len(full_report),
+            "files": [str(p) for p in md_paths],
+            "total": len(symbols),
             "resolved": len(resolved),
             "unresolved": len(unresolved),
             "missing_file": len(no_file),
             "symbol_not_found": len(no_symbol),
+            "bare_paths": len(paths),
+            "missing_paths": len(no_path),
             "rewritten": any_changed,
             "references": full_report,
         }, sys.stdout, indent=2)
@@ -309,12 +373,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("resolve_threat_refs: {} mode, root={}".format("rewrite" if args.rewrite else "check", root))
         print_report(full_report, quiet=args.quiet)
         print()
-        print("summary: {} references, {} resolved, {} unresolved ({} missing file, {} symbol not found)".format(
-            len(full_report), len(resolved), len(unresolved), len(no_file), len(no_symbol)))
+        print("summary: {} references, {} resolved, {} unresolved ({} missing file, {} symbol not found); "
+              "{} bare paths, {} missing".format(
+                  len(symbols), len(resolved), len(unresolved), len(no_file), len(no_symbol),
+                  len(paths), len(no_path)))
         if args.rewrite:
             print("rewrite: {}".format("file(s) updated" if any_changed else "nothing to change"))
 
-    if args.strict and unresolved:
+    if args.strict and (unresolved or no_path):
         return 1
     return 0
 
