@@ -5,6 +5,7 @@
 {{- $healthPort := index $svc.ports $svc.health.port }}
 {{- $secretRequired := or $.Values.externalSecrets.enabled $svc.secret.create (ne $svc.secret.existingSecret "") }}
 {{- $mountDeviceCa := has $name $.Values.deviceCa.mountInto }}
+{{- $mountPkiCa := and (eq $name "pki") $.Values.pkiCa.existingSecret }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -163,6 +164,11 @@ spec:
               mountPath: {{ $.Values.deviceCa.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if $mountPkiCa }}
+            - name: pki-ca
+              mountPath: {{ $.Values.pkiCa.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- with $svc.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -182,6 +188,12 @@ spec:
         - name: device-ca
           secret:
             secretName: {{ $.Values.deviceCa.existingSecret }}
+        {{- end }}
+        {{- if $mountPkiCa }}
+        - name: pki-ca
+          secret:
+            secretName: {{ $.Values.pkiCa.existingSecret }}
+            defaultMode: 0440
         {{- end }}
         {{- with $svc.extraVolumes }}
         {{- toYaml . | nindent 8 }}

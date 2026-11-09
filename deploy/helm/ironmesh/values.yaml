@@ -130,7 +130,10 @@ kafka:
     alerts: im.alerts
     audit: im.audit
     commands: im.commands
-  # Topics are created by the bridge on boot (idempotent) with these settings.
+    campaigns: im.campaigns
+  # No IronMesh service creates topics: create them with these settings out of band
+  # (Terraform for MSK, `rpk topic create` for Redpanda; deploy/docker/docker-compose.yml
+  # redpanda-init shows the list).
   partitions: 12
   replicationFactor: 3
 
@@ -189,6 +192,32 @@ deviceCa:
   mountInto:
     - pki
     - policy
+
+# CA certificates and the bundle key file for the pki service, in the pkictl layout
+# (services/pki/README.md): root-ca.crt, factory-ca.crt, device-ca.crt, services-ca.crt and
+# bundle.key.json (Ed25519, encrypted under PKI_FILE_KMS_PASSPHRASE). With PKI_KMS=file the
+# Device/Services CA *.key.json files must be in the same Secret. Mounted at
+# services.pki.config.PKI_CA_DIR. Created by the ceremony operator from the key ceremony output,
+# never from values and never by External Secrets.
+#
+# Bundle key custody on AWS: Terraform provisions the Secrets Manager secret
+# <prefix>pki/bundle-signing-key (Ed25519 seed, encrypted under the symmetric CMK bundle_kek,
+# readable only by the pki IRSA role). The pki service can only load the bundle key from
+# PKI_BUNDLE_KEY_FILE today; reading the seed from Secrets Manager at start needs a new pki
+# setting (see the integration report), until then the file in this Secret is authoritative.
+pkiCa:
+  existingSecret: ironmesh-pki-ca
+  mountPath: /etc/ironmesh/ca
+
+# Schema migrations (post-install / pre-upgrade hook): registry (Alembic,
+# REGISTRY_MIGRATION_DATABASE_URL) and ota (python -m ironmesh_ota.migrate,
+# OTA_MIGRATION_DATABASE_URL), both owner DSNs read from the service Secret. anomaly migrates
+# itself at start when ANOMALY_DATABASE_MIGRATE_URL is in its Secret; pki always migrates itself
+# with PKI_DATABASE_URL.
+migrations:
+  enabled: true
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
 
 # emptyDir size limit for every writable directory (services.<name>.writableDirs).
 writableDirSizeLimit: 512Mi
@@ -287,48 +316,59 @@ services:
       data: {}
     # Documented secret keys expected in the Secret (informational, validated in NOTES).
     secretKeys:
-      - PKI_DB_PASSWORD
+      # pgx DSN of the pki database; the service applies its embedded migrations with it at start.
+      - PKI_DATABASE_URL
+      # Revocation push to the policy service (= POLICY_PKI_TOKEN / POLICY_PKI_HMAC_SECRET).
       - PKI_POLICY_TOKEN
-      - PKI_POLICY_HMAC_SECRET
+      - PKI_POLICY_HMAC_KEY
+      # This service's entry in REGISTRY_INTERNAL_TOKENS ("pki").
       - PKI_REGISTRY_TOKEN
+      # Always required: the bundle key file is encrypted with it even with PKI_KMS=awskms.
       - PKI_FILE_KMS_PASSPHRASE
+      # PKI_KMS=softhsm only.
+      - PKI_PKCS11_PIN
     # Paths the process writes to (read-only root filesystem otherwise).
     writableDirs:
       - /tmp
-      - /var/lib/ironmesh/pki
+    # Names and defaults mirror services/pki/internal/config/config.go.
     config:
+      # development | staging | production (production refuses PKI_KMS=file).
+      PKI_ENV: development
       PKI_LISTEN_MTLS: ":8443"
       PKI_LISTEN_PLAIN: ":8444"
-      # aws-kms | file | pkcs11
-      PKI_KEY_PROVIDER: aws-kms
-      PKI_KMS_ROOT_CA_KEY_ID: ""
-      PKI_KMS_FACTORY_CA_KEY_ID: ""
-      PKI_KMS_DEVICE_CA_KEY_ID: ""
-      PKI_KMS_SERVICES_CA_KEY_ID: ""
-      PKI_KMS_BUNDLE_KEY_ID: ""
-      PKI_KEY_DIR: /var/lib/ironmesh/pki/keys
+      # awskms | softhsm | file (development only)
+      PKI_KMS: awskms
+      # CA certificates (+ bundle key file) mounted from pkiCa.existingSecret.
+      PKI_CA_DIR: /etc/ironmesh/ca
+      # Ed25519 bundle key: pkictl key file (file KMS envelope, PKI_FILE_KMS_PASSPHRASE).
+      PKI_BUNDLE_KEY_FILE: /etc/ironmesh/ca/bundle.key.json
+      # Device / Services CA key references: KMS alias or ARN (awskms), PKCS#11 label (softhsm) or
+      # file path (file). Empty = alias/ironmesh-device-ca, alias/ironmesh-services-ca, ...
+      PKI_KEY_DEVICE_CA: ""
+      PKI_KEY_SERVICES_CA: ""
       # Base URL embedded in CRL DP / AIA extensions (empty = https://pki.<domain>).
       PKI_PUBLIC_BASE_URL: ""
       PKI_POLICY_URL: http://ironmesh-policy:8081
       PKI_REGISTRY_URL: http://ironmesh-registry:8000
-      PKI_CRL_PUBLISH_INTERVAL: 60s
-      PKI_CRL_NEXT_UPDATE: 24h
-      PKI_OCSP_ENABLED: "true"
       PKI_NONCE_TTL: 120s
-      # Contract name (DESIGN_CONTRACT.md §2), bounded 7-30 d by the service.
-      IRONMESH_OPERATIONAL_CERT_TTL: 336h
-      PKI_DEVICE_CA_BUNDLE_FILE: /etc/ironmesh/device-ca/ca.crt
-      PKI_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
-      PKI_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
-      PKI_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
-      PKI_DB_HOST: ""
-      PKI_DB_PORT: ""
-      PKI_DB_NAME: pki
-      PKI_DB_USER: pki_app
-      PKI_DB_SSLMODE: ""
-      PKI_DB_IAM_AUTH: ""
+      # Operational certificate lifetime (DESIGN_CONTRACT.md section 2), bounded 168h-720h.
+      PKI_OPERATIONAL_CERT_TTL: 336h
+      # Listener certificate: the cert-manager Services CA identity.
+      PKI_SERVER_CERT_FILE: /etc/ironmesh/tls/tls.crt
+      PKI_SERVER_KEY_FILE: /etc/ironmesh/tls/tls.key
+      # Services CA client CNs allowed on the management API (registry revoke-all, anomaly / ota
+      # certificate lookups).
+      PKI_MGMT_ALLOWED_CNS: svc-registry,svc-policy,svc-console,svc-anomaly,svc-ota
+      # PEM file of P-256 keys trusted for ES256 bearer JWTs (aud=pki); empty = mTLS only.
+      PKI_MGMT_JWT_PUBLIC_KEY_FILE: ""
+      PKI_DEFAULT_ALLOW_SOFTWARE_KEYS: "false"
+      PKI_TPM_AK_CA_FILE: ""
+      PKI_TPM_ALLOWED_PCR_DIGESTS: ""
+      # Broker advertised in the trust bundle (empty = mqtt.<domain>).
+      PKI_BROKER_HOST: ""
+      PKI_BROKER_PORT: "8883"
       PKI_LOG_LEVEL: info
-      PKI_LOG_FORMAT: json
+      PKI_SHUTDOWN_TIMEOUT: 15s
     extraEnv: []
     extraVolumes: []
     extraVolumeMounts: []
@@ -393,8 +433,11 @@ services:
       - POLICY_EMQX_API_SECRET
       - POLICY_PKI_HMAC_SECRET
       - POLICY_PKI_TOKEN
+      # This service's entry in REGISTRY_INTERNAL_TOKENS ("policy").
       - POLICY_REGISTRY_TOKEN
       - POLICY_HOOK_TOKEN
+      # P-256 public key(s) (PEM) verifying management-API JWTs (aud=policy); unset = /v1/* 503.
+      - POLICY_JWT_PUBLIC_KEY_PEM
     writableDirs:
       - /tmp
       - /var/lib/ironmesh/policy
@@ -413,14 +456,10 @@ services:
       POLICY_AUTHZ_CACHE_TTL: 10s
       POLICY_SHUTDOWN_TIMEOUT: 10s
       POLICY_LOG_LEVEL: info
-      POLICY_KAFKA_BROKERS: ""
-      POLICY_KAFKA_TOPIC_AUTH: im.auth
-      POLICY_KAFKA_TOPIC_AUDIT: im.audit
-      POLICY_KAFKA_SASL_MECHANISM: ""
-      POLICY_KAFKA_TLS_ENABLED: ""
-      POLICY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
-      POLICY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
-      POLICY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      # Networks service principals (svc-bridge, svc-registry) may connect from: the pod network.
+      POLICY_SERVICE_CIDRS: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8
+      # Optional required `iss` of management-API JWTs (cmd/policy/main.go).
+      POLICY_JWT_ISSUER: ""
     extraEnv: []
     extraVolumes: []
     extraVolumeMounts: []
@@ -481,32 +520,32 @@ services:
       create: false
       data: {}
     secretKeys:
-      - BRIDGE_HOOK_TOKEN
-      - BRIDGE_KAFKA_SASL_PASSWORD
+      # Bearer EMQX presents on POST /emqx/events.
+      - BRIDGE_EVENTS_TOKEN
     writableDirs:
       - /tmp
     config:
+      # Names and defaults mirror services/bridge/internal/config/config.go.
       BRIDGE_LISTEN: ":8082"
       BRIDGE_MQTT_URL: ssl://ironmesh-emqx:8883
       BRIDGE_MQTT_CLIENT_ID: svc-bridge
-      BRIDGE_SHARED_SUBSCRIPTION: "$share/bridge/im/v1/#"
+      BRIDGE_MQTT_TOPIC: "$share/bridge/im/v1/#"
       BRIDGE_MQTT_KEEPALIVE: 60s
-      BRIDGE_KAFKA_BROKERS: ""
-      BRIDGE_KAFKA_TOPIC_INGEST: im.ingest
-      BRIDGE_KAFKA_TOPIC_AUTH: im.auth
-      BRIDGE_KAFKA_TOPIC_AUDIT: im.audit
-      # Topics created idempotently on boot (bridge owns topic creation; see Terraform README).
-      BRIDGE_KAFKA_TOPICS_CREATE: im.ingest,im.auth,im.alerts,im.audit,im.commands
-      BRIDGE_KAFKA_TOPIC_PARTITIONS: "12"
-      BRIDGE_KAFKA_TOPIC_REPLICATION: "3"
-      BRIDGE_KAFKA_SASL_MECHANISM: ""
-      BRIDGE_KAFKA_SASL_USERNAME: ""
-      BRIDGE_KAFKA_TLS_ENABLED: ""
+      BRIDGE_MQTT_SESSION_EXPIRY: 168h
       BRIDGE_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
       BRIDGE_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
       BRIDGE_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      # Expected broker SAN (empty = host of BRIDGE_MQTT_URL).
+      BRIDGE_TLS_SERVER_NAME: ""
+      BRIDGE_KAFKA_BROKERS: ""
+      BRIDGE_KAFKA_INGEST_TOPIC: im.ingest
+      BRIDGE_KAFKA_AUTH_TOPIC: im.auth
+      # TLS to Kafka (empty = kafka.tlsEnabled); needs BRIDGE_KAFKA_TLS_CA_FILE when true.
+      BRIDGE_KAFKA_TLS: ""
+      BRIDGE_KAFKA_TLS_CA_FILE: ""
+      BRIDGE_MAX_INFLIGHT: "1024"
       BRIDGE_LOG_LEVEL: info
-      BRIDGE_LOG_FORMAT: json
+      BRIDGE_SHUTDOWN_TIMEOUT: 15s
     extraEnv: []
     extraVolumes: []
     extraVolumeMounts: []
@@ -569,12 +608,20 @@ services:
       data: {}
     secretKeys:
       - REGISTRY_DB_PASSWORD
-      - REGISTRY_INTERNAL_TOKEN
+      # JSON {"pki": "<PKI_REGISTRY_TOKEN>", "policy": "<POLICY_REGISTRY_TOKEN>",
+      # "anomaly": "<ANOMALY_INTERNAL_TOKEN>"}; every caller has its own, distinct token.
+      - REGISTRY_INTERNAL_TOKENS
       - REGISTRY_EMQX_API_KEY
       - REGISTRY_EMQX_API_SECRET
+      - REGISTRY_KAFKA_SASL_PASSWORD
+      # Schema-owner DSN for the migration hook (Alembic only, never used by the service).
+      - REGISTRY_MIGRATION_DATABASE_URL
     writableDirs:
       - /tmp
+      - /var/lib/ironmesh/registry
+    # Names and defaults mirror services/registry/app/settings.py.
     config:
+      REGISTRY_ENVIRONMENT: dev
       REGISTRY_LISTEN_PORT: "8000"
       REGISTRY_DB_HOST: ""
       REGISTRY_DB_PORT: ""
@@ -588,6 +635,7 @@ services:
       REGISTRY_KAFKA_TOPIC_ALERTS: im.alerts
       REGISTRY_KAFKA_TOPIC_AUDIT: im.audit
       REGISTRY_KAFKA_TOPIC_COMMANDS: im.commands
+      REGISTRY_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
       REGISTRY_KAFKA_CONSUMER_GROUP: registry-ingest
       REGISTRY_KAFKA_SASL_MECHANISM: ""
       REGISTRY_KAFKA_TLS_ENABLED: ""
@@ -597,10 +645,24 @@ services:
       REGISTRY_EMQX_API_URL: http://ironmesh-emqx:18083
       REGISTRY_OIDC_ISSUER: ""
       REGISTRY_OIDC_AUDIENCE: ironmesh-api
+      # Empty = discovered from <issuer>/.well-known/openid-configuration.
+      REGISTRY_OIDC_JWKS_URL: ""
       REGISTRY_PUBLIC_BASE_URL: ""
       REGISTRY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
       REGISTRY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
       REGISTRY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+      # ES256 key for the registry's own service JWTs (aud=pki / aud=ota): the Services CA key.
+      REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE: /etc/ironmesh/tls/tls.key
+      # Downlink publisher (MQTT 5 over mTLS with the REGISTRY_TLS_* identity, CN svc-registry).
+      REGISTRY_MQTT_HOST: ironmesh-emqx
+      REGISTRY_MQTT_PORT: "8883"
+      REGISTRY_MQTT_CLIENT_ID: svc-registry
+      # Tenant key wrapping: aws (KMS) in every real environment; local = KEK file (dev only,
+      # lost with the emptyDir on restart).
+      REGISTRY_KMS_BACKEND: local
+      REGISTRY_KMS_LOCAL_KEK_FILE: /var/lib/ironmesh/registry/registry-kek.bin
+      REGISTRY_KMS_AWS_KEY_ID: ""
+      REGISTRY_KMS_AWS_REGION: ""
       REGISTRY_LOG_LEVEL: info
       REGISTRY_LOG_FORMAT: json
     extraEnv: []
@@ -667,11 +729,20 @@ services:
       - OTA_INTERNAL_TOKEN
       - OTA_EMQX_API_KEY
       - OTA_EMQX_API_SECRET
+      # OTA_SIGNING_PROVIDER=file only (development).
       - OTA_SIGNING_PRIVATE_KEY_PEM
+      # Signs filesystem-store download links (OTA_ARTIFACT_STORE=filesystem only).
+      - OTA_DOWNLOAD_HMAC_SECRET
+      - OTA_KAFKA_SASL_PASSWORD
+      # Schema-owner DSN for the migration hook (python -m ironmesh_ota.migrate).
+      - OTA_MIGRATION_DATABASE_URL
     writableDirs:
       - /tmp
       - /var/lib/ironmesh/ota
+    # Names and defaults mirror services/ota/src/ironmesh_ota/settings.py.
     config:
+      # dev | test | prod (prod enforces S3, KMS-wrapped keys, OIDC, Kafka, registry and PKI).
+      OTA_ENV: dev
       OTA_LISTEN_PORT: "8001"
       OTA_DB_HOST: ""
       OTA_DB_PORT: ""
@@ -683,6 +754,7 @@ services:
       OTA_KAFKA_TOPIC_INGEST: im.ingest
       OTA_KAFKA_TOPIC_COMMANDS: im.commands
       OTA_KAFKA_TOPIC_AUDIT: im.audit
+      OTA_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
       OTA_KAFKA_CONSUMER_GROUP: ota-status
       OTA_KAFKA_SASL_MECHANISM: ""
       OTA_KAFKA_TLS_ENABLED: ""
@@ -690,6 +762,8 @@ services:
       OTA_ARTIFACT_STORE: s3
       OTA_ARTIFACT_BUCKET: ""
       OTA_S3_KMS_KEY_ARN: ""
+      OTA_S3_REGION: ""
+      OTA_AWS_REGION: ""
       OTA_ARTIFACT_PATH: /var/lib/ironmesh/ota/artifacts
       # kms-wrapped | file (dev only)
       OTA_SIGNING_PROVIDER: kms-wrapped
@@ -697,17 +771,25 @@ services:
       OTA_SIGNING_KEY_SECRET_ARN: ""
       OTA_SIGNING_KEY_ID: fw-ed25519-1
       OTA_PQ_SIGNING_ENABLED: "false"
+      # Tenant command keys (OtaNotify signing): kms-wrapped | file (dev only).
+      OTA_TENANT_KEYS_PROVIDER: kms-wrapped
+      OTA_TENANT_KEYS_KEK_KEY_ID: ""
+      OTA_TENANT_KEY_SECRET_PREFIX: ""
       OTA_PUBLIC_BASE_URL: ""
       OTA_PKI_URL: https://ironmesh-pki:8443
       OTA_REGISTRY_URL: http://ironmesh-registry:8000
       OTA_EMQX_API_URL: http://ironmesh-emqx:18083
       OTA_OIDC_ISSUER: ""
       OTA_OIDC_AUDIENCE: ironmesh-api
+      OTA_OIDC_JWKS_URL: ""
       OTA_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
       OTA_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
       OTA_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
       OTA_LOG_LEVEL: info
       OTA_LOG_FORMAT: json
+      # OTLP traces (endpoint empty = otelCollector.endpoint).
+      OTA_OTEL_ENABLED: "true"
+      OTA_OTEL_ENDPOINT: ""
     extraEnv: []
     extraVolumes: []
     extraVolumeMounts: []
@@ -769,12 +851,20 @@ services:
       data: {}
     secretKeys:
       - ANOMALY_DB_PASSWORD
+      # This service's entry in REGISTRY_INTERNAL_TOKENS ("anomaly").
       - ANOMALY_INTERNAL_TOKEN
       - ANOMALY_SIEM_WEBHOOK_URL
+      # HMAC key for X-IronMesh-Signature; webhooks are disabled without it.
+      - ANOMALY_SIEM_WEBHOOK_SECRET
+      - ANOMALY_KAFKA_SASL_PASSWORD
+      # Owner DSN: when present the schema is applied at start-up.
+      - ANOMALY_DATABASE_MIGRATE_URL
     writableDirs:
       - /tmp
       - /var/lib/ironmesh/anomaly
+    # Names and defaults mirror services/anomaly/src/ironmesh_anomaly/config.py.
     config:
+      ANOMALY_ENVIRONMENT: dev
       ANOMALY_LISTEN_PORT: "8002"
       ANOMALY_DB_HOST: ""
       ANOMALY_DB_PORT: ""
@@ -782,6 +872,8 @@ services:
       ANOMALY_DB_USER: anomaly_app
       ANOMALY_DB_SSLMODE: ""
       ANOMALY_DB_IAM_AUTH: ""
+      # Region for RDS IAM auth tokens (ANOMALY_DB_IAM_AUTH=true).
+      ANOMALY_DB_REGION: ""
       ANOMALY_KAFKA_BROKERS: ""
       ANOMALY_KAFKA_TOPIC_INGEST: im.ingest
       ANOMALY_KAFKA_TOPIC_AUTH: im.auth
@@ -801,6 +893,7 @@ services:
       ANOMALY_MODEL_DIR: /var/lib/ironmesh/anomaly/models
       ANOMALY_OIDC_ISSUER: ""
       ANOMALY_OIDC_AUDIENCE: ironmesh-api
+      ANOMALY_OIDC_JWKS_URL: ""
       ANOMALY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
       ANOMALY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
       ANOMALY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
@@ -846,8 +939,9 @@ services:
     health:
       port: http
       scheme: HTTP
-      livenessPath: /healthz
-      readinessPath: /readyz
+      # The console serves a single health route (console/src/app/api/health/route.ts).
+      livenessPath: /api/health
+      readinessPath: /api/health
       startupFailureThreshold: 30
     metrics:
       enabled: false
@@ -876,6 +970,8 @@ services:
       HOSTNAME: 0.0.0.0
       NODE_ENV: production
       NEXT_TELEMETRY_DISABLED: "1"
+      # Behind the ingress / ALB (TLS terminated upstream): trust X-Forwarded-Host/Proto.
+      AUTH_TRUST_HOST: "true"
       # Server-side proxy targets (API_CONTRACT.md §0: the browser never calls services directly).
       CONSOLE_REGISTRY_URL: http://ironmesh-registry:8000
       CONSOLE_OTA_URL: http://ironmesh-ota:8001
@@ -887,7 +983,6 @@ services:
       NEXT_PUBLIC_APP_URL: ""
       NEXT_PUBLIC_OIDC_ISSUER: ""
       NEXT_PUBLIC_OIDC_CLIENT_ID: ironmesh-console
-      NEXT_PUBLIC_OIDC_AUDIENCE: ironmesh-api
       NEXT_PUBLIC_ENVIRONMENT: ""
     extraEnv: []
     extraVolumes: []
@@ -985,7 +1080,8 @@ emqx:
     EMQX_AUTHORIZATION__SOURCES__1__BODY__RETAIN: "${retain}"
     EMQX_AUTHORIZATION__SOURCES__1__CONNECT_TIMEOUT: 5s
     EMQX_AUTHORIZATION__SOURCES__1__REQUEST_TIMEOUT: 5s
-    # Management API key for the policy service (session kicks); file = "key:secret:role" lines.
+    # Management API keys for policy (session kicks), registry and ota (publish); file =
+    # "key:secret:role" lines (templates/externalsecret.yaml).
     EMQX_API_KEY__BOOTSTRAP_FILE: /etc/ironmesh/emqx-api-keys/api-keys
     EMQX_PROMETHEUS__ENABLE_BASIC_AUTH: "false"
     EMQX_OPENTELEMETRY__EXPORTER__ENDPOINT: http://otel-collector.observability.svc.cluster.local:4317

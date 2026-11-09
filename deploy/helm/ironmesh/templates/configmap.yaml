@@ -20,19 +20,25 @@ that an environment only has to set them once.
 {{- if not (index $data (printf "%s_DB_SSLMODE" $prefix)) }}{{ $_ := set $data (printf "%s_DB_SSLMODE" $prefix) $.Values.database.sslMode }}{{ end }}
 {{- if not (index $data (printf "%s_DB_IAM_AUTH" $prefix)) }}{{ $_ := set $data (printf "%s_DB_IAM_AUTH" $prefix) (toString $.Values.database.iamAuth) }}{{ end }}
 {{- end }}
-{{- /* Kafka defaults */}}
+{{- /* Kafka defaults: only for the keys a service actually declares (names differ per service:
+the bridge reads BRIDGE_KAFKA_TLS and has no SASL setting). */}}
 {{- if hasKey $svc.config (printf "%s_KAFKA_BROKERS" $prefix) }}
 {{- if not (index $data (printf "%s_KAFKA_BROKERS" $prefix)) }}{{ $_ := set $data (printf "%s_KAFKA_BROKERS" $prefix) (include "ironmesh.kafkaBootstrap" $) }}{{ end }}
-{{- if not (index $data (printf "%s_KAFKA_SASL_MECHANISM" $prefix)) }}{{ $_ := set $data (printf "%s_KAFKA_SASL_MECHANISM" $prefix) $.Values.kafka.saslMechanism }}{{ end }}
-{{- if not (index $data (printf "%s_KAFKA_TLS_ENABLED" $prefix)) }}{{ $_ := set $data (printf "%s_KAFKA_TLS_ENABLED" $prefix) (toString $.Values.kafka.tlsEnabled) }}{{ end }}
+{{- $sasl := printf "%s_KAFKA_SASL_MECHANISM" $prefix }}
+{{- if and (hasKey $svc.config $sasl) (not (index $data $sasl)) }}{{ $_ := set $data $sasl $.Values.kafka.saslMechanism }}{{ end }}
+{{- range $tlsKey := list (printf "%s_KAFKA_TLS_ENABLED" $prefix) (printf "%s_KAFKA_TLS" $prefix) }}
+{{- if and (hasKey $svc.config $tlsKey) (not (index $data $tlsKey)) }}{{ $_ := set $data $tlsKey (toString $.Values.kafka.tlsEnabled) }}{{ end }}
+{{- end }}
 {{- end }}
 {{- /* Public URLs */}}
 {{- if eq $name "pki" }}
 {{- if not (index $data "PKI_PUBLIC_BASE_URL") }}{{ $_ := set $data "PKI_PUBLIC_BASE_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "pki"))) }}{{ end }}
+{{- if not (index $data "PKI_BROKER_HOST") }}{{ $_ := set $data "PKI_BROKER_HOST" (include "ironmesh.host" (dict "root" $ "name" "mqtt")) }}{{ end }}
 {{- else if eq $name "registry" }}
 {{- if not (index $data "REGISTRY_PUBLIC_BASE_URL") }}{{ $_ := set $data "REGISTRY_PUBLIC_BASE_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "registry"))) }}{{ end }}
 {{- else if eq $name "ota" }}
 {{- if not (index $data "OTA_PUBLIC_BASE_URL") }}{{ $_ := set $data "OTA_PUBLIC_BASE_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "ota"))) }}{{ end }}
+{{- if and (hasKey $svc.config "OTA_OTEL_ENDPOINT") (not (index $data "OTA_OTEL_ENDPOINT")) }}{{ $_ := set $data "OTA_OTEL_ENDPOINT" $.Values.otelCollector.endpoint }}{{ end }}
 {{- else if eq $name "console" }}
 {{- if not (index $data "NEXT_PUBLIC_APP_URL") }}{{ $_ := set $data "NEXT_PUBLIC_APP_URL" (printf "https://%s" (include "ironmesh.host" (dict "root" $ "name" "console"))) }}{{ end }}
 {{- if not (index $data "NEXT_PUBLIC_ENVIRONMENT") }}{{ $_ := set $data "NEXT_PUBLIC_ENVIRONMENT" $.Values.global.environment }}{{ end }}

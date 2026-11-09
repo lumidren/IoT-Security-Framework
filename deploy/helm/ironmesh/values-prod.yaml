@@ -85,7 +85,8 @@ services:
         cpu: "2"
         memory: 1Gi
     config:
-      PKI_KEY_PROVIDER: aws-kms
+      PKI_ENV: production
+      PKI_KMS: awskms
       PKI_LOG_LEVEL: info
   policy:
     replicas: 3
@@ -104,8 +105,7 @@ services:
         cpu: "2"
         memory: 1Gi
     config:
-      POLICY_KAFKA_SASL_MECHANISM: AWS_MSK_IAM
-      POLICY_KAFKA_TLS_ENABLED: "true"
+      POLICY_LOG_LEVEL: info
   bridge:
     replicas: 3
     autoscaling:
@@ -124,10 +124,9 @@ services:
         cpu: "2"
         memory: 1Gi
     config:
-      BRIDGE_KAFKA_SASL_MECHANISM: AWS_MSK_IAM
-      BRIDGE_KAFKA_TLS_ENABLED: "true"
-      BRIDGE_KAFKA_TOPIC_PARTITIONS: "12"
-      BRIDGE_KAFKA_TOPIC_REPLICATION: "3"
+      # The bridge has no SASL support (services/bridge/internal/config): TLS only.
+      BRIDGE_KAFKA_TLS: "true"
+      BRIDGE_KAFKA_TLS_CA_FILE: /etc/ssl/certs/ca-certificates.crt
   registry:
     replicas: 3
     autoscaling:
@@ -145,7 +144,10 @@ services:
         cpu: "2"
         memory: 2Gi
     config:
+      REGISTRY_ENVIRONMENT: prod
       REGISTRY_OIDC_ISSUER: https://auth.ironmesh.dev/realms/ironmesh
+      REGISTRY_KMS_BACKEND: aws
+      REGISTRY_KMS_AWS_REGION: eu-west-1
   ota:
     replicas: 3
     autoscaling:
@@ -163,8 +165,12 @@ services:
         cpu: "2"
         memory: 2Gi
     config:
+      OTA_ENV: prod
       OTA_ARTIFACT_STORE: s3
       OTA_SIGNING_PROVIDER: kms-wrapped
+      OTA_TENANT_KEYS_PROVIDER: kms-wrapped
+      OTA_AWS_REGION: eu-west-1
+      OTA_S3_REGION: eu-west-1
       OTA_PQ_SIGNING_ENABLED: "true"
       OTA_OIDC_ISSUER: https://auth.ironmesh.dev/realms/ironmesh
   anomaly:
@@ -185,8 +191,10 @@ services:
         memory: 4Gi
     config:
       # Keep dry-run until rules are tuned on prod traffic (SECURITY.md), then flip to "true".
+      ANOMALY_ENVIRONMENT: prod
       ANOMALY_AUTO_QUARANTINE: "false"
       ANOMALY_QUARANTINE_MIN_SEVERITY: high
+      ANOMALY_DB_REGION: eu-west-1
       ANOMALY_OIDC_ISSUER: https://auth.ironmesh.dev/realms/ironmesh
   console:
     replicas: 3

@@ -74,7 +74,8 @@ services:
       minReplicas: 2
       maxReplicas: 4
     config:
-      PKI_KEY_PROVIDER: aws-kms
+      PKI_ENV: staging
+      PKI_KMS: awskms
       PKI_LOG_LEVEL: debug
   policy:
     autoscaling:
@@ -82,31 +83,36 @@ services:
       maxReplicas: 4
     config:
       POLICY_LOG_LEVEL: debug
-      POLICY_KAFKA_SASL_MECHANISM: AWS_MSK_IAM
-      POLICY_KAFKA_TLS_ENABLED: "true"
   bridge:
     autoscaling:
       minReplicas: 2
       maxReplicas: 4
     config:
-      BRIDGE_KAFKA_SASL_MECHANISM: AWS_MSK_IAM
-      BRIDGE_KAFKA_TLS_ENABLED: "true"
-      # MSK Serverless caps partitions per topic; keep replication at the service default.
-      BRIDGE_KAFKA_TOPIC_PARTITIONS: "6"
+      # The bridge has no SASL support (services/bridge/internal/config): TLS only.
+      BRIDGE_KAFKA_TLS: "true"
+      BRIDGE_KAFKA_TLS_CA_FILE: /etc/ssl/certs/ca-certificates.crt
   registry:
     autoscaling:
       minReplicas: 2
       maxReplicas: 4
     config:
+      REGISTRY_ENVIRONMENT: staging
       REGISTRY_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
+      REGISTRY_KMS_BACKEND: aws
+      REGISTRY_KMS_AWS_REGION: eu-west-1
       REGISTRY_LOG_LEVEL: debug
   ota:
     autoscaling:
       minReplicas: 2
       maxReplicas: 3
     config:
+      # The prod profile's start-up checks (S3, KMS-wrapped keys, OIDC, Kafka, peers) apply.
+      OTA_ENV: prod
       OTA_ARTIFACT_STORE: s3
       OTA_SIGNING_PROVIDER: kms-wrapped
+      OTA_TENANT_KEYS_PROVIDER: kms-wrapped
+      OTA_AWS_REGION: eu-west-1
+      OTA_S3_REGION: eu-west-1
       OTA_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
       OTA_LOG_LEVEL: debug
   anomaly:
@@ -114,7 +120,9 @@ services:
       minReplicas: 2
       maxReplicas: 3
     config:
+      ANOMALY_ENVIRONMENT: staging
       ANOMALY_AUTO_QUARANTINE: "false"
+      ANOMALY_DB_REGION: eu-west-1
       ANOMALY_OIDC_ISSUER: https://auth.staging.ironmesh.dev/realms/ironmesh
       ANOMALY_LOG_LEVEL: debug
   console:
