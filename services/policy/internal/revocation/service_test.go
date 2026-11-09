@@ -412,12 +412,12 @@ func TestApplySerial(t *testing.T) {
 func TestApplyQueueFull(t *testing.T) {
 	env := newTestService(t, emqx.NewFake(), func(c *ServiceConfig) { c.QueueSize = 1 })
 	// Worker not started: the single slot fills with the first event.
-	if res, err := env.svc.Apply(context.Background(), Event{EventID: "e1", DeviceID: devA, RevokedAt: t0}, SourceEvent); err != nil || !res.KickQueued {
+	if res, err := env.svc.Apply(context.Background(), Event{EventID: "e1", DeviceID: devA, DeviceDeny: true, RevokedAt: t0}, SourceEvent); err != nil || !res.KickQueued {
 		t.Fatalf("first apply = %+v, %v", res, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	res, err := env.svc.Apply(ctx, Event{EventID: "e2", DeviceID: devB, RevokedAt: t0}, SourceEvent)
+	res, err := env.svc.Apply(ctx, Event{EventID: "e2", DeviceID: devB, DeviceDeny: true, RevokedAt: t0}, SourceEvent)
 	if !errors.Is(err, ErrQueueFull) || !res.Added {
 		t.Fatalf("second apply = %+v, %v; want added + ErrQueueFull", res, err)
 	}
@@ -466,5 +466,115 @@ func TestSnapshotPersistsAcrossRestart(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if len(fake2.Calls()) != 0 {
 		t.Error("already-kicked entries must not be kicked again on restart")
+	}
+}
+
+type fakeSessions map[string]string
+
+func (f fakeSessions) LiveSerial(id string) (string, bool) {
+	s, ok := f[id]
+	return s, ok
+}
+
+func TestDeviceDenyClassification(t *testing.T) {
+	for _, r := range []string{"keyCompromise", "cessationOfOperation", "key_compromise", "CessationOfOperation"} {
+		if !DeviceDenyReason(r) {
+			t.Errorf("%s should deny the device", r)
+		}
+	}
+	for _, r := range []string{"superseded", "unspecified", "affiliationChanged", ""} {
+		if DeviceDenyReason(r) {
+			t.Errorf("%s must be serial-scoped", r)
+		}
+	}
+	env := newTestService(t, emqx.NewFake(), nil)
+	cases := []struct {
+		ev         Event
+		deviceDeny bool
+	}{
+		{Event{EventID: "sup", Serial: "a1", DeviceID: "dev-0000000000000001", Reason: "superseded", RevokedAt: t0}, false},
+		{Event{EventID: "one", Serial: "a2", DeviceID: "dev-0000000000000002", Reason: "unspecified", RevokedAt: t0}, false},
+		{Event{EventID: "flag", Serial: "a3", DeviceID: "dev-0000000000000003", Reason: "superseded", DeviceDeny: true, RevokedAt: t0}, true},
+		{Event{EventID: "kc", Serial: "a4", DeviceID: "dev-0000000000000004", Reason: "keyCompromise", RevokedAt: t0}, true},
+		{Event{EventID: "cess", Serial: "a5", DeviceID: "dev-0000000000000005", Reason: "cessationOfOperation", RevokedAt: t0}, true},
+		{Event{EventID: "svc", Serial: "a6", DeviceID: "svc-bridge", Reason: "superseded", RevokedAt: t0}, false},
+	}
+	for _, c := range cases {
+		if _, err := env.svc.Apply(context.Background(), c.ev, SourceEvent); err != nil {
+			t.Fatal(err)
+		}
+		if got := env.cache.IsRevokedDevice(c.ev.DeviceID); got != c.deviceDeny {
+			t.Errorf("%s: device denied = %v, want %v", c.ev.EventID, got, c.deviceDeny)
+		}
+		if !env.cache.IsRevokedSerial(c.ev.Serial) {
+			t.Errorf("%s: serial must always be denied", c.ev.EventID)
+		}
+	}
+}
+
+// TestSerialScopedKick: a serial-scoped revocation kicks the session only when it runs on the
+// revoked certificate or its certificate is unknown; device denies always kick.
+func TestSerialScopedKick(t *testing.T) {
+	sessions := fakeSessions{devA: "0B02", devB: "a01"}
+	fake := emqx.NewFake()
+	env := newTestService(t, fake, func(c *ServiceConfig) { c.Sessions = sessions })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	env.svc.Start(ctx)
+	apply := func(ev Event) {
+		t.Helper()
+		if _, err := env.svc.Apply(ctx, ev, SourceEvent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// devA renewed: its live session uses b02, the superseded a01 is not live -> no kick.
+	apply(Event{EventID: "renewed", Serial: "a01", DeviceID: devA, Reason: "superseded", RevokedAt: t0})
+	waitFor(t, "skip", func() bool { e, _ := env.cache.Get("renewed"); return e.Kicked && e.KickSkipped })
+	// devB is still on the revoked certificate -> kicked.
+	apply(Event{EventID: "stale", Serial: "0a01", DeviceID: devB, Reason: "superseded", RevokedAt: t0})
+	if id := <-fake.Kicked; id != devB {
+		t.Fatalf("kicked %q", id)
+	}
+	// Unknown live session (e.g. admitted by another replica) -> kicked.
+	apply(Event{EventID: "unknown", Serial: "c3", DeviceID: "dev-00000000000000c3", Reason: "superseded", RevokedAt: t0})
+	if id := <-fake.Kicked; id != "dev-00000000000000c3" {
+		t.Fatalf("kicked %q", id)
+	}
+	// Device-level deny ignores the live serial.
+	apply(Event{EventID: "quarantine", Serial: "d4", DeviceID: devA, Reason: "superseded", DeviceDeny: true, RevokedAt: t0})
+	if id := <-fake.Kicked; id != devA {
+		t.Fatalf("kicked %q", id)
+	}
+	if got := testutil.ToFloat64(env.m.Kicks.WithLabelValues("skipped")); got != 1 {
+		t.Errorf("skipped kicks = %v", got)
+	}
+	if !env.cache.IsRevokedDevice(devA) || env.cache.IsRevokedDevice(devB) {
+		t.Error("device deny state")
+	}
+}
+
+// TestFanOutRedeliveryIsIdempotent: the PKI redelivers an event to replicas that did not
+// acknowledge it; a replica that already applied it answers "duplicate" without a second kick.
+func TestFanOutRedeliveryIsIdempotent(t *testing.T) {
+	fake := emqx.NewFake()
+	env := newTestService(t, fake, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	env.svc.Start(ctx)
+	body := []byte(`{"event_id":"9b2f0c4e-1f7a-4c39-9d5e-1a2b3c4d5e6f","serial":"0abc","device_id":"` + devA + `","tenant_id":"` + tenant + `","reason":"cessationOfOperation","revoked_at":"2026-11-03T12:00:00Z","device_deny":true}`)
+	sig := sign(testSecret, body)
+	for i, want := range []string{`"accepted"`, `"duplicate"`, `"duplicate"`} {
+		rec := post(env.svc.Handler(), body, testToken, sig)
+		if rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("delivery %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	<-fake.Kicked
+	time.Sleep(50 * time.Millisecond)
+	if calls := fake.Calls(); len(calls) != 1 {
+		t.Fatalf("kicks %v", calls)
+	}
+	if !env.cache.IsRevokedDevice(devA) {
+		t.Fatal("device_deny event must deny the device")
 	}
 }

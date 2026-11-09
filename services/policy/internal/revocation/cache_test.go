@@ -40,7 +40,7 @@ func TestNormalizeSerial(t *testing.T) {
 func TestUpsertAndLookups(t *testing.T) {
 	c := NewCache("", nil)
 	c.now = fixedNow
-	added, err := c.Upsert(Entry{EventID: "e1", Serial: "0ABC", DeviceID: devA, TenantID: tenant, RevokedAt: t0})
+	added, err := c.Upsert(Entry{EventID: "e1", Serial: "0ABC", DeviceID: devA, TenantID: tenant, DeviceDeny: true, RevokedAt: t0})
 	if err != nil || !added {
 		t.Fatalf("Upsert = %v, %v", added, err)
 	}
@@ -61,7 +61,7 @@ func TestUpsertAndLookups(t *testing.T) {
 	if added, _ := c.Upsert(Entry{EventID: "crl:def", Serial: "def", RevokedAt: t0.Add(-time.Hour), Source: SourceCRL}); !added {
 		t.Error("new serial-only entry should be added")
 	}
-	if added, _ := c.Upsert(Entry{EventID: "e2", Serial: "def", DeviceID: devB, RevokedAt: t0.Add(time.Hour)}); !added {
+	if added, _ := c.Upsert(Entry{EventID: "e2", Serial: "def", DeviceID: devB, DeviceDeny: true, RevokedAt: t0.Add(time.Hour)}); !added {
 		t.Error("event naming a device for a CRL-known serial should be added")
 	}
 	if !c.IsRevokedDevice(devB) {
@@ -143,7 +143,7 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	if c.Path() != path {
 		t.Fatalf("Path = %q", c.Path())
 	}
-	if _, err := c.Upsert(Entry{EventID: "e1", Serial: "0abc", DeviceID: devA, TenantID: tenant, Reason: "keyCompromise", RevokedAt: t0}); err != nil {
+	if _, err := c.Upsert(Entry{EventID: "e1", Serial: "0abc", DeviceID: devA, TenantID: tenant, Reason: "keyCompromise", DeviceDeny: true, RevokedAt: t0}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.Upsert(Entry{EventID: "crl:def", Serial: "def", RevokedAt: t0.Add(time.Second), Source: SourceCRL}); err != nil {
@@ -181,6 +181,64 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 	if len(restored.Unkicked()) != 0 {
 		t.Error("kicked flag should survive restart")
+	}
+}
+
+// TestSerialScopedEntries: a revocation without DeviceDeny denies its serial only; the device id
+// stays admissible with its other certificates.
+func TestSerialScopedEntries(t *testing.T) {
+	c := NewCache("", fixedNow)
+	if _, err := c.Upsert(Entry{EventID: "sup", Serial: "0a01", DeviceID: devA, TenantID: tenant, Reason: "superseded", RevokedAt: t0}); err != nil {
+		t.Fatal(err)
+	}
+	if c.IsRevokedDevice(devA) {
+		t.Fatal("superseded certificate must not deny the device")
+	}
+	if !c.IsRevokedSerial("a01") || c.IsRevokedSerial("a02") {
+		t.Fatal("only the superseded serial is denied")
+	}
+	if len(c.Unkicked()) != 1 {
+		t.Fatal("serial-scoped entries with a device id are still kick candidates")
+	}
+	if err := c.MarkKickSkipped("sup"); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := c.Get("sup"); !e.Kicked || !e.KickSkipped || len(c.Unkicked()) != 0 {
+		t.Fatalf("skipped kick not recorded: %+v", e)
+	}
+	if err := c.MarkKickSkipped("nope"); err == nil {
+		t.Fatal("unknown event accepted")
+	}
+}
+
+// TestLegacySnapshotKeepsDeviceDenies: format-1 snapshots (written before serial-scoped
+// revocations) keep denying every device they name.
+func TestLegacySnapshotKeepsDeviceDenies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), SnapshotName)
+	raw, _ := json.Marshal(snapshot{Format: 1, Entries: []Entry{
+		{EventID: "old", Serial: "aa", DeviceID: devA, Reason: "superseded", RevokedAt: t0},
+		{EventID: "crl:bb", Serial: "bb", RevokedAt: t0, Source: SourceCRL},
+	}})
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewCache(path, fixedNow)
+	if n, err := c.Load(); err != nil || n != 2 {
+		t.Fatalf("Load = %d %v", n, err)
+	}
+	if !c.IsRevokedDevice(devA) || !c.IsRevokedSerial("bb") {
+		t.Fatal("legacy entries must keep their device-level meaning")
+	}
+	// Re-saved in the current format with the flag made explicit.
+	if _, err := c.Upsert(Entry{EventID: "new", Serial: "cc", DeviceID: devB, RevokedAt: t0}); err != nil {
+		t.Fatal(err)
+	}
+	again := NewCache(path, fixedNow)
+	if _, err := again.Load(); err != nil {
+		t.Fatal(err)
+	}
+	if !again.IsRevokedDevice(devA) || again.IsRevokedDevice(devB) || !again.IsRevokedSerial("cc") {
+		t.Fatal("format 2 snapshot round trip")
 	}
 }
 
@@ -229,7 +287,7 @@ func TestPersistFailureKeepsMemoryState(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := NewCache(filepath.Join(parent, SnapshotName), fixedNow)
-	added, err := c.Upsert(Entry{EventID: "e1", DeviceID: devA, RevokedAt: t0})
+	added, err := c.Upsert(Entry{EventID: "e1", DeviceID: devA, DeviceDeny: true, RevokedAt: t0})
 	if !added {
 		t.Fatal("entry should be added in memory even when persistence fails")
 	}

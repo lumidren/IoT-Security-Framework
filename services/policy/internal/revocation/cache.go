@@ -1,6 +1,12 @@
 // Package revocation keeps the in-memory deny list the authn hook consults, fed by signed PKI
 // events (fast path) and by polling the Device CA CRL (fallback path). The cache survives restarts
 // through a JSON snapshot in POLICY_STATE_DIR.
+//
+// Two kinds of denial exist. A device-level deny (Entry.DeviceDeny: revoke-all from registry
+// quarantine/decommission, reasons keyCompromise and cessationOfOperation, or an explicit
+// device_deny event flag) rejects every certificate of the device id. Every other revocation
+// (superseded on renewal, a single revoked serial, CRL entries) denies only its serial, which the
+// authn hook checks against the certificate presented at CONNECT.
 package revocation
 
 import (
@@ -21,21 +27,27 @@ const (
 	SourceEvent    = "event"
 	SourceCRL      = "crl"
 	SnapshotName   = "revocations.json"
-	snapshotFormat = 1
+	snapshotFormat = 2
 )
 
 // Entry is one revoked certificate (and, when known, the device that held it).
 type Entry struct {
-	EventID   string     `json:"event_id"`
-	Serial    string     `json:"serial_hex,omitempty"`
-	DeviceID  string     `json:"device_id,omitempty"`
-	TenantID  string     `json:"tenant_id,omitempty"`
-	Reason    string     `json:"reason,omitempty"`
-	RevokedAt time.Time  `json:"revoked_at"`
-	AppliedAt time.Time  `json:"applied_at"`
-	Source    string     `json:"source"`
-	Kicked    bool       `json:"kicked"`
-	KickedAt  *time.Time `json:"kicked_at,omitempty"`
+	EventID  string `json:"event_id"`
+	Serial   string `json:"serial_hex,omitempty"`
+	DeviceID string `json:"device_id,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	// DeviceDeny deny-lists DeviceID itself (all of its certificates); otherwise only Serial is
+	// denied.
+	DeviceDeny bool       `json:"device_deny"`
+	RevokedAt  time.Time  `json:"revoked_at"`
+	AppliedAt  time.Time  `json:"applied_at"`
+	Source     string     `json:"source"`
+	Kicked     bool       `json:"kicked"`
+	KickedAt   *time.Time `json:"kicked_at,omitempty"`
+	// KickSkipped records that no kick was needed: the live session was known to use a different
+	// (current) certificate than the revoked serial.
+	KickSkipped bool `json:"kick_skipped,omitempty"`
 }
 
 type snapshot struct {
@@ -88,6 +100,9 @@ func (c *Cache) Load() (int, error) {
 	if err := json.Unmarshal(raw, &snap); err != nil {
 		return 0, fmt.Errorf("revocation snapshot: decode: %w", err)
 	}
+	// Format 1 snapshots predate serial-scoped revocations: every entry that named a device
+	// deny-listed it. Keep that (fail-closed) meaning for restored entries.
+	legacy := snap.Format < 2
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	n := 0
@@ -99,6 +114,9 @@ func (c *Cache) Load() (int, error) {
 		}
 		if _, dup := c.entries[e.EventID]; dup {
 			continue
+		}
+		if legacy && e.DeviceID != "" {
+			e.DeviceDeny = true
 		}
 		c.index(&e)
 		n++
@@ -139,7 +157,7 @@ func (c *Cache) Upsert(e Entry) (bool, error) {
 
 func (c *Cache) index(e *Entry) {
 	c.entries[e.EventID] = e
-	if e.DeviceID != "" {
+	if e.DeviceID != "" && e.DeviceDeny {
 		if cur, ok := c.byDevice[e.DeviceID]; !ok || !e.RevokedAt.Before(cur.RevokedAt) {
 			c.byDevice[e.DeviceID] = e
 		}
@@ -151,7 +169,8 @@ func (c *Cache) index(e *Entry) {
 	}
 }
 
-// IsRevokedDevice reports whether any certificate of the device has been revoked.
+// IsRevokedDevice reports whether the device id itself is deny-listed (a device-level revocation;
+// serial-scoped revocations of one of its certificates do not count).
 func (c *Cache) IsRevokedDevice(deviceID string) bool {
 	if deviceID == "" {
 		return false
@@ -186,7 +205,13 @@ func (c *Cache) Get(eventID string) (Entry, bool) {
 }
 
 // MarkKicked records that the broker session for the entry's device was terminated.
-func (c *Cache) MarkKicked(eventID string) error {
+func (c *Cache) MarkKicked(eventID string) error { return c.markKicked(eventID, false) }
+
+// MarkKickSkipped records that the entry needs no kick (the live session uses another
+// certificate); it is not retried.
+func (c *Cache) MarkKickSkipped(eventID string) error { return c.markKicked(eventID, true) }
+
+func (c *Cache) markKicked(eventID string, skipped bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[eventID]
@@ -199,6 +224,7 @@ func (c *Cache) MarkKicked(eventID string) error {
 	t := c.now()
 	e.Kicked = true
 	e.KickedAt = &t
+	e.KickSkipped = skipped
 	return c.saveLocked()
 }
 

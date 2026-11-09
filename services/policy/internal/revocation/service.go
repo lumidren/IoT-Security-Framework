@@ -24,13 +24,35 @@ import (
 )
 
 // Event is the signed revocation notification pushed by the PKI (DESIGN_CONTRACT.md section 2).
+//
+// DeviceDeny asks for a device-level deny (revoke-all: registry quarantine or decommission).
+// Without it only Serial is denied, unless Reason is keyCompromise or cessationOfOperation (see
+// DeviceDenyReason), so a superseded certificate does not lock the renewed device out.
 type Event struct {
-	EventID   string    `json:"event_id"`
-	Serial    string    `json:"serial"`
-	DeviceID  string    `json:"device_id"`
-	TenantID  string    `json:"tenant_id"`
-	Reason    string    `json:"reason"`
-	RevokedAt time.Time `json:"revoked_at"`
+	EventID    string    `json:"event_id"`
+	Serial     string    `json:"serial"`
+	DeviceID   string    `json:"device_id"`
+	TenantID   string    `json:"tenant_id"`
+	Reason     string    `json:"reason"`
+	RevokedAt  time.Time `json:"revoked_at"`
+	DeviceDeny bool      `json:"device_deny,omitempty"`
+}
+
+// DeviceDenyReason reports whether a revocation reason deny-lists the whole device:
+// keyCompromise (the device key or identity is no longer trustworthy) and cessationOfOperation
+// (quarantine / decommission). Any spelling of case and underscores is accepted.
+func DeviceDenyReason(reason string) bool {
+	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(reason), "_", "")) {
+	case "keycompromise", "cessationofoperation":
+		return true
+	}
+	return false
+}
+
+// SessionSerials reports the certificate serial of a client's current (last admitted) session.
+// *hooks.IdentityCache implements it.
+type SessionSerials interface {
+	LiveSerial(clientID string) (serial string, known bool)
 }
 
 // Validate checks the event shape.
@@ -71,6 +93,11 @@ type ServiceConfig struct {
 	Clock      clock.Clock
 	Metrics    *metrics.Metrics
 	Logger     *slog.Logger
+	// Sessions, when set, lets serial-scoped revocations skip the kick when the live session is
+	// known to use another certificate. Without it (or when the serial of the live session is
+	// unknown, e.g. it was admitted by another policy replica) the session is kicked; a device
+	// that renewed reconnects with its current certificate.
+	Sessions SessionSerials
 	// QueueSize bounds pending kicks (default 1024).
 	QueueSize int
 	// KickTimeout bounds one kick including retries (default 5s).
@@ -85,6 +112,7 @@ type ServiceConfig struct {
 type Service struct {
 	cache         *Cache
 	kicker        emqx.Kicker
+	sessions      SessionSerials
 	token         []byte
 	secret        []byte
 	clock         clock.Clock
@@ -125,6 +153,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	s := &Service{
 		cache:         cfg.Cache,
 		kicker:        cfg.Kicker,
+		sessions:      cfg.Sessions,
 		token:         []byte(cfg.Token),
 		secret:        []byte(cfg.HMACSecret),
 		clock:         cfg.Clock,
@@ -195,15 +224,18 @@ func (s *Service) ApplySerial(serial string, revokedAt time.Time, reason string)
 }
 
 // Apply records the event in the cache and queues the broker kick when a device id is known.
+// The device id is deny-listed only for device-level revocations (DeviceDeny or a
+// DeviceDenyReason); otherwise only the serial is.
 func (s *Service) Apply(ctx context.Context, ev Event, source string) (Result, error) {
 	entry := Entry{
-		EventID:   ev.EventID,
-		Serial:    ev.Serial,
-		DeviceID:  ev.DeviceID,
-		TenantID:  ev.TenantID,
-		Reason:    ev.Reason,
-		RevokedAt: ev.RevokedAt.UTC(),
-		Source:    source,
+		EventID:    ev.EventID,
+		Serial:     ev.Serial,
+		DeviceID:   ev.DeviceID,
+		TenantID:   ev.TenantID,
+		Reason:     ev.Reason,
+		DeviceDeny: ev.DeviceID != "" && (ev.DeviceDeny || DeviceDenyReason(ev.Reason)),
+		RevokedAt:  ev.RevokedAt.UTC(),
+		Source:     source,
 	}
 	added, perr := s.cache.Upsert(entry)
 	if perr != nil {
@@ -216,7 +248,7 @@ func (s *Service) Apply(ctx context.Context, ev Event, source string) (Result, e
 	s.metrics.Revocations.WithLabelValues(source).Inc()
 	s.log.Info("revocation applied",
 		"event_id", ev.EventID, "device_id", ev.DeviceID, "tenant_id", ev.TenantID,
-		"serial", NormalizeSerial(ev.Serial), "reason", ev.Reason, "source", source)
+		"serial", NormalizeSerial(ev.Serial), "reason", ev.Reason, "device_deny", entry.DeviceDeny, "source", source)
 	res := Result{Added: true}
 	if entry.DeviceID == "" {
 		return res, nil
@@ -255,6 +287,17 @@ func (s *Service) kick(ctx context.Context, eventID string) {
 	e, ok := s.cache.Get(eventID)
 	if !ok || e.DeviceID == "" || e.Kicked {
 		return
+	}
+	// A serial-scoped revocation only ends the session if it runs on that certificate.
+	if !e.DeviceDeny && e.Serial != "" && s.sessions != nil {
+		if live, known := s.sessions.LiveSerial(e.DeviceID); known && NormalizeSerial(live) != e.Serial {
+			s.metrics.Kicks.WithLabelValues("skipped").Inc()
+			if err := s.cache.MarkKickSkipped(eventID); err != nil {
+				s.log.Error("failed to record skipped kick", "event_id", eventID, "err", err.Error())
+			}
+			s.log.Info("revoked certificate is not the live session's; kick skipped", "device_id", e.DeviceID, "tenant_id", e.TenantID, "event_id", eventID, "serial", e.Serial)
+			return
+		}
 	}
 	kctx, cancel := context.WithTimeout(ctx, s.kickTimeout)
 	defer cancel()
