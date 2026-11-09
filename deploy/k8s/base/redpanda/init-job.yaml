@@ -1,0 +1,99 @@
+# Kafka authentication and authorization for the dev Redpanda (THREAT_MODEL T-72): SCRAM-SHA-512
+# users per service and ACLs limited to each service's topics and its own <svc>-* consumer
+# groups (the grants of the MSK IAM policies in deploy/terraform/aws/modules/iam). Users are
+# created through the admin API (9644, reachable only from this Job and Prometheus), then SASL is
+# enforced cluster-wide (enable_sasl, which also turns ACL authorization on) and the ACLs are
+# written as the `admin` superuser. Idempotent: re-runs update the passwords.
+#
+# Passwords come from the `redpanda-users` Secret (dev overlay secretGenerator); each service's
+# own password is in its <svc>-secret as <SVC>_KAFKA_SASL_PASSWORD. The Job retries (backoffLimit)
+# until Redpanda is ready; services retry their Kafka connection until the users exist.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redpanda-init
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: redpanda-init
+spec:
+  backoffLimit: 20
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redpanda-init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rpk
+          image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              export HOME=/tmp
+              admin=(-X admin.hosts=redpanda:9644)
+              kafka=(-X brokers=redpanda:9092 -X user=admin -X "pass=${KAFKA_ADMIN_PASSWORD}" -X sasl.mechanism=SCRAM-SHA-512)
+              until rpk cluster health "${admin[@]}" 2>/dev/null | grep -Eq 'Healthy:.+true'; do sleep 2; done
+              upsert() {
+                rpk security user create "$1" -p "$2" --mechanism SCRAM-SHA-512 "${admin[@]}" >/dev/null 2>&1 ||
+                  rpk security user update "$1" --new-password "$2" --mechanism SCRAM-SHA-512 "${admin[@]}" >/dev/null
+              }
+              upsert admin "${KAFKA_ADMIN_PASSWORD}"
+              upsert bridge "${KAFKA_BRIDGE_PASSWORD}"
+              upsert registry "${KAFKA_REGISTRY_PASSWORD}"
+              upsert ota "${KAFKA_OTA_PASSWORD}"
+              upsert anomaly "${KAFKA_ANOMALY_PASSWORD}"
+              rpk cluster config set superusers '["admin"]' "${admin[@]}"
+              rpk cluster config set enable_sasl true "${admin[@]}"
+              for _ in $(seq 1 30); do rpk cluster info "${kafka[@]}" >/dev/null 2>&1 && break; sleep 1; done
+              acl() { rpk security acl create "$@" "${kafka[@]}" >/dev/null; }
+              topics=(im.ingest im.auth im.alerts im.audit im.commands im.campaigns)
+              # Producers with idempotence enabled.
+              for u in bridge registry ota anomaly; do acl --allow-principal "User:$u" --cluster --operation idempotent_write; done
+              # bridge: creates the six platform topics on boot; produces telemetry, auth events, audit.
+              for t in "${topics[@]}"; do acl --allow-principal User:bridge --topic "$t" --operation create,describe; done
+              for t in im.ingest im.auth im.audit; do acl --allow-principal User:bridge --topic "$t" --operation write; done
+              # registry: consumes ingest/auth/alerts/audit/campaigns, produces audit and commands.
+              for t in im.ingest im.auth im.alerts im.audit im.campaigns; do acl --allow-principal User:registry --topic "$t" --operation read,describe; done
+              for t in im.audit im.commands; do acl --allow-principal User:registry --topic "$t" --operation write,describe; done
+              # ota: consumes ingest/commands, produces audit and campaigns.
+              for t in im.ingest im.commands; do acl --allow-principal User:ota --topic "$t" --operation read,describe; done
+              for t in im.audit im.campaigns; do acl --allow-principal User:ota --topic "$t" --operation write,describe; done
+              # anomaly: consumes ingest/auth/commands/audit, produces alerts and audit.
+              for t in im.ingest im.auth im.commands im.audit; do acl --allow-principal User:anomaly --topic "$t" --operation read,describe; done
+              for t in im.alerts im.audit; do acl --allow-principal User:anomaly --topic "$t" --operation write,describe; done
+              # Consumer groups: each service only its own <svc>-* groups.
+              for u in registry ota anomaly; do
+                acl --allow-principal "User:$u" --group "$u-" --resource-pattern-type prefixed --operation read,describe
+              done
+              echo "redpanda: SASL/SCRAM-SHA-512 enforced, users and ACLs in place"
+          envFrom:
+            - secretRef:
+                name: redpanda-users
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

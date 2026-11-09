@@ -64,6 +64,8 @@ secretGenerator:
     literals:
       # = the EMQX webhook action header in emqx-env below.
       - BRIDGE_EVENTS_TOKEN=dev-bridge-events-token
+      # SCRAM user `bridge` (= KAFKA_BRIDGE_PASSWORD in redpanda-users).
+      - BRIDGE_KAFKA_SASL_PASSWORD=dev-kafka-bridge
   - name: registry-secret
     literals:
       - REGISTRY_DB_PASSWORD=ironmesh-dev
@@ -72,6 +74,8 @@ secretGenerator:
       - 'REGISTRY_INTERNAL_TOKENS={"pki": "dev-registry-token-pki", "policy": "dev-registry-token-policy", "anomaly": "dev-registry-token-anomaly", "ota": "dev-registry-token-ota"}'
       - REGISTRY_EMQX_API_KEY=registry
       - REGISTRY_EMQX_API_SECRET=dev-emqx-registry-secret
+      # SCRAM user `registry` (= KAFKA_REGISTRY_PASSWORD in redpanda-users).
+      - REGISTRY_KAFKA_SASL_PASSWORD=dev-kafka-registry
       # Schema owner for the registry-migrate Job (alembic upgrade head).
       - REGISTRY_MIGRATION_DATABASE_URL=postgresql+asyncpg://registry_owner:ironmesh-dev@postgres:5432/registry?ssl=require
   - name: ota-secret
@@ -82,6 +86,8 @@ secretGenerator:
       - OTA_REGISTRY_TOKEN=dev-registry-token-ota
       - OTA_EMQX_API_KEY=ota
       - OTA_EMQX_API_SECRET=dev-emqx-ota-secret
+      # SCRAM user `ota` (= KAFKA_OTA_PASSWORD in redpanda-users).
+      - OTA_KAFKA_SASL_PASSWORD=dev-kafka-ota
       # Schema owner for the ota-migrate Job (python -m ironmesh_ota.migrate).
       - OTA_MIGRATION_DATABASE_URL=postgresql+asyncpg://ota_owner:ironmesh-dev@postgres:5432/ota?ssl=require
   - name: anomaly-secret
@@ -89,6 +95,8 @@ secretGenerator:
       - ANOMALY_DB_PASSWORD=ironmesh-dev
       - ANOMALY_INTERNAL_TOKEN=dev-registry-token-anomaly
       - ANOMALY_SIEM_WEBHOOK_SECRET=dev-siem-webhook-secret
+      # SCRAM user `anomaly` (= KAFKA_ANOMALY_PASSWORD in redpanda-users).
+      - ANOMALY_KAFKA_SASL_PASSWORD=dev-kafka-anomaly
       - ANOMALY_DATABASE_MIGRATE_URL=postgresql://anomaly_owner:ironmesh-dev@postgres:5432/anomaly?sslmode=require
   - name: console-secret
     literals:
@@ -104,6 +112,16 @@ secretGenerator:
   - name: emqx-api-keys
     files:
       - api-keys=emqx-api-keys.txt
+  # Redpanda SCRAM users written by the redpanda-init Job (base/redpanda/init-job.yaml). `admin` is
+  # the superuser that only writes ACLs; the service passwords match the *_KAFKA_SASL_PASSWORD
+  # entries of the service secrets above.
+  - name: redpanda-users
+    literals:
+      - KAFKA_ADMIN_PASSWORD=dev-kafka-admin
+      - KAFKA_BRIDGE_PASSWORD=dev-kafka-bridge
+      - KAFKA_REGISTRY_PASSWORD=dev-kafka-registry
+      - KAFKA_OTA_PASSWORD=dev-kafka-ota
+      - KAFKA_ANOMALY_PASSWORD=dev-kafka-anomaly
 
 patches:
   # Expose console, broker, PKI and registry on the kind node ports mapped in kind-config.yaml.

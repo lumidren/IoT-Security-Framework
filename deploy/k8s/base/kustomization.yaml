@@ -23,6 +23,7 @@ resources:
   - postgres/service.yaml
   - redpanda/statefulset.yaml
   - redpanda/service.yaml
+  - redpanda/init-job.yaml
   - emqx/configmap.yaml
   - emqx/deployment.yaml
   - emqx/service.yaml
