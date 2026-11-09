@@ -66,7 +66,7 @@ per release; `ota_ab.c` refuses an image whose `secure_version` is below the eFu
 
 | | ATECC608B (`atecc608`, hardware) | Encrypted NVS (`software`) |
 |-|-|-|
-| key generation | in the chip (`atcab_genkey`, slot 2 per enrollment; slot 0 bootstrap, locked) | on the device, mbedTLS |
+| key generation | in the chip (`atcab_genkey` into the inactive operational slot 2/3; slot 0 bootstrap, locked) | on the device, mbedTLS (same slot numbering: three NVS keys) |
 | key at rest | never leaves the chip, no read path in the slot config (`atecc_config.h`) | NVS encrypted with an eFuse HMAC key (S3) or the flash-encrypted `nvs_keys` partition |
 | runtime exposure | only signatures / ECDH results reach the MCU | key is in RAM while used; code execution on the MCU = key compromise |
 | contract §10 | allowed by default | tenant policy `allow_software_keys`, **off** in the prod profile |
@@ -92,9 +92,24 @@ TLS 1.3 tickets are cached for resumption. It exists because esp-tls' secure-ele
 hard-wired to ATECC slot 0 (the bootstrap key). esp-mqtt v5 runs over it with
 `clean_start=false`, 7-day session expiry, receive maximum 32, keep-alive 60 s; reconnects use the
 agent's backoff (1 s, x2, cap 300 s, full jitter). The EST client speaks HTTP/1.1 over the same
-transport. With a single ATECC operational slot, re-enrollment authenticates with the bootstrap
-cert/slot 0 (`simpleenroll`), because the attestation must be signed by the TLS client key and
-`atcab_genkey` replaces the slot-2 key before the CSR can be built.
+transport.
+
+### Key slots and renewal
+
+Slot 0 is the bootstrap key; slots 2 and 3 alternate as the operational key
+(`atecc_config.h`; the software key store uses the same numbering). The selection is a pure
+im_core function, `im_keyslot_plan()`, host-tested in `host/core-tests/tests/keyslot.rs`:
+
+| situation | TLS client key + attestation signer | EST op | new key goes to |
+|-----------|-------------------------------------|--------|-----------------|
+| never enrolled | slot 0 + bootstrap cert | `simpleenroll` | slot 2 |
+| operational cert valid (renewal at 50 %) | active slot + operational cert | `simplereenroll` | inactive slot |
+| operational cert expired | slot 0 + bootstrap cert | `simpleenroll` | inactive slot |
+
+The commit point is a single NVS blob `id_rec` = (active slot, operational cert DER, CRC-32),
+written with one `nvs_set_blob` + `nvs_commit` only after the leaf certificate was received and
+checked to certify the new key. Before that write nothing about the live identity changes, so a
+failed enrollment or a power loss at any step keeps the old slot/cert pair.
 
 ## Offline buffer
 

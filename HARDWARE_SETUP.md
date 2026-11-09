@@ -29,9 +29,15 @@ Software-key targets are **lower assurance** (contract §10); production tenants
 Use 4.7 kOhm pull-ups on SDA/SCL if your module does not include them. I2C address default
 `0x6A` for ATECC608B-TNGTLS (Trust&GO) and `0x60` for blank parts (`0xC0` 8-bit). Trust&GO
 parts come pre-provisioned with a Microchip-signed device certificate; IronMesh **does not** use that
-chain. We use slot 0 for the bootstrap key (locked at the factory) and slot 2 for the operational
-key (regenerated at every enrollment). The ATECC configuration zone used by IronMesh is in
-`device/esp32/components/im_identity/atecc_config.h` and is applied once by the factory tool.
+chain. We use slot 0 for the bootstrap key (generated on-chip and locked at the factory; used only
+for the first enrollment and as the fallback after the operational certificate has expired) and
+slots 2 and 3 as **two alternating operational keys** (P-256 private, GenKey allowed, never
+readable). A renewal generates the new key in the inactive slot while the active slot keeps
+authenticating TLS and signs the attestation for `simplereenroll`; the active-slot index flips only
+after the new certificate has been stored, and the index and certificate are persisted together in
+one encrypted-NVS record, so a power loss mid-renewal leaves the old slot/certificate pair valid.
+The ATECC configuration zone used by IronMesh is in
+`device/esp32/components/im_platform_esp/atecc_config.h` and is applied once by the factory tool.
 
 ### 1.2 Raspberry Pi + TPM
 
