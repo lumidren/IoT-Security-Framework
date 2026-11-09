@@ -527,6 +527,29 @@ im_err_t im_agent_load_bundle(im_agent_t *a, const uint8_t *bundle, size_t len)
     return ota_setup(a);
 }
 
+im_err_t im_agent_est_pins(const im_agent_t *a, const uint8_t *factory_pins, size_t n_factory,
+                           uint8_t *out, size_t cap, size_t *n_out)
+{
+    if (a == NULL) {
+        return IM_ERR_ARG;
+    }
+    return im_est_pins_select(&a->pins[0][0], a->n_pins, factory_pins, n_factory, out, cap,
+                              n_out);
+}
+
+bool im_agent_download_allowed(const im_agent_t *a, const char *url, size_t url_len)
+{
+    const char *host;
+    size_t host_len;
+    const char *allowed[2];
+    if (a == NULL || im_url_https_host(url, url_len, &host, &host_len) != IM_OK) {
+        return false;
+    }
+    allowed[0] = a->broker_host; /* empty until a bundle is loaded: matches nothing */
+    allowed[1] = a->cfg.ota_host;
+    return im_host_allowed(host, host_len, allowed, 2u);
+}
+
 /* ------------------------------------------------------------------------------------------ */
 /* Lifecycle                                                                                   */
 /* ------------------------------------------------------------------------------------------ */
@@ -1306,8 +1329,11 @@ void im_agent_on_message(im_agent_t *a, const char *topic, size_t topic_len,
     case IM_MSG_OTA_NOTIFY: {
         im_ota_notify_t n;
         if (im_env_get_ota_notify(&m, &n) == IM_OK && im_ota_on_notify(&a->ota, &n) == IM_OK) {
-            if (a->pf.ota_download == NULL ||
-                a->pf.ota_download(a->pf.ctx, n.url, n.url_len) != IM_OK) {
+            if (!im_agent_download_allowed(a, n.url, n.url_len)) {
+                /* T-60: artifact host not allowlisted -> REJECTED, ota_state.error "download" */
+                im_ota_on_failure(&a->ota, IM_ERR_IO);
+            } else if (a->pf.ota_download == NULL ||
+                       a->pf.ota_download(a->pf.ctx, n.url, n.url_len) != IM_OK) {
                 im_ota_on_failure(&a->ota, IM_ERR_IO);
             }
         }

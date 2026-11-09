@@ -72,6 +72,9 @@ typedef struct {
     const char *target;            /* "esp32-host" / "esp32-hil" */
     int boot_reason;               /* IM_REBOOT_* as seen by the platform */
     const char *active_slot;       /* e.g. "ota_0" */
+    /* OTA artifact host (T-60): artifacts may only come from this host or the signed bundle's
+     * broker host. NULL/empty: the broker host only. */
+    const char *ota_host;
 } im_agent_config_t;
 
 typedef struct im_agent im_agent_t;
@@ -213,6 +216,13 @@ im_err_t im_agent_on_enrolled(im_agent_t *a, const uint8_t *serial, size_t seria
 void im_agent_on_enroll_failed(im_agent_t *a, int http_status, const char *reason);
 /* Verify an X-IronMesh-Bundle COSE_Sign1 with the factory bundle key and load it. */
 im_err_t im_agent_load_bundle(im_agent_t *a, const uint8_t *bundle, size_t len);
+/* T-29: SPKI pins the platform's EST client must enforce (im_est_pins_select with the loaded
+ * bundle's ca_pins and the factory pins; flat arrays of IM_PIN_LEN-byte pins). */
+im_err_t im_agent_est_pins(const im_agent_t *a, const uint8_t *factory_pins, size_t n_factory,
+                           uint8_t *out, size_t cap, size_t *n_out);
+/* T-60: whether an OtaNotify url may be downloaded (https, host = bundle broker host or
+ * cfg.ota_host). The agent checks this itself before calling pf.ota_download. */
+bool im_agent_download_allowed(const im_agent_t *a, const char *url, size_t url_len);
 
 /* ---- transport callbacks -------------------------------------------------------------------- */
 void im_agent_on_connected(im_agent_t *a, const char *tls_version, const char *alpn,
