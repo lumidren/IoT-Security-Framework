@@ -7,12 +7,16 @@
 # (services/*/internal/config, services/*/settings.py / config.py, console/src/lib/env.ts,
 # console/src/auth.ts); scripts/ci/check_env_contract.py enforces that in CI. Secrets are
 # interpolated from the git-ignored .env (generated with random values by the quickstart);
-# where a component reads secrets from files (PostgreSQL, Grafana, TLS keys, OTA key rings,
-# EMQX API keys) they are delivered as files instead.
+# where a component reads secrets from files (PostgreSQL, Grafana, TLS keys, the OTA signing
+# key ring, EMQX API keys) they are delivered as files instead.
 #
-# Start-up order: init-volumes -> postgres / redpanda -> migrations, topics -> fleet-provision ->
-# pki-init -> pki -> policy -> emqx -> bridge, registry -> ota, anomaly -> console + keycloak ->
-# registry-seed -> seed -> fleet.
+# Start-up order: init-volumes -> postgres / redpanda -> migrations -> fleet-provision ->
+# pki-init -> pki -> policy -> emqx -> bridge (creates the Kafka topics) -> registry-seed ->
+# registry -> ota, anomaly -> console + keycloak -> seed -> fleet.
+#
+# Key ownership (docs/API_CONTRACT.md section 5): the registry is the only holder of tenant
+# command keys and pushes the public key to the PKI tenant-policy API; the OTA service pushes its
+# firmware signing keys there. Nothing in this file writes the PKI database directly.
 
 name: ironmesh
 
@@ -153,22 +157,6 @@ services:
       retries: 30
       start_period: 15s
 
-  redpanda-init:
-    <<: *oneshot
-    networks: [ironmesh]
-    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
-    entrypoint: ["/bin/bash", "-ec"]
-    command:
-      - |
-        for t in im.ingest im.auth im.alerts im.audit im.commands im.campaigns; do
-          rpk topic create "$$t" -X brokers=redpanda:9092 -p 3 -r 1 \
-            || rpk topic describe "$$t" -X brokers=redpanda:9092 >/dev/null
-        done
-        rpk topic list -X brokers=redpanda:9092
-    depends_on:
-      redpanda:
-        condition: service_healthy
-
   # ------------------------------------------------------------------------------------------
   # Development PKI (pkictl) and the virtual fleet identities
   # ------------------------------------------------------------------------------------------
@@ -245,22 +233,29 @@ services:
       PKI_ENV: development
       PKI_LISTEN_MTLS: ":8443"
       PKI_LISTEN_PLAIN: ":8444"
-      # The pki service applies its embedded migrations at start with this DSN, so it connects
-      # as the schema owner (no separate migration DSN exists yet; see deploy/docker/README.md).
-      PKI_DATABASE_URL: postgres://pki_owner:${PKI_DB_OWNER_PASSWORD:?}@postgres:5432/pki?sslmode=disable
+      # Runtime role pki_app (NOBYPASSRLS, owns nothing, so the forced RLS policies apply); the
+      # embedded migrations run once at start with the schema-owner DSN, which is then closed.
+      PKI_DATABASE_URL: postgres://pki_app:${PKI_DB_PASSWORD:?}@postgres:5432/pki?sslmode=disable
+      PKI_MIGRATION_DATABASE_URL: postgres://pki_owner:${PKI_DB_OWNER_PASSWORD:?}@postgres:5432/pki?sslmode=disable
       PKI_KMS: file
       PKI_FILE_KMS_PASSPHRASE: ${PKI_FILE_KMS_PASSPHRASE:?}
       PKI_CA_DIR: /pki-data
+      # Compose keeps the pkictl bundle key file; Helm staging/prod use PKI_BUNDLE_KEY_SECRET_ARN.
+      PKI_BUNDLE_KEY_FILE: /pki-data/bundle.key.json
       PKI_OPERATIONAL_CERT_TTL: 336h
       PKI_NONCE_TTL: 120s
       PKI_POLICY_URL: http://policy:8081
       PKI_POLICY_TOKEN: ${PKI_POLICY_TOKEN:?}
       PKI_POLICY_HMAC_KEY: ${PKI_POLICY_HMAC_KEY:?}
+      # Lifecycle checks and the synchronous enrolled callback (bearer = the "pki" entry of
+      # REGISTRY_INTERNAL_TOKENS).
       PKI_REGISTRY_URL: http://registry:8000
       PKI_REGISTRY_TOKEN: ${PKI_REGISTRY_TOKEN:?}
       PKI_PUBLIC_BASE_URL: http://pki:8444
       PKI_SERVER_CERT_FILE: /etc/ironmesh/tls/tls.crt
       PKI_SERVER_KEY_FILE: /etc/ironmesh/tls/tls.key
+      # Management API callers (Services CA client CN). Tenant-policy writes are additionally
+      # authorized by field owner: svc-registry (command key, enrollment), svc-ota (firmware keys).
       PKI_MGMT_ALLOWED_CNS: svc-registry,svc-policy,svc-console,svc-anomaly,svc-ota
       PKI_MGMT_JWT_PUBLIC_KEY_FILE: /etc/ironmesh/trust/service-pubkeys/jwt-signers.pem
       PKI_DEFAULT_ALLOW_SOFTWARE_KEYS: "true"
@@ -277,9 +272,8 @@ services:
       - "${IRONMESH_DEVICE_BIND_ADDR:-127.0.0.1}:8443:8443"
       - "${IRONMESH_DEVICE_BIND_ADDR:-127.0.0.1}:8444:8444"
     healthcheck:
-      # Distroless image: pkictl (shipped next to pki) fetches the CRL from the plain listener,
-      # which is only served once the service is ready.
-      test: ["CMD", "/usr/local/bin/pkictl", "crl", "--url", "http://127.0.0.1:8444/crl/device-ca.crl"]
+      # Distroless image without curl: the binary's own probe (`pki healthcheck`) against /readyz.
+      test: ["CMD", "/usr/local/bin/pki", "healthcheck", "--url", "http://127.0.0.1:8444/readyz"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -315,31 +309,27 @@ services:
       POLICY_STATE_DIR: /var/lib/ironmesh/policy
       POLICY_HOOK_TOKEN: ${POLICY_HOOK_TOKEN:?}
       POLICY_AUTHZ_CACHE_TTL: 10s
+      # Console OIDC access tokens on the management API (/v1/*): the Keycloak realm issuer (the
+      # iss every other service accepts). Discovery fetches <issuer>/.well-known/... lazily on the
+      # first console call; see deploy/docker/README.md "Known limitations".
+      POLICY_OIDC_ISSUER: http://localhost:8180/realms/ironmesh
+      POLICY_OIDC_AUDIENCE: ironmesh-api
+      POLICY_OIDC_ROLE_CLAIM: role
       POLICY_LOG_LEVEL: info
       POLICY_SHUTDOWN_TIMEOUT: 10s
     volumes:
       - policy-state:/var/lib/ironmesh/policy
       - trust:/etc/ironmesh/trust:ro
-    depends_on:
-      pki:
-        condition: service_healthy
-
-  # The policy and bridge images are distroless without any HTTP client, so a probe sidecar
-  # carries their health state for depends_on.
-  policy-probe:
-    <<: *hardened
-    image: curlimages/curl:8.11.1
-    user: "100:101"
-    command: ["sleep", "infinity"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://policy:8081/readyz"]
+      # Distroless image without curl: the binary's own probe (`policy healthcheck`).
+      test: ["CMD", "/policy", "healthcheck", "--url", "http://127.0.0.1:8081/readyz"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 60
       start_period: 5s
     depends_on:
-      policy:
-        condition: service_started
+      pki:
+        condition: service_healthy
 
   emqx:
     <<: *hardened
@@ -355,6 +345,9 @@ services:
       EMQX_API_KEY__BOOTSTRAP_FILE: /etc/ironmesh/emqx/api-keys.txt
       EMQX_AUTHENTICATION__1__HEADERS__X-IRONMESH-HOOK-TOKEN: ${POLICY_HOOK_TOKEN:?}
       EMQX_AUTHORIZATION__SOURCES__1__HEADERS__X-IRONMESH-HOOK-TOKEN: ${POLICY_HOOK_TOKEN:?}
+      # Client-event webhook action -> bridge POST /emqx/events (emqx.conf `actions.http`); must
+      # equal the bridge's BRIDGE_EVENTS_TOKEN.
+      EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__HEADERS__X-IRONMESH-HOOK-TOKEN: ${BRIDGE_EVENTS_TOKEN:?}
       EMQX_PROMETHEUS__ENABLE_BASIC_AUTH: "false"
     volumes:
       - ../../services/policy/deploy/emqx/emqx.conf:/opt/emqx/etc/emqx.conf:ro
@@ -372,7 +365,7 @@ services:
       retries: 30
       start_period: 20s
     depends_on:
-      policy-probe:
+      policy:
         condition: service_healthy
       pki-init:
         condition: service_completed_successfully
@@ -396,8 +389,15 @@ services:
       BRIDGE_KAFKA_BROKERS: redpanda:9092
       BRIDGE_KAFKA_INGEST_TOPIC: im.ingest
       BRIDGE_KAFKA_AUTH_TOPIC: im.auth
-      BRIDGE_KAFKA_TLS: "false"
+      BRIDGE_KAFKA_TLS_ENABLED: "false"
+      BRIDGE_KAFKA_SASL_MECHANISM: none
+      # The bridge creates im.ingest, im.auth, im.alerts, im.audit, im.commands and im.campaigns
+      # idempotently before it turns ready (this replaced the redpanda-init job).
+      BRIDGE_KAFKA_TOPICS_CREATE: "true"
+      BRIDGE_KAFKA_TOPIC_PARTITIONS: "3"
+      BRIDGE_KAFKA_TOPIC_REPLICATION: "1"
       BRIDGE_MAX_INFLIGHT: "1024"
+      # Same value as EMQX's webhook action header (EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__...).
       BRIDGE_EVENTS_TOKEN: ${BRIDGE_EVENTS_TOKEN:?}
       BRIDGE_MQTT_KEEPALIVE: 60s
       BRIDGE_MQTT_SESSION_EXPIRY: 168h
@@ -405,26 +405,19 @@ services:
       BRIDGE_SHUTDOWN_TIMEOUT: 15s
     volumes:
       - tls-bridge:/etc/ironmesh/tls:ro
-    depends_on:
-      emqx:
-        condition: service_healthy
-      redpanda-init:
-        condition: service_completed_successfully
-
-  bridge-probe:
-    <<: *hardened
-    image: curlimages/curl:8.11.1
-    user: "100:101"
-    command: ["sleep", "infinity"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://bridge:8082/readyz"]
+      # Distroless image without curl: the binary's own probe (`bridge healthcheck`). Ready means
+      # MQTT session up and Kafka reachable; the topics are ensured before the listener starts.
+      test: ["CMD", "/bridge", "healthcheck", "--url", "http://127.0.0.1:8082/readyz"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 60
       start_period: 5s
     depends_on:
-      bridge:
-        condition: service_started
+      emqx:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
 
   registry-migrate:
     <<: *oneshot
@@ -435,6 +428,7 @@ services:
       dockerfile: services/registry/Dockerfile
     user: "10001:10001"
     working_dir: /srv
+    # `upgrade head` applies every revision, 0002_downlink_sequences included.
     command: ["alembic", "-c", "/srv/alembic.ini", "upgrade", "head"]
     environment:
       REGISTRY_MIGRATION_DATABASE_URL: postgresql+asyncpg://registry_owner:${REGISTRY_DB_OWNER_PASSWORD:?}@postgres:5432/registry
@@ -465,7 +459,9 @@ services:
       REGISTRY_OIDC_ISSUER: http://localhost:8180/realms/ironmesh
       REGISTRY_OIDC_AUDIENCE: ironmesh-api
       REGISTRY_OIDC_JWKS_URL: http://console:8180/realms/ironmesh/protocol/openid-connect/certs
-      REGISTRY_INTERNAL_TOKENS: '{"pki": "${PKI_REGISTRY_TOKEN:?}", "policy": "${POLICY_REGISTRY_TOKEN:?}", "anomaly": "${ANOMALY_INTERNAL_TOKEN:?}"}'
+      # One distinct bearer per caller of /internal/*: pki (enrolled callback), policy (lifecycle
+      # lookups), anomaly (quarantine), ota (campaign resolve + OtaNotify downlink requests).
+      REGISTRY_INTERNAL_TOKENS: '{"pki": "${PKI_REGISTRY_TOKEN:?}", "policy": "${POLICY_REGISTRY_TOKEN:?}", "anomaly": "${ANOMALY_INTERNAL_TOKEN:?}", "ota": "${OTA_REGISTRY_TOKEN:?}"}'
       REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE: /etc/ironmesh/tls/tls.key
       REGISTRY_KAFKA_BROKERS: redpanda:9092
       REGISTRY_KAFKA_CONSUMER_GROUP: registry-ingest
@@ -477,6 +473,7 @@ services:
       REGISTRY_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
       REGISTRY_KAFKA_SASL_MECHANISM: none
       REGISTRY_KAFKA_TLS_ENABLED: "false"
+      # PKI management API over mTLS (svc-registry): PUT /v1/tenants/{t}/command-key + enrollment.
       REGISTRY_PKI_URL: https://pki:8443
       REGISTRY_POLICY_URL: http://policy:8081
       REGISTRY_OTA_URL: http://ota:8001
@@ -500,13 +497,17 @@ services:
       <<: *python-healthcheck
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
     depends_on:
-      registry-migrate:
+      # The demo tenant must exist before the registry starts: its start-up reconciliation creates
+      # the tenant command key and pushes it (with allow_software_keys) to the PKI tenant policy.
+      registry-seed:
         condition: service_completed_successfully
-      redpanda-init:
-        condition: service_completed_successfully
+      bridge:
+        condition: service_healthy
       emqx:
         condition: service_healthy
 
+  # Writes the demo tenant, owner and synthetic devices straight to the database (as
+  # registry_app); runs between the migration and the registry service.
   registry-seed:
     <<: *oneshot
     networks: [ironmesh]
@@ -531,8 +532,8 @@ services:
       - tls-registry:/etc/ironmesh/tls:ro
       - registry-data:/var/lib/ironmesh/registry
     depends_on:
-      registry:
-        condition: service_healthy
+      registry-migrate:
+        condition: service_completed_successfully
 
   ota-migrate:
     <<: *oneshot
@@ -555,16 +556,14 @@ services:
     user: "10001:10001"
     network_mode: none
     entrypoint: ["sh", "-ec"]
+    # Firmware signing key ring only. Tenant command keys belong to the registry (KMS-wrapped in
+    # its database), so no tenant key is generated here.
     command:
       - |
-        mkdir -p /keys/tenant-keys
         [ -f /keys/keyring.json ] || python -m ironmesh_ota.keytool init --out /keys/keyring.json
-        [ -f "/keys/tenant-keys/$$IRONMESH_TENANT_ID.pem" ] || python -m ironmesh_ota.keytool tenant-key --tenant "$$IRONMESH_TENANT_ID" --dir /keys/tenant-keys
         python -m ironmesh_ota.keytool list --file /keys/keyring.json
     environment:
-      IRONMESH_TENANT_ID: ${IRONMESH_TENANT_ID:?}
       OTA_SIGNING_PASSPHRASE: ${OTA_SIGNING_PASSPHRASE:?}
-      OTA_TENANT_KEYS_PASSPHRASE: ${OTA_TENANT_KEYS_PASSPHRASE:?}
     volumes:
       - ota-keys:/keys
     depends_on:
@@ -599,15 +598,16 @@ services:
       OTA_SIGNING_PASSPHRASE: ${OTA_SIGNING_PASSPHRASE:?}
       OTA_SIGNING_KEY_ID: fw-ed25519-dev
       OTA_PQ_SIGNING_ENABLED: "false"
-      OTA_TENANT_KEYS_PROVIDER: file
-      OTA_TENANT_KEYS_DIR: /var/lib/ironmesh/ota-keys/tenant-keys
-      OTA_TENANT_KEYS_PASSPHRASE: ${OTA_TENANT_KEYS_PASSPHRASE:?}
       OTA_OIDC_ISSUER: http://localhost:8180/realms/ironmesh
       OTA_OIDC_AUDIENCE: ironmesh-api
       OTA_OIDC_JWKS_URL: http://console:8180/realms/ironmesh/protocol/openid-connect/certs
       OTA_INTERNAL_TOKEN: ${OTA_INTERNAL_TOKEN:?}
       OTA_SERVICE_PUBLIC_KEYS_DIR: /etc/ironmesh/trust/service-pubkeys
+      # Campaign target resolution and OtaNotify downlink requests (the registry signs them);
+      # bearer = the "ota" entry of REGISTRY_INTERNAL_TOKENS.
       OTA_REGISTRY_URL: http://registry:8000
+      OTA_REGISTRY_TOKEN: ${OTA_REGISTRY_TOKEN:?}
+      # Device keys and the firmware-keys push to the PKI tenant policy (mTLS, svc-ota).
       OTA_PKI_URL: https://pki:8443
       OTA_EMQX_API_URL: http://emqx:18083
       OTA_EMQX_API_KEY: ota
@@ -625,6 +625,8 @@ services:
       OTA_CONTROLLER_ENABLED: "true"
       OTA_CONTROLLER_INTERVAL_S: "2"
       OTA_DEVICE_TIMEOUT_S: "600"
+      # Re-send OtaNotify downlink requests the registry has not accepted after this many seconds.
+      OTA_NOTIFY_RETRY_S: "60"
       OTA_OTEL_ENABLED: "true"
       OTA_OTEL_ENDPOINT: http://otel-collector:4317
     volumes:
@@ -696,8 +698,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redpanda-init:
-        condition: service_completed_successfully
+      bridge:
+        condition: service_healthy
       pki:
         condition: service_healthy
       registry:
@@ -810,17 +812,16 @@ services:
       IRONMESH_ANOMALY_URL: http://anomaly:8002
       IRONMESH_FLEET_DIR: /fleet
       IRONMESH_FLEET_PRODUCT: fleet-sim
-      IRONMESH_PKI_DSN: postgresql://pki_owner:${PKI_DB_OWNER_PASSWORD:?}@postgres:5432/pki
-      IRONMESH_TENANT_KEY_FILE: /keys/tenant-keys/${IRONMESH_TENANT_ID:?}.pem
-      OTA_TENANT_KEYS_PASSPHRASE: ${OTA_TENANT_KEYS_PASSPHRASE:?}
-      IRONMESH_BROKER_HOST: ${IRONMESH_BROKER_HOST:-emqx}
-      IRONMESH_BROKER_PORT: "8883"
+      # Read-only check of the PKI tenant policy (GET /v1/tenants/{t}/policy, mTLS as svc-ota,
+      # an owning service); the registry and the OTA service push the keys themselves.
+      IRONMESH_PKI_URL: https://pki:8443
+      IRONMESH_PKI_TLS_DIR: /etc/ironmesh/tls
       IRONMESH_FLEET_COUNT: ${IRONMESH_FLEET_COUNT:-500}
       IRONMESH_DEMO_DWELL_S: ${IRONMESH_DEMO_DWELL_S:-30}
     volumes:
       - ../../scripts/demo:/demo:ro
       - fleet-data:/fleet:ro
-      - ota-keys:/keys:ro
+      - tls-ota:/etc/ironmesh/tls:ro
     depends_on:
       registry-seed:
         condition: service_completed_successfully
@@ -845,7 +846,7 @@ services:
     volumes:
       - ../../scripts/demo:/demo:ro
       - fleet-data:/fleet:ro
-      - ota-keys:/keys:ro
+      - tls-ota:/etc/ironmesh/tls:ro
 
   fleet:
     <<: *hardened
@@ -876,7 +877,7 @@ services:
         condition: service_completed_successfully
       emqx:
         condition: service_healthy
-      bridge-probe:
+      bridge:
         condition: service_healthy
 
   # ------------------------------------------------------------------------------------------

@@ -4,10 +4,13 @@
 #
 #   <db>_owner  LOGIN, owns the database and the public schema; runs the migrations
 #               (REGISTRY_MIGRATION_DATABASE_URL, OTA_MIGRATION_DATABASE_URL,
-#               ANOMALY_DATABASE_MIGRATE_URL; the pki service migrates itself, see README)
-#   <db>_app    LOGIN NOBYPASSRLS, runtime role; owns nothing so row-level security applies.
-#               Table grants come from each service's migration (registry 0001_initial.py,
-#               ota 0001_initial.py, anomaly 001_init.sql), so append-only tables stay append-only.
+#               ANOMALY_DATABASE_MIGRATE_URL, PKI_MIGRATION_DATABASE_URL: the pki service applies
+#               its embedded migrations at start with that owner DSN, then runs as pki_app)
+#   <db>_app    LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS, runtime role
+#               (REGISTRY_DB_USER, OTA_DB_USER, ANOMALY_DB_USER, the PKI_DATABASE_URL user); owns
+#               nothing so row-level security applies. Table grants come from each service's
+#               migration (registry 0001/0002, ota 0001/0002, anomaly 001_init.sql, pki
+#               0002_force_rls_app_role.sql), so append-only tables stay append-only.
 #   ironmesh_backup  LOGIN, BYPASSRLS, pg_read_all_data (scripts/backup/pg_backup.sh)
 #
 # Passwords are read from compose secrets (/run/secrets/<db>_db_owner_password,
@@ -43,6 +46,8 @@ SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASS
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'owner') \gexec
 SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD %L', :'app', :'app_pw')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'app') \gexec
+-- A pre-existing runtime role (e.g. created by a migration) must still never bypass RLS.
+SELECT format('ALTER ROLE %I NOBYPASSRLS', :'app') \gexec
 SELECT format('CREATE DATABASE %I OWNER %I', :'db', :'owner')
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db') \gexec
 SELECT format('REVOKE ALL ON DATABASE %I FROM PUBLIC', :'db') \gexec
