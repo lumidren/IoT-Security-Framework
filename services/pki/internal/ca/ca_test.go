@@ -402,6 +402,9 @@ func TestServerAndOCSPSignerProfiles(t *testing.T) {
 	if len(cert.ExtKeyUsage) != 2 || cert.Subject.CommonName != "pki" {
 		t.Error("server EKU/CN")
 	}
+	if o, ou := cert.Subject.Organization, cert.Subject.OrganizationalUnit; len(o) != 1 || o[0] != "IronMesh" || len(ou) != 1 || ou[0] != "services" {
+		t.Errorf("server subject O=%v OU=%v, want O=IronMesh OU=services", o, ou)
+	}
 	if _, err := h.device.IssueServer("x", nil, key.Public()); !errors.Is(err, ErrWrongKind) {
 		t.Error("device CA issued server cert")
 	}

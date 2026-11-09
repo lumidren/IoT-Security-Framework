@@ -84,6 +84,9 @@ func TestOfflineCommands(t *testing.T) {
 	if err != nil || len(certs) != 2 || certs[0].Subject.CommonName != "svc-registry" {
 		t.Fatalf("server cert file: %v", err)
 	}
+	if subj := certs[0].Subject; len(subj.Organization) != 1 || subj.Organization[0] != "IronMesh" || len(subj.OrganizationalUnit) != 1 || subj.OrganizationalUnit[0] != "services" {
+		t.Fatalf("issue-server subject %v, want O=IronMesh OU=services", subj)
+	}
 
 	// Non-quorum root with a plain passphrase and the HSM-only guard.
 	dir2 := t.TempDir()

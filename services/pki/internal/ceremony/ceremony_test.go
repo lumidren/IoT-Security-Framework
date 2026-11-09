@@ -172,7 +172,8 @@ func TestFullOfflineCeremony(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueServer: %v", err)
 	}
-	if srv.Certificate.Subject.CommonName != "svc-registry" || len(srv.Certificate.DNSNames) != 1 || len(srv.Certificate.IPAddresses) != 1 {
+	if srv.Certificate.Subject.CommonName != "svc-registry" || len(srv.Certificate.DNSNames) != 1 || len(srv.Certificate.IPAddresses) != 1 ||
+		len(srv.Certificate.Subject.OrganizationalUnit) != 1 || srv.Certificate.Subject.OrganizationalUnit[0] != ca.ServicesOU {
 		t.Fatalf("server cert %+v", srv.Certificate.Subject)
 	}
 	if _, err := os.Stat(srv.KeyPath); err != nil {

@@ -48,6 +48,10 @@ const (
 // Profile constants from the design contract.
 const (
 	Organization = "IronMesh"
+	// ServicesOU is the OU of every Services CA service identity (svc-*):
+	// the policy authn hook only accepts service principals whose subject is
+	// O=IronMesh, OU=services.
+	ServicesOU = "services"
 
 	year = 365 * 24 * time.Hour
 	day  = 24 * time.Hour
@@ -375,6 +379,7 @@ func (c *CA) IssueOperational(req DeviceRequest) (*x509.Certificate, error) {
 // IssueServer issues a 90-day TLS certificate for a service (Services CA
 // only). SANs may be DNS names or IP addresses; the certificate carries both
 // serverAuth and clientAuth so services can use it for mTLS in either role.
+// The subject is CN=<cn>, O=IronMesh, OU=services.
 func (c *CA) IssueServer(cn string, sans []string, pub crypto.PublicKey) (*x509.Certificate, error) {
 	if err := c.requireKind(KindServices); err != nil {
 		return nil, err
@@ -392,7 +397,7 @@ func (c *CA) IssueServer(cn string, sans []string, pub crypto.PublicKey) (*x509.
 	now := c.now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: cn, Organization: []string{Organization}},
+		Subject:               pkix.Name{CommonName: cn, Organization: []string{Organization}, OrganizationalUnit: []string{ServicesOU}},
 		NotBefore:             now,
 		NotAfter:              now.Add(ServerCertValidity),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
