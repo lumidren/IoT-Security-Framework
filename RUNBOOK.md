@@ -11,13 +11,15 @@ Severity levels: **SEV1** fleet-wide impact or active compromise; **SEV2** tenan
 
 | Symptom / alert                         | Go to |
 |-----------------------------------------|-------|
-| `RevocationLatencyHigh`                 | §1.3  |
+| `RevocationLatencyHigh`, `RevocationPublishFailures`, `ironmesh_revocation_outbox_pending` > 0 | §1.3 |
 | CA key suspected compromised            | §1.1  |
 | Operational cert expiry backlog         | §1.4  |
 | Device behaving maliciously / anomaly   | §2    |
 | OTA campaign halted                     | §3    |
 | `AuthFailureBurst`                      | §4.1  |
 | Broker overloaded / `ConnectedDevicesDrop` | §4.2 |
+| `BrokerMessagesDropped`, `BrokerClientQuotaExceeded` | §4.3 |
+| Released device still refused at CONNECT | §2.1  |
 | Tenant isolation suspicion              | §5    |
 | Restore from backup                     | §6    |
 
@@ -59,21 +61,54 @@ tabletop again.
 
 ### 1.2 Single device certificate compromise (SEV3)
 
-1. `curl -X POST https://pki/v1/devices/<device_id>/revoke-all -d '{"reason":"keyCompromise"}'`
-   or Console -> Device -> Quarantine (which revokes and drops ACLs).
-2. Verify: `ironmesh_revocation_latency_seconds` for the event is < 10 s; the device appears
-   disconnected in EMQX (`GET /api/v5/clients/<device_id>` -> 404).
-3. Set lifecycle to `quarantined` so re-enrollment is refused (§2).
+1. Console -> Device -> Quarantine (step-up re-authentication required), or
+   `POST registry/v1/devices/<id>/quarantine`. The registry calls the PKI `revoke-all`, which writes
+   one `device_deny` event per valid serial to the revocation outbox and delivers it to every
+   policy replica; policy deny-lists the device id and the serials and kicks the session. Calling
+   `POST pki:8443/v1/devices/<device_id>/revoke-all` directly (Services CA certificate and a fresh
+   single-use service JWT, `aud=pki`) revokes without the lifecycle change, so re-enrollment would
+   still be allowed: prefer the quarantine.
+2. Verify: `ironmesh_revocation_outbox_pending` (PKI) returns to 0, `ironmesh_revocation_latency_seconds`
+   for the event is < 10 s, and the device is disconnected in EMQX
+   (`GET emqx:18083/api/v5/clients/<device_id>` -> 404). A reconnect attempt shows up as
+   `ironmesh_auth_failures_total{reason="revoked"}` (device id) or `{reason="revoked_serial"}`.
+3. Only one certificate leaked and the device must keep working (rare): revoke that serial with
+   `POST pki:8443/v1/certificates/<serial>/revoke` instead. The event is serial-scoped: the authn hook
+   refuses that serial at CONNECT and kicks the session only if it was admitted with that serial;
+   the device re-enrolls with its bootstrap certificate.
 
-### 1.3 `RevocationLatencyHigh` (SEV2)
+### 1.3 `RevocationLatencyHigh` / `RevocationPublishFailures` (SEV2)
 
-Revocation is propagated by push (PKI -> policy) with CRL polling as fallback (5 s).
-1. Check the PKI publisher: `kubectl logs deploy/pki | jq 'select(.msg=="revocation publish failed")'`.
-2. Check policy readiness: `curl policy:8081/readyz` reports `crl_age_seconds` and
-   `emqx_api_reachable`. If EMQX API is unreachable the kick fails: verify the API key secret and
-   NetworkPolicy `policy-to-emqx-api`.
-3. If the CRL is stale (> 60 s): check `pki:8444/crl/device-ca.crl` `Last-Modified`.
-4. Manual kick: `curl -u $EMQX_API_KEY:$EMQX_API_SECRET -X DELETE http://emqx:18083/api/v5/clients/<id>`.
+<a id="revocationlatencyhigh"></a><a id="revocationpublishfailures"></a>
+
+Every revocation and every `device_release` is written to the PKI's durable `revocation_outbox` in
+the same transaction as the change itself. The PKI makes one delivery attempt inline; the outbox
+dispatcher retries the rest (backoff from 500 ms, capped at 30 s) until **every** policy replica
+behind `PKI_POLICY_URL` (the `policy-headless` Service, `PKI_POLICY_FANOUT=dns`) has answered 2xx.
+Policy deduplicates by `event_id`, so redelivery is safe. Independently, the policy authn hook
+checks the certificate serial at every CONNECT and polls the CRL every 5 s, so a lost push delays
+the kick of a live session but not the refusal of the next CONNECT.
+
+1. Backlog: `ironmesh_revocation_outbox_pending` (PKI) above 0 for more than a minute means some
+   replica has not acknowledged. `ironmesh_revocation_publish_endpoint_total{result="error"}` shows
+   failing fan-out endpoints; logs:
+   `kubectl -n ironmesh logs deploy/pki | jq 'select(.msg=="policy event delivery failed; will retry")'`
+   (fields `error`, `retry_at`). Pending rows:
+   `SELECT event_id, attempts, next_attempt_at, last_error FROM revocation_outbox WHERE delivered_at IS NULL ORDER BY created_at;`
+   (as the schema owner; nothing ever deletes rows). Do not edit or delete rows to "unstick" them.
+2. Typical causes: a policy pod not ready or crash-looping (the fan-out waits for every resolved
+   address: fix or remove the pod, the dispatcher then completes), a token/HMAC mismatch between
+   `PKI_POLICY_TOKEN`/`PKI_POLICY_HMAC_KEY` and the policy secret (every endpoint fails with 401),
+   or NetworkPolicy between `pki` and `policy`.
+3. Kick failures on the policy side: `kubectl -n ironmesh logs deploy/policy | jq 'select(.msg=="failed to kick revoked session; will retry")'`.
+   Unkicked entries are requeued every 30 s; check the EMQX API key secret and that the
+   `emqx` NetworkPolicy admits `policy` on 18083. `/readyz` only reports shutdown, not cache or EMQX
+   health.
+4. CRL fallback stale (`CrlStale`): check `pki:8444/crl/device-ca.crl` `Last-Modified` and
+   `ironmesh_crl_poll_total{result}` on policy.
+5. Manual kick while the backlog drains:
+   `curl -u $EMQX_API_KEY:$EMQX_API_SECRET -X DELETE http://emqx:18083/api/v5/clients/<id>` from a
+   pod that NetworkPolicy admits to 18083 (policy, registry or ota).
 
 ### 1.4 `CertExpiryBacklog` (SEV2)
 
@@ -104,10 +139,15 @@ from the ceremony image.
 **Detection**: anomaly alert (`im.alerts`, SIEM), `topic_violation` events from the policy
 service, firmware hash mismatch, support report.
 
-1. **Quarantine** (Console -> Device -> Quarantine, or `POST registry/v1/devices/<id>/quarantine`).
-   This revokes all certs (PKI), drops ACLs (policy cache), kicks the session (EMQX), sets state
-   `quarantined`, and writes an audit event. If `ANOMALY_AUTO_QUARANTINE=true` this already happened
-   automatically; verify in Audit log.
+1. **Quarantine** (Console -> Device -> Quarantine with step-up re-authentication, or
+   `POST registry/v1/devices/<id>/quarantine`). This sets state `quarantined` and writes an audit
+   event in one transaction, then calls the PKI `revoke-all`: every valid certificate is revoked and
+   a `device_deny` event per serial goes through the revocation outbox to every policy replica, which
+   deny-lists the device id and the serials and kicks the session (§1.3). If the PKI is unreachable
+   the registry kicks the session itself and retries `revoke-all` from its action outbox
+   (`pki_revoke_all`). Verify: audit shows `device.lifecycle` (`active -> quarantined`), `ironmesh_revocation_outbox_pending`
+   returns to 0, the device is gone from `GET emqx:18083/api/v5/clients/<id>`. If auto-quarantine is
+   enabled for the tenant this already happened automatically; verify in the Audit log.
 2. **Preserve evidence**: export the device timeline (`GET registry/v1/devices/<id>/timeline?from=...`),
    last 24 h of telemetry from Redpanda (`rpk topic consume im.ingest --offset -1h | jq 'select(.key=="<t>/<d>")'`),
    and broker auth logs from `im.auth`.
@@ -122,14 +162,27 @@ service, firmware hash mismatch, support report.
 6. **Post-incident**: add a detection rule if the behaviour was not caught, update the Isolation
    Forest baseline exclusion list so the attacker's traffic does not become "normal".
 
-### 2.1 False-positive quarantine
+### 2.1 False-positive quarantine and release
 
 1. Confirm with the device owner; check the alert explanation (`features`, `score`).
-2. `POST registry/v1/devices/<id>/release` -> state `active`. The device **must** re-enroll
-   (its certs were revoked); it does so automatically via bootstrap enrollment within one backoff
-   cycle (<= 6 h, usually < 5 min).
-3. Tune: raise the rule threshold or add the device class to the rule's exclusion list, and run the
-   anomaly service in dry-run (`ANOMALY_AUTO_QUARANTINE=false`) for that tenant for 7 days.
+2. Release (admin, step-up): Console -> Device -> Release, or `POST registry/v1/devices/<id>/release`
+   -> state `active`. The registry calls the PKI `POST /v1/devices/<id>/release`, which queues a
+   `device_release` event in the revocation outbox and delivers it to every policy replica. Policy
+   lifts the **device-level** deny for denies revoked at or before `released_at`; the serials revoked
+   by the quarantine stay revoked (`revoked_serial`), so the device **must** re-enroll. It does so
+   automatically with its bootstrap certificate within one backoff cycle (<= 6 h, usually < 5 min).
+3. Verify: audit shows `device.pki_released`; policy logs
+   `kubectl -n ironmesh logs deploy/policy | jq 'select(.msg=="device release applied")'` with
+   `device_deny_lifted=true` on every replica; `ironmesh_revocation_events_total{kind="device_release"}`
+   increments; the next CONNECT with the **new** certificate is allowed.
+4. If the release answered `503` (`Retry-After: 30`): the quarantine's `revoke-all` was still queued;
+   the device stays quarantined. Retry after the PKI recovers. If the PKI was unreachable at
+   release time the device is `active` in the registry but still denied at CONNECT (`revoked`):
+   the sweeper retries the `pki_release` action (audit `device.pki_release_failed`, later
+   `action.pki_release.completed`); check §1.3 for the outbox. A new quarantine or a decommission
+   cancels a queued release (`action.pki_release.cancelled`).
+5. Tune: raise the rule threshold or add the device class to the rule's exclusion list, and keep
+   auto-quarantine off for that tenant while the rule is re-baselined (7 days).
 
 ## 3. OTA incidents
 
@@ -168,9 +221,15 @@ the console requires a second operator's approval (four-eyes) for dwell times un
 
 ### 4.1 `AuthFailureBurst`
 
-1. `ironmesh_auth_failures_total` by `reason`: `revoked` (expected after mass revocation),
-   `clientid_mismatch` (misconfigured or malicious client), `lifecycle` (devices in
-   `manufactured` state trying to connect before enrollment), `registry_unreachable` (fail-closed).
+1. `ironmesh_auth_failures_total` by `reason`: `revoked` (device id deny-listed: quarantine,
+   decommission, key compromise), `revoked_serial` (a revoked or superseded certificate; expected
+   for an hour-old renewal or after a quarantine), `no_cert_serial` (EMQX did not render
+   `${cert_pem}` in the authn body: **every** CONNECT is denied; fix the EMQX authn body template,
+   or set `POLICY_REQUIRE_CERT_SERIAL=false` only with the security lead's approval because serial
+   revocation then stops applying), `untrusted_issuer` / `cert_serial_mismatch` (certificate not from
+   the expected CA, or a forged serial), `clientid_mismatch` (misconfigured or malicious client),
+   `lifecycle_*` (devices in `manufactured` state trying to connect before enrollment),
+   `registry_unreachable` (fail-closed).
 2. Source IPs from `im.auth` topic; if a single IP: block at the NLB security group / WAF rate rule.
 3. If `registry_unreachable`: policy fails closed and all new connections are refused; existing
    sessions continue. Scale/repair the registry; do **not** set `POLICY_REGISTRY_FAIL_OPEN=true`
@@ -178,12 +237,39 @@ the console requires a second operator's approval (four-eyes) for dwell times un
 
 ### 4.2 Broker capacity / `ConnectedDevicesDrop`
 
-1. `GET emqx:18083/api/v5/stats` for `connections.count`, `sessions.count`, dropped messages.
+1. `GET emqx:18083/api/v5/stats` for `connections.count`, `sessions.count`, dropped messages (18083
+   is reachable only from policy, registry, ota and Prometheus pods; from an operator workstation
+   port-forward the EMQX management Service, e.g. `kubectl -n ironmesh port-forward svc/emqx-api 18083:18083`
+   in the Kubernetes base).
 2. Reconnect storms after a broker restart are expected to settle within `backoff cap` (300 s);
    watch `ironmesh_connected_devices` recovering. If not: check the policy service latency
    (`ironmesh_authz_decision_seconds` p99 should be < 5 ms with cache); EMQX's authn HTTP timeout is 5 s.
 3. Scale EMQX (`kubectl scale sts/emqx --replicas=5`); sessions are persistent (7 d), so devices
    resume without re-subscribing.
+
+### 4.3 `BrokerMessagesDropped` and `BrokerClientQuotaExceeded` (SEV3, SEV2 if widespread)
+
+<a id="brokermessagesdropped"></a><a id="brokerclientquotaexceeded"></a>
+
+`BrokerMessagesDropped` fires on any sustained EMQX drop (expired, no subscribers, quota).
+`BrokerClientQuotaExceeded` (THREAT_MODEL T-40) fires when
+`emqx_messages_dropped_quota_exceeded` + `emqx_messages_dropped_receive_maximum` stays above 1/s
+for 10 minutes: clients exceed their session quota (`mqtt.max_inflight` 32, `max_awaiting_rel`) or
+their receive maximum. The device listener also limits each client to `messages_rate` 10/s and
+`bytes_rate` 64KB/s by pausing its socket; EMQX exports no counter for those pauses, so a flood
+shows up here only once it overflows the session quota (watch `emqx_messages_received` too).
+1. Find the clients: `GET emqx:18083/api/v5/clients?_limit=1000` from a pod admitted to 18083 (or
+   `emqx ctl clients list` in an EMQX pod) and sort by `recv_msg` / `recv_oct` with `jq`; map client
+   ids (device ids) to tenants with `GET registry/v1/devices/<id>`.
+2. A handful of devices: treat as compromised or broken firmware. Quarantine them (§2); check
+   `fw_hash` against the catalogue and the anomaly `beaconing` alerts.
+3. Many devices of one product after an OTA: likely a firmware regression (publish loop). Halt the
+   campaign (§3.1) before quarantining at scale.
+4. Bridge-side drops (`no subscribers`, receive maximum on `svc-bridge`): check that the bridge is
+   connected on the internal listener 8884 and that `BRIDGE_MAX_INFLIGHT` matches the broker's
+   receive maximum; scale the bridge rather than raising device quotas.
+5. Do not raise `messages_rate` / `bytes_rate` to silence the alert; they are the per-client flood
+   control (T-40). Change them only per listener in the Helm values, with the security lead.
 
 ## 5. Tenant isolation suspicion (SEV1)
 
