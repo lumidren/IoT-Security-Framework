@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from app.auth import (
     PERMISSIONS,
     HttpJwks,
+    JtiReplayCache,
     OidcConfig,
     OidcVerifier,
     Principal,
@@ -247,33 +249,35 @@ async def test_http_jwks_discovery_refresh_and_outage() -> None:
     await client.aclose()
 
 
+def _svc_token(name: str = "pki", key: str | None = None, **claims: Any) -> str:
+    now = int(time.time())
+    body: dict[str, Any] = {
+        "iss": name,
+        "aud": "registry",
+        "iat": now,
+        "exp": now + 60,
+        "jti": str(uuid.uuid4()),
+    }
+    body.update(claims)
+    body = {k: v for k, v in body.items() if v is not None}
+    return jwt.encode(body, SERVICE_KEYS[key or name], algorithm="ES256")
+
+
 def test_service_jwt_verifier_and_minter(tmp_path: Path) -> None:
     pems = {n: pem_public(k) for n, k in SERVICE_KEYS.items()}
     v = ServiceJwtVerifier.from_pem("registry", pems)
     now = int(time.time())
-    good = jwt.encode(
-        {"iss": "pki", "aud": "registry", "iat": now, "exp": now + 60},
-        SERVICE_KEYS["pki"],
-        algorithm="ES256",
-    )
+    good = _svc_token()
     assert v.verify(good) == "pki"
     for token in (
         "garbage",
         jwt.encode(
-            {"iss": "pki", "aud": "registry", "iat": now, "exp": now + 60},
+            {"iss": "pki", "aud": "registry", "iat": now, "exp": now + 60, "jti": "x"},
             "k" * 32,
             algorithm="HS256",
         ),
-        jwt.encode(
-            {"iss": "evil", "aud": "registry", "iat": now, "exp": now + 60},
-            SERVICE_KEYS["pki"],
-            algorithm="ES256",
-        ),
-        jwt.encode(
-            {"iss": "pki", "aud": "registry", "iat": now, "exp": now + 60},
-            SERVICE_KEYS["policy"],
-            algorithm="ES256",
-        ),
+        _svc_token("evil", key="pki"),
+        _svc_token("pki", key="policy"),
     ):
         with pytest.raises(ProblemError):
             v.verify(token)
@@ -298,9 +302,9 @@ def test_service_jwt_verifier_and_minter(tmp_path: Path) -> None:
     )
     minter = ServiceTokenMinter.from_file("registry", str(key_path))
     minted = minter.token("pki")
-    assert minted is not None and minter.token("pki") == minted
+    assert minted is not None
     claims = jwt.decode(minted, key.public_key(), algorithms=["ES256"], audience="pki")
-    assert claims["exp"] - claims["iat"] == 300 and claims["iss"] == "registry"
+    assert claims["exp"] - claims["iat"] == 60 and claims["iss"] == claims["sub"] == "registry"
     rsa_path = tmp_path / "rsa.pem"
     rsa_path.write_bytes(
         rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
@@ -311,6 +315,76 @@ def test_service_jwt_verifier_and_minter(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="EC"):
         ServiceTokenMinter.from_file("registry", str(rsa_path))
+
+
+def test_minter_issues_a_fresh_token_per_call() -> None:
+    """Receivers accept each jti once, so two consecutive calls must carry different tokens."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    minter = ServiceTokenMinter("registry", key)
+    first, second = minter.token("pki"), minter.token("pki")
+    assert first is not None and second is not None and first != second
+    c1, c2 = (
+        jwt.decode(t, key.public_key(), algorithms=["ES256"], audience="pki")
+        for t in (first, second)
+    )
+    assert c1["jti"] != c2["jti"]
+    for c in (c1, c2):
+        assert c["aud"] == "pki" and c["iss"] == c["sub"] == "registry"
+        assert 0 < c["exp"] - c["iat"] <= 300 and abs(c["iat"] - time.time()) < 5
+
+
+def test_service_jwt_claim_rules() -> None:
+    v = ServiceJwtVerifier.from_pem("registry", {"pki": pem_public(SERVICE_KEYS["pki"])})
+    now = int(time.time())
+    bad = {
+        "missing jti": _svc_token(jti=None),
+        "missing iat": _svc_token(iat=None),
+        "missing exp": _svc_token(exp=None),
+        "empty jti": _svc_token(jti=""),
+        "numeric jti": _svc_token(jti=7),
+        "long jti": _svc_token(jti="j" * 129),
+        "lifetime > 300 s": _svc_token(iat=now, exp=now + 301),
+        "float iat": _svc_token(iat=now + 0.5),
+        "wrong audience": _svc_token(aud="pki"),
+    }
+    for name, token in bad.items():
+        with pytest.raises(ProblemError) as info:
+            v.verify(token)
+        assert info.value.status == 401, name
+    assert v.verify(_svc_token(iat=now, exp=now + 300)) == "pki"
+
+
+def test_service_jwt_single_use() -> None:
+    pems = {"pki": pem_public(SERVICE_KEYS["pki"]), "ota": pem_public(SERVICE_KEYS["ota"])}
+    v = ServiceJwtVerifier.from_pem("registry", pems)
+    token = _svc_token()
+    assert v.verify(token) == "pki"
+    with pytest.raises(ProblemError, match="already used"):
+        v.verify(token)
+    # The same jti from another issuer is a different token.
+    jti = str(uuid.uuid4())
+    assert v.verify(_svc_token("pki", jti=jti)) == "pki"
+    assert v.verify(_svc_token("ota", jti=jti)) == "ota"
+    # Single use can be disabled (REGISTRY_SERVICE_JWT_SINGLE_USE=false).
+    lax = ServiceJwtVerifier.from_pem("registry", pems, single_use=False)
+    reused = _svc_token()
+    assert lax.verify(reused) == lax.verify(reused) == "pki"
+
+
+def test_jti_replay_cache_bounds() -> None:
+    cache = JtiReplayCache(max_entries=3)
+    assert cache.use("a", forget_after=100, now=0)
+    assert not cache.use("a", forget_after=100, now=50)  # replay inside the window
+    assert cache.use("a", forget_after=300, now=101)  # remembered only until exp + leeway
+    assert cache.use("b", forget_after=150, now=101)
+    assert cache.use("c", forget_after=400, now=101)
+    assert len(cache) == 3
+    # Full: expired ids go first ("b" at t=200), then the oldest ("a").
+    assert cache.use("d", forget_after=500, now=200) and len(cache) == 3
+    assert not cache.use("a", forget_after=500, now=200)
+    assert cache.use("e", forget_after=500, now=200) and len(cache) == 3
+    assert cache.use("a", forget_after=500, now=200)  # "a" was evicted as the oldest
+    assert JtiReplayCache(0).max_entries == 1
 
 
 # ------------------------------------------------------------------------------------------------
@@ -398,6 +472,10 @@ async def test_http_pki_client() -> None:
             return httpx.Response(status["code"], json={})
         if request.url.path.endswith("/revoke-all"):
             return httpx.Response(200, json={"count": 2})
+        if request.url.path.endswith("/release"):
+            body = json.loads(request.content)
+            assert body == {"tenant_id": "7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11", "note": "n" * 1024}
+            return httpx.Response(202, json={"event_id": "ev-1", "event": "device_release"})
         if "/certificates/" in request.url.path:
             if request.url.path.endswith("/ff"):
                 return httpx.Response(404, json={})
@@ -408,6 +486,9 @@ async def test_http_pki_client() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     pki = HttpPkiClient("https://pki:8443/", client, ServiceTokenMinter("registry", key), 30)
     assert await pki.revoke_all("dev-00000000000000aa", "stolen") == 2
+    tenant = "7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11"
+    assert await pki.release("dev-00000000000000aa", tenant, "n" * 2000) == "ev-1"
+    assert seen[-1][:2] == ("POST", "/v1/devices/dev-00000000000000aa/release")
     certs = await pki.device_certificates("dev-00000000000000aa")
     assert certs[0].serial_hex == "0abc" and certs[0].status == "revoked"
     assert certs[0].revocation_reason == "keyCompromise" and certs[0].public_key is not None
@@ -418,6 +499,16 @@ async def test_http_pki_client() -> None:
     assert await pki.get_certificate("00ff") is None
     assert sum(1 for _, p, _ in seen if p == "/v1/certificates/0abc") == 1
     assert all(a and a.startswith("Bearer ") for _, _, a in seen)
+    # Every request carries its own single-use token (distinct jti, short lifetime).
+    claims = [
+        jwt.decode(
+            a.removeprefix("Bearer "), key.public_key(), algorithms=["ES256"], audience="pki"
+        )
+        for _, _, a in seen
+        if a
+    ]
+    assert len({c["jti"] for c in claims}) == len(claims) >= 3
+    assert all(c["exp"] - c["iat"] <= 300 for c in claims)
     pki.invalidate("dev-00000000000000aa")
     assert pki.cert_cache.get("0abc") is None
     status["code"] = 404
@@ -426,6 +517,8 @@ async def test_http_pki_client() -> None:
         status["code"] = code
         with pytest.raises(UpstreamError):
             await pki.revoke_all("dev-00000000000000aa", "x")
+        with pytest.raises(UpstreamError):
+            await pki.release("dev-00000000000000aa", tenant, "x")
         with pytest.raises(UpstreamError):
             await pki.device_certificates("dev-00000000000000cc")
         with pytest.raises(UpstreamError):

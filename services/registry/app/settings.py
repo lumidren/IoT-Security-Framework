@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     """``{"pki": "<PEM public key>", "policy": "...", "anomaly": "...", "ota": "..."}`` (JSON)."""
     service_jwt_private_key_file: str | None = None
     service_jwt_issuer: str = "registry"
+    service_jwt_single_use: bool = True
+    """Remember every accepted service-JWT ``jti`` (per ``iss``) until ``exp`` + leeway and reject
+    a second use with 401 on this instance (same rule as the PKI and policy services)."""
+    service_jwt_replay_cache_size: int = Field(default=100_000, ge=1000)
     ws_ticket_ttl_seconds: int = 60
 
     # --- Kafka -----------------------------------------------------------------------------

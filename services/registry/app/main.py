@@ -166,7 +166,10 @@ def build_context(settings: Settings) -> tuple[AppContext, list[httpx.AsyncClien
             ),
         ),
         service_jwt=ServiceJwtVerifier.from_pem(
-            settings.service_jwt_audience, settings.service_jwt_trusted_keys
+            settings.service_jwt_audience,
+            settings.service_jwt_trusted_keys,
+            single_use=settings.service_jwt_single_use,
+            replay_cache_size=settings.service_jwt_replay_cache_size,
         ),
     )
     return ctx, [mesh, plain]

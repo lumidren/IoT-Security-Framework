@@ -6,8 +6,9 @@
 * The tenant comes from the ``tenant_id`` claim. ``platform_admin`` users may send
   ``X-IronMesh-Tenant`` to act in another tenant; every such request is audited.
 * API keys (``imk_...``) are stored as SHA-256 hashes and carry a role and optional scopes.
-* ``/internal/*`` requires an ES256 service JWT with ``aud=registry`` and a lifetime of at most
-  five minutes, signed by a key pinned per calling service.
+* ``/internal/*`` requires an ES256 service JWT with ``aud=registry``, ``iat``/``exp``/``jti``,
+  a lifetime of at most five minutes and an unused ``jti`` (single use per instance), signed by a
+  key pinned per calling service. Outgoing service JWTs are minted fresh for every request.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import secrets
+import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -40,6 +42,7 @@ API_KEY_PREFIX: Final = "imk_"
 PLATFORM_ADMIN: Final = "platform_admin"
 TENANT_HEADER: Final = "X-IronMesh-Tenant"
 SERVICE_JWT_MAX_LIFETIME: Final = 300
+SERVICE_JWT_MINT_LIFETIME: Final = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,21 +339,66 @@ def parse_tenant_header(value: str) -> str:
 # ------------------------------------------------------------------------------------------------
 
 
+class JtiReplayCache:
+    """Bounded in-memory set of used service-JWT ids (single use per instance).
+
+    Each id is remembered until its token's ``exp`` plus the verification leeway, after which the
+    token would be rejected as expired anyway. When the cache is full, expired ids are dropped
+    first, then the oldest ones.
+    """
+
+    def __init__(self, max_entries: int = 100_000) -> None:
+        self.max_entries = max(1, max_entries)
+        self._seen: dict[str, float] = {}  # key -> forget-after (unix time), insertion ordered
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._seen)
+
+    def use(self, key: str, forget_after: float, now: float | None = None) -> bool:
+        """Record ``key``; ``False`` when it was already used and has not expired."""
+        current = time.time() if now is None else now
+        with self._lock:
+            seen = self._seen.get(key)
+            if seen is not None and seen > current:
+                return False
+            self._seen.pop(key, None)
+            if len(self._seen) >= self.max_entries:
+                for k in [k for k, exp in self._seen.items() if exp <= current]:
+                    del self._seen[k]
+                while len(self._seen) >= self.max_entries:
+                    del self._seen[next(iter(self._seen))]
+            self._seen[key] = forget_after
+            return True
+
+
 @dataclass(slots=True)
 class ServiceJwtVerifier:
+    """ES256 service JWTs: ``iss`` names a trusted caller, ``aud`` this service, ``iat``/``exp``/
+    ``jti`` required, lifetime at most 5 minutes, and (with ``replay``) every ``jti`` single use."""
+
     audience: str
     trusted: dict[str, ec.EllipticCurvePublicKey] = field(default_factory=dict)
     leeway: int = 30
+    replay: JtiReplayCache | None = field(default_factory=JtiReplayCache)
 
     @classmethod
-    def from_pem(cls, audience: str, pems: Mapping[str, str]) -> ServiceJwtVerifier:
+    def from_pem(
+        cls,
+        audience: str,
+        pems: Mapping[str, str],
+        *,
+        single_use: bool = True,
+        replay_cache_size: int = 100_000,
+    ) -> ServiceJwtVerifier:
         keys: dict[str, ec.EllipticCurvePublicKey] = {}
         for name, pem in pems.items():
             key = serialization.load_pem_public_key(pem.encode())
             if not isinstance(key, ec.EllipticCurvePublicKey) or key.curve.name != "secp256r1":
                 raise ValueError(f"service key for {name} must be a P-256 public key")
             keys[name] = key
-        return cls(audience=audience, trusted=keys)
+        replay = JtiReplayCache(replay_cache_size) if single_use else None
+        return cls(audience=audience, trusted=keys, replay=replay)
 
     def verify(self, token: str) -> str:
         try:
@@ -371,22 +419,34 @@ class ServiceJwtVerifier:
                 audience=self.audience,
                 issuer=service,
                 leeway=self.leeway,
-                options={"require": ["exp", "iat", "iss", "aud"]},
+                options={"require": ["exp", "iat", "iss", "aud", "jti"]},
             )
         except jwt.PyJWTError as exc:
             raise unauthorized(f"invalid service token: {exc}") from exc
-        if int(claims["exp"]) - int(claims["iat"]) > SERVICE_JWT_MAX_LIFETIME:
+        iat, exp, jti = claims["iat"], claims["exp"], claims["jti"]
+        if not isinstance(iat, int) or not isinstance(exp, int):
+            raise unauthorized("service token iat/exp must be integers")
+        if exp - iat > SERVICE_JWT_MAX_LIFETIME:
             raise unauthorized("service token lifetime exceeds 5 minutes")
+        if not isinstance(jti, str) or not jti or len(jti) > 128:
+            raise unauthorized("service token jti must be a non-empty string")
+        if self.replay is not None and not self.replay.use(
+            f"{service}\x00{jti}", exp + self.leeway
+        ):
+            raise unauthorized("service token already used (jti replay)")
         return service
 
 
 class ServiceTokenMinter:
-    """Mints the registry's own ES256 service JWTs for calls to PKI / OTA."""
+    """Mints the registry's own ES256 service JWTs for calls to PKI / OTA.
+
+    Every call returns a fresh token (new random ``jti``, ``iat`` = now, ``exp`` = now + 60 s):
+    the receivers accept each ``jti`` once, so tokens are never cached or reused.
+    """
 
     def __init__(self, issuer: str, key: ec.EllipticCurvePrivateKey | None) -> None:
         self.issuer = issuer
         self.key = key
-        self._cache: dict[str, tuple[str, float]] = {}
 
     @classmethod
     def from_file(cls, issuer: str, path: str | None) -> ServiceTokenMinter:
@@ -399,24 +459,19 @@ class ServiceTokenMinter:
         return cls(issuer, key)
 
     def token(self, audience: str) -> str | None:
+        """A fresh single-use service JWT for one request to ``audience``."""
         if self.key is None:
             return None
-        cached = self._cache.get(audience)
-        now = time.time()
-        if cached and cached[1] - now > 60:
-            return cached[0]
-        exp = now + SERVICE_JWT_MAX_LIFETIME
+        now = int(time.time())
         claims = {
             "iss": self.issuer,
             "sub": self.issuer,
             "aud": audience,
-            "iat": int(now),
-            "exp": int(exp),
+            "iat": now,
+            "exp": now + SERVICE_JWT_MINT_LIFETIME,
             "jti": str(uuid.uuid4()),
         }
-        token = jwt.encode(claims, self.key, algorithm="ES256")
-        self._cache[audience] = (token, exp)
-        return token
+        return jwt.encode(claims, self.key, algorithm="ES256")
 
 
 def bearer_token(authorization: str | None) -> str | None:
