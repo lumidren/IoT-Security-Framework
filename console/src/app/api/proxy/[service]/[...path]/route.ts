@@ -1,7 +1,15 @@
 import { type NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/auth';
+import { auth, stepUpMaxAge } from '@/auth';
 import { proxyAllows } from '@/lib/rbac';
-import { isService, serviceBaseUrl } from '@/lib/server/env';
+import { checkSameOrigin } from '@/lib/security/origin';
+import {
+  isAuthFresh,
+  normaliseUpstreamPath,
+  stepUpAction,
+  stepUpChallenge,
+  stepUpProblemBody,
+} from '@/lib/security/step-up';
+import { isService, originCheckEnv, serviceBaseUrl } from '@/lib/server/env';
 import { problemResponse } from '@/lib/server/problem';
 import { readSessionToken } from '@/lib/server/token';
 
@@ -42,8 +50,28 @@ async function proxy(req: NextRequest, context: RouteContext): Promise<NextRespo
   if (!isService(service)) {
     return problemResponse(404, 'Unknown service', `No upstream is configured for "${service}".`);
   }
-  if (path.length === 0 || path[0] === 'internal') {
+  const instance = `/api/proxy/${service}/${path.join('/')}`;
+
+  // The upstream path exactly as the service will route it (dot segments resolved, %2F decoded),
+  // so neither the /internal block nor the step-up classifier can be sidestepped by encoding.
+  const base = new URL(serviceBaseUrl(service));
+  const basePath = base.pathname.replace(/\/+$/, '');
+  const target = new URL(
+    `${base.origin}${basePath}/${path.map((segment) => encodeURIComponent(segment)).join('/')}`,
+  );
+  target.search = req.nextUrl.search;
+  if (basePath && !target.pathname.startsWith(`${basePath}/`)) {
     return problemResponse(404, 'Not found');
+  }
+  const upstreamPath = normaliseUpstreamPath(target.pathname.slice(basePath.length));
+  if (upstreamPath.length === 0 || upstreamPath[0] === 'internal') {
+    return problemResponse(404, 'Not found');
+  }
+
+  // CSRF: mutations must originate from the console's own pages.
+  const origin = checkSameOrigin(req.method, req.headers, req.url, originCheckEnv());
+  if (!origin.ok) {
+    return problemResponse(403, 'Cross-origin request blocked', origin.reason, { instance });
   }
 
   const session = await auth();
@@ -70,10 +98,22 @@ async function proxy(req: NextRequest, context: RouteContext): Promise<NextRespo
     return problemResponse(401, 'Access token expired', 'Sign in again to continue.');
   }
 
-  const target = new URL(
-    `${serviceBaseUrl(service)}/${path.map((segment) => encodeURIComponent(segment)).join('/')}`,
-  );
-  target.search = req.nextUrl.search;
+  // Step-up: destructive actions need a recent authentication (THREAT_MODEL T-51, T-65).
+  const action = stepUpAction(service, req.method, upstreamPath);
+  if (action) {
+    const maxAge = stepUpMaxAge();
+    if (!isAuthFresh(tokenInfo.authTime, maxAge)) {
+      const response = NextResponse.json(stepUpProblemBody(action, maxAge, instance), {
+        status: 401,
+        headers: {
+          'content-type': 'application/problem+json',
+          'cache-control': 'no-store',
+          'www-authenticate': stepUpChallenge(maxAge),
+        },
+      });
+      return response;
+    }
+  }
 
   const headers = new Headers();
   for (const name of FORWARDED_REQUEST_HEADERS) {
@@ -102,7 +142,7 @@ async function proxy(req: NextRequest, context: RouteContext): Promise<NextRespo
       502,
       'Upstream unavailable',
       `The ${service} service could not be reached.`,
-      { instance: `/api/proxy/${service}/${path.join('/')}` },
+      { instance },
     );
   }
 

@@ -29,3 +29,15 @@ export function serviceBaseUrl(service: Service): string {
   const raw = process.env[primary] || process.env[fallback] || DEFAULTS[service];
   return raw.replace(/\/+$/, '');
 }
+
+/**
+ * Settings for the CSRF origin check. Spelled out member by member so the build-time inlined
+ * `NEXT_PUBLIC_APP_URL` is used even when the runtime environment does not repeat it.
+ */
+export function originCheckEnv(): Record<string, string | undefined> {
+  return {
+    AUTH_URL: process.env.AUTH_URL,
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+    AUTH_TRUST_HOST: process.env.AUTH_TRUST_HOST,
+  };
+}

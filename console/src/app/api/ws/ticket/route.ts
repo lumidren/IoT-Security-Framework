@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
 import { WsTicketSchema } from '@/lib/api/schemas';
-import { serviceBaseUrl } from '@/lib/server/env';
+import { checkSameOrigin } from '@/lib/security/origin';
+import { originCheckEnv, serviceBaseUrl } from '@/lib/server/env';
 import { problemResponse } from '@/lib/server/problem';
 import { readSessionToken } from '@/lib/server/token';
 
@@ -14,6 +15,10 @@ export const dynamic = 'force-dynamic';
  * the registry's `/v1/ws` endpoint on that URL (see README).
  */
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // CSRF: a ticket is a bearer credential for the live feed; only console pages may mint one.
+  const origin = checkSameOrigin(req.method, req.headers, req.url, originCheckEnv());
+  if (!origin.ok) return problemResponse(403, 'Cross-origin request blocked', origin.reason);
+
   const session = await auth();
   if (!session?.user) return problemResponse(401, 'Authentication required');
   const tokenInfo = await readSessionToken(req);
