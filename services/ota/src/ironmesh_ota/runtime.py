@@ -29,13 +29,8 @@ from .integrations.mqtt import (
     LoggingPublisher,
     MqttPublisher,
 )
+from .integrations.pki import FakePkiPolicy, HttpPkiPolicyClient, PkiPolicyClient
 from .integrations.registry import FakeRegistry, HttpRegistryClient, RegistryClient
-from .integrations.tenant_keys import (
-    FileTenantKeyProvider,
-    KmsTenantKeyProvider,
-    StaticTenantKeyProvider,
-    TenantKeyProvider,
-)
 from .observability import Metrics, configure_logging, configure_tracing, get_logger
 from .repository.base import Database
 from .repository.memory import MemoryDatabase
@@ -182,6 +177,19 @@ def build_user_verifier(settings: Settings) -> TokenVerifier:
     )
 
 
+def _registry_token(settings: Settings) -> Callable[[str], str]:
+    """``OTA_REGISTRY_TOKEN`` (the registry's ``ota`` internal token) or a service JWT."""
+    if settings.registry_token is not None:
+        token = settings.registry_token.get_secret_value()
+        return lambda _audience: token
+    if settings.service_token_key_file is not None:
+        minter = ServiceTokenMinter.from_file(
+            settings.service_token_key_file, settings.service_token_issuer
+        )
+        return minter.mint
+    raise ConfigurationError("registry calls need OTA_REGISTRY_TOKEN or OTA_SERVICE_TOKEN_KEY_FILE")
+
+
 def _token_source(settings: Settings) -> Callable[[str], str]:
     if settings.service_token_key_file is not None:
         minter = ServiceTokenMinter.from_file(
@@ -218,21 +226,24 @@ def build_container(settings: Settings) -> Container:
 
     registry: RegistryClient
     device_keys: DeviceKeyResolver
-    if settings.registry_url or settings.pki_url:
-        token = _token_source(settings)
+    pki: PkiPolicyClient
     if settings.registry_url:
         http = build_http_client(settings, settings.registry_url)
         closers.append(http.aclose)
-        registry = HttpRegistryClient(http, token)
+        registry = HttpRegistryClient(http, _registry_token(settings))
     else:
-        log.warning("OTA_REGISTRY_URL unset: using an empty in-memory registry")
+        log.warning("OTA_REGISTRY_URL unset: in-memory registry, notifies are not delivered")
         registry = FakeRegistry()
     if settings.pki_url:
+        token = _token_source(settings)
         http = build_http_client(settings, settings.pki_url)
         closers.append(http.aclose)
         device_keys = PkiDeviceKeyResolver(http, token)
+        pki = HttpPkiPolicyClient(http, token)
     else:
+        log.warning("OTA_PKI_URL unset: firmware keys are not pushed to the PKI")
         device_keys = StaticDeviceKeyResolver()
+        pki = FakePkiPolicy()
 
     publisher: MqttPublisher
     if settings.emqx_api_url and settings.emqx_api_key and settings.emqx_api_secret:
@@ -244,7 +255,7 @@ def build_container(settings: Settings) -> Container:
     elif settings.mqtt_host:  # pragma: no cover - needs a broker
         publisher = AiomqttPublisher(settings)
     else:
-        log.warning("no broker configured: OtaNotify messages are logged, not published")
+        log.warning("no broker configured: retained notify clears are logged, not published")
         publisher = LoggingPublisher()
 
     events: EventPublisher
@@ -252,22 +263,6 @@ def build_container(settings: Settings) -> Container:
         events = KafkaEventPublisher(settings.kafka_brokers or "", ssl=settings.kafka_tls_enabled)
     else:
         events = LoggingEventPublisher()
-
-    tenant_keys: TenantKeyProvider
-    if settings.tenant_keys_provider is SigningProvider.KMS_WRAPPED:  # pragma: no cover - AWS
-        tenant_keys = KmsTenantKeyProvider(
-            _boto("secretsmanager", settings),
-            _boto("kms", settings),
-            prefix=settings.tenant_key_secret_prefix,
-            key_id=settings.tenant_keys_kek_key_id,
-        )
-    elif settings.tenant_keys_dir is not None:
-        tenant_keys = FileTenantKeyProvider(
-            settings.tenant_keys_dir, _secret(settings.tenant_keys_passphrase)
-        )
-    else:
-        log.warning("no tenant command keys configured: ephemeral dev keys will sign notifies")
-        tenant_keys = StaticTenantKeyProvider(generate_missing=True)
 
     service_verifier: TokenVerifier | None = None
     if settings.service_public_keys_dir is not None:
@@ -285,7 +280,7 @@ def build_container(settings: Settings) -> Container:
         registry=registry,
         publisher=publisher,
         events=events,
-        tenant_keys=tenant_keys,
+        pki=pki,
         device_keys=device_keys,
         metrics=Metrics(),
         user_verifier=build_user_verifier(settings),

@@ -29,9 +29,14 @@ from ironmesh_ota.domain import TargetDevice
 from ironmesh_ota.integrations.device_keys import StaticDeviceKeyResolver
 from ironmesh_ota.integrations.events import RecordingEventPublisher
 from ironmesh_ota.integrations.leader import FakeLeaderLock, FakeLockServer
-from ironmesh_ota.integrations.mqtt import RecordingPublisher
-from ironmesh_ota.integrations.registry import FakeRegistry
-from ironmesh_ota.integrations.tenant_keys import StaticTenantKeyProvider
+from ironmesh_ota.integrations.mqtt import OutboundMessage, RecordingPublisher
+from ironmesh_ota.integrations.pki import FakePkiPolicy
+from ironmesh_ota.integrations.registry import (
+    Downlink,
+    DownlinkReceipt,
+    FakeRegistry,
+    notify_json,
+)
 from ironmesh_ota.observability import Metrics
 from ironmesh_ota.repository.base import Database
 from ironmesh_ota.repository.memory import MemoryDatabase
@@ -69,11 +74,51 @@ class Keys:
     user_key: ec.EllipticCurvePrivateKey
     signer: KeyringSigner
     tenant_keys: dict[uuid.UUID, ed25519.Ed25519PrivateKey] = field(default_factory=dict)
+    """Tenant command keys of the *registry* simulated by :class:`SigningRegistry`."""
 
     def tenant_key(self, tenant: uuid.UUID) -> ed25519.Ed25519PrivateKey:
         if tenant not in self.tenant_keys:
             self.tenant_keys[tenant] = ed25519.Ed25519PrivateKey.generate()
         return self.tenant_keys[tenant]
+
+
+class SigningRegistry(FakeRegistry):
+    """Test double of the registry's downlink endpoint: decodes the JSON body exactly as the
+    registry does (hex -> bytes, validated by the wire library), signs it with the registry's
+    tenant command key on a per-device type-7 stream and publishes it to the shared broker."""
+
+    def __init__(self, keys: Keys, broker: RecordingPublisher, clock: Clock) -> None:
+        super().__init__()
+        self._keys = keys
+        self._broker = broker
+        self._clock = clock
+        self.seqs: dict[tuple[uuid.UUID, str], int] = {}
+        self.requests: list[dict[str, Any]] = []
+
+    async def ota_notify(self, downlink: Downlink) -> DownlinkReceipt:
+        await super().ota_notify(downlink)  # failure injection + record
+        raw = notify_json(downlink.body)
+        self.requests.append({"type": "ota_notify", "body": raw, "retain": downlink.retain})
+        body = envelope.OtaNotify.from_map(
+            envelope.OtaNotify(
+                campaign_id=raw["campaign_id"],
+                manifest=bytes.fromhex(raw["manifest"]),
+                url=raw["url"],
+                delta_from=bytes.fromhex(raw["delta_from"]) if raw["delta_from"] else None,
+            ).to_map()
+        )
+        key = (downlink.tenant_id, downlink.device_id)
+        seq = self.seqs[key] = self.seqs.get(key, 0) + 1
+        identity = envelope.SigningIdentity.tenant(
+            self._keys.tenant_key(downlink.tenant_id), str(downlink.tenant_id)
+        )
+        now = self._clock()
+        payload = envelope.encode(
+            envelope.Message(seq=seq, ts=int(now.timestamp()), body=body), identity
+        )
+        topic = ids.build_topic(str(downlink.tenant_id), downlink.device_id, TopicClass.OTA_NOTIFY)
+        await self._broker.publish([OutboundMessage(topic, payload, downlink.retain, 1)])
+        return DownlinkReceipt(seq=seq, published_at=now)
 
 
 @pytest.fixture(scope="session")
@@ -119,10 +164,11 @@ class Env:
     client: httpx.AsyncClient
     keys: Keys
     clock: Clock
-    registry: FakeRegistry
+    registry: SigningRegistry
     publisher: RecordingPublisher
+    """The broker: registry-published notifies and this service's retained clears."""
     events: RecordingEventPublisher
-    tenant_keys: StaticTenantKeyProvider
+    pki: FakePkiPolicy
     tmp_path: Path
 
     # --- auth -----------------------------------------------------------------------------
@@ -148,8 +194,6 @@ class Env:
         return jwt.encode(claims, self.keys.user_key, algorithm="ES256")
 
     def auth(self, tenant: uuid.UUID, role: str = "admin", sub: str = "alice") -> dict[str, str]:
-        if tenant not in self.tenant_keys.keys:
-            self.tenant_keys.keys[tenant] = self.keys.tenant_key(tenant)
         return {"Authorization": f"Bearer {self.token(tenant, role, sub)}"}
 
     @property
@@ -358,15 +402,12 @@ def build_container(
     *,
     db: Database | None = None,
     **settings_overrides: Any,
-) -> tuple[
-    Container, FakeRegistry, RecordingPublisher, RecordingEventPublisher, StaticTenantKeyProvider
-]:
+) -> tuple[Container, SigningRegistry, RecordingPublisher, RecordingEventPublisher, FakePkiPolicy]:
     settings = make_settings(tmp_path, **settings_overrides)
-    registry = FakeRegistry()
     publisher = RecordingPublisher()
+    registry = SigningRegistry(keys, publisher, clock)
     events = RecordingEventPublisher()
-    tenant_keys = StaticTenantKeyProvider(keys.tenant_keys)
-    tenant_keys.keys = keys.tenant_keys  # share the dict so new tenants appear
+    pki = FakePkiPolicy()
     container = Container(
         settings=settings,
         db=db or MemoryDatabase(),
@@ -377,7 +418,7 @@ def build_container(
         registry=registry,
         publisher=publisher,
         events=events,
-        tenant_keys=tenant_keys,
+        pki=pki,
         device_keys=StaticDeviceKeyResolver(),
         metrics=Metrics(),
         user_verifier=StaticKeyTokenVerifier(
@@ -387,13 +428,13 @@ def build_container(
         leader=FakeLeaderLock(FakeLockServer(), "replica-1"),
         clock=clock,
     )
-    return container, registry, publisher, events, tenant_keys
+    return container, registry, publisher, events, pki
 
 
 async def make_env(
     tmp_path: Path, keys: Keys, clock: Clock, *, db: Database | None = None, **overrides: Any
 ) -> AsyncIterator[Env]:
-    container, registry, publisher, events, tenant_keys = build_container(
+    container, registry, publisher, events, pki = build_container(
         tmp_path, keys, clock, db=db, **overrides
     )
     app = create_app(container, run_controller=False, run_consumer=False)
@@ -409,7 +450,7 @@ async def make_env(
             registry=registry,
             publisher=publisher,
             events=events,
-            tenant_keys=tenant_keys,
+            pki=pki,
             tmp_path=tmp_path,
         )
 

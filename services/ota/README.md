@@ -14,7 +14,8 @@ reimplemented here.
 |---|---|
 | `src/ironmesh_ota/api/` | Routers: firmware, campaigns, internal, health/metrics |
 | `services/firmware.py` | Upload, signing, pre-notify verification, delta generation, rollback re-sign |
-| `services/rollout.py` | Stage engine, OtaNotify signing, status ingestion, halts, timeouts, refresh |
+| `services/rollout.py` | Stage engine, OtaNotify requests to the registry, status ingestion, halts, timeouts, redelivery |
+| `services/key_sync.py` | Pushes the firmware public keys to the PKI tenant policy (outbox `pki_key_sync`) |
 | `services/campaigns.py` | Campaign API operations: create/approve/start/pause/resume/cancel/halt/rollback |
 | `controller.py` | Background rollout controller behind a Postgres advisory lock |
 | `ingest.py` | `POST /internal/v1/ota/status` and the `im.ingest` consumer (`msg_class=ota_status`) |
@@ -22,7 +23,7 @@ reimplemented here.
 | `storage.py` | `ArtifactStore` protocol: S3 (conditional writes, Object Lock, SSE-KMS) and local FS |
 | `repository/` | `Database` protocol, SQLAlchemy async + RLS implementation, in-memory fake |
 | `migrations/` | Alembic schema with `FORCE ROW LEVEL SECURITY` and the `ota_app` role |
-| `integrations/` | Registry, PKI, EMQX/MQTT, Kafka, tenant keys and leader-lock adapters (protocol + fake each) |
+| `integrations/` | Registry (resolve + downlink), PKI (device keys, firmware-key policy), EMQX/MQTT (retained clears), Kafka and leader-lock adapters (protocol + fake each) |
 
 ## API
 
@@ -87,10 +88,11 @@ are rejected with 401, since only the registry can verify them.
 
 ## Rollouts
 
-* **Targeting** is resolved through the registry at start time. A device is targeted when it is
-  in any listed group, listed by id, or carries all listed tags. Only `active` devices of the
-  firmware's product qualify, and devices already running the image are skipped. Skipped devices
-  and the reason are recorded in the `campaign.start` audit event.
+* **Targeting** is resolved at start time with the registry's
+  `POST /internal/v1/tenants/{tenant}/devices/resolve` (API_CONTRACT §1.12). A device is targeted
+  when it is in any listed group, listed by id, or carries all listed tags. Only `active` devices
+  of the firmware's product qualify, and devices already running the image are skipped. Skipped
+  devices and the reason are recorded in the `campaign.start` audit event.
 * **Stages** default to 1% → 10% → 100% (dwell 3600/3600/0 s, max failure rate 0.05). Percents
   must be strictly increasing and end at 100. Each stage covers `ceil(N·p/100)` devices
   cumulatively. Devices are ordered by `SHA-256(campaign_id ":" device_id)`, so a re-run selects
@@ -105,11 +107,23 @@ are rejected with 401, since only the registry can verify them.
   the withdrawn notifies.
 * Devices that never report are marked `failed`/`TIMEOUT` after `OTA_DEVICE_TIMEOUT_S`. A later
   real report still records the true outcome.
-* **Retained OtaNotify** envelopes are tenant-signed (`kid = tenant-cmd-<tenant>`, QoS 1,
-  retained, W3C `traceparent` user property). Receivers reject envelopes older than 300 s, so
-  the controller re-signs notifies that devices have not acknowledged every
-  `OTA_NOTIFY_REFRESH_S` (240 s). Final outcomes and terminal campaign states clear the retained
-  message.
+* **OtaNotify is signed by the registry**, the only holder of the tenant command key. After the
+  campaign transaction commits, each body goes to
+  `POST /internal/v1/tenants/{tenant}/devices/{id}/downlink` (`{type: "ota_notify", body, retain:
+  true}`, `bstr` fields hex, W3C `traceparent` header); the registry signs it on the device's
+  type-7 replay stream and publishes it retained. A notify counts as delivered once the registry
+  answers (`last_notified_at`); undelivered ones are re-sent by the controller after
+  `OTA_NOTIFY_RETRY_S` (running campaigns only), and resuming a halted campaign re-sends every
+  withdrawn notify. Delivered notifies are never re-signed: receivers enforce only the future
+  bound of the timestamp window for retained types 4/7/9 (WIRE_FORMAT §3.6). Final outcomes and
+  terminal campaign states clear the retained message; the clear (an empty, unsigned payload) is
+  the only thing this service still publishes to the broker itself.
+* **Firmware keys in the PKI**: the service owns `PUT /v1/tenants/{t}/firmware-keys`
+  (API_CONTRACT §5). Every tenant with firmware is listed in the `pki_key_sync` outbox (added in
+  the transaction of its first upload, backfilled by migration `0002`). The controller leader
+  pushes all trusted public keys (Ed25519 and ML-DSA-65) to tenants whose last accepted key-set
+  digest differs from the current ring, retrying failures after 60 s; startup marks every tenant
+  for a fresh push, so a signing-key rotation (new ring, restart) reaches the PKI.
 * **Verification before notify**: the signed manifest is re-verified with the trusted keys, its
   fields are checked against the record, and the stored image (and each delta patch) is re-hashed
   at campaign start, at every stage start and on resume. A mismatch fails the start (409, audited)
@@ -173,14 +187,14 @@ Names follow `deploy/helm/ironmesh` (ota block). Empty values mean "default".
 | Database | `OTA_DB_HOST/PORT/NAME/USER/SSLMODE/IAM_AUTH/PASSWORD` or `OTA_DATABASE_URL`; `OTA_DATABASE_BACKEND=memory` for local experiments |
 | Storage | `OTA_ARTIFACT_STORE` (`s3`/`filesystem`), `OTA_ARTIFACT_BUCKET`, `OTA_S3_KMS_KEY_ARN`, `OTA_S3_REGION`, `OTA_S3_OBJECT_LOCK_MODE`, `OTA_ARTIFACT_PATH`, `OTA_DOWNLOAD_HMAC_SECRET`, `OTA_DOWNLOAD_URL_TTL_S` |
 | Signing | `OTA_SIGNING_PROVIDER` (`kms-wrapped`/`file`), `OTA_SIGNING_KEK_KEY_ID`, `OTA_SIGNING_KEY_SECRET_ARN`, `OTA_SIGNING_KEY_ID`, `OTA_PQ_SIGNING_ENABLED`, `OTA_REQUIRE_PQ`, `OTA_SIGNING_PRIVATE_KEY_PEM`, `OTA_SIGNING_KEY_FILE`, `OTA_SIGNING_KEYRING_FILE`, `OTA_SIGNING_PASSPHRASE` |
-| Tenant keys | `OTA_TENANT_KEYS_PROVIDER`, `OTA_TENANT_KEYS_KEK_KEY_ID`, `OTA_TENANT_KEY_SECRET_PREFIX`, `OTA_TENANT_KEYS_DIR`, `OTA_TENANT_KEYS_PASSPHRASE` |
-| Auth | `OTA_OIDC_ISSUER`, `OTA_OIDC_AUDIENCE`, `OTA_OIDC_JWKS_URL`, `OTA_INTERNAL_TOKEN`, `OTA_SERVICE_PUBLIC_KEYS_DIR`, `OTA_SERVICE_TOKEN_KEY_FILE`, `OTA_INTERNAL_ALLOWED_SERVICES` |
-| Peers | `OTA_REGISTRY_URL`, `OTA_PKI_URL`, `OTA_EMQX_API_URL`, `OTA_EMQX_API_KEY`, `OTA_EMQX_API_SECRET` (or `OTA_MQTT_HOST` for a direct MQTT 5 client), `OTA_TLS_CERT_FILE/KEY_FILE/CA_FILE` |
+| Auth | `OTA_OIDC_ISSUER`, `OTA_OIDC_AUDIENCE`, `OTA_OIDC_JWKS_URL`, `OTA_INTERNAL_TOKEN` (accepted on `/internal/*`; also the PKI bearer when no service-JWT key is set), `OTA_SERVICE_PUBLIC_KEYS_DIR`, `OTA_SERVICE_TOKEN_KEY_FILE` (ES256 service JWTs, `iss=sub=ota`), `OTA_INTERNAL_ALLOWED_SERVICES` |
+| Peers | `OTA_REGISTRY_URL` + `OTA_REGISTRY_TOKEN` (secret: the `ota` entry of the registry's `REGISTRY_INTERNAL_TOKENS`; without it a service JWT `aud=registry` is used), `OTA_PKI_URL` (device keys and the firmware-key policy push), `OTA_EMQX_API_URL`, `OTA_EMQX_API_KEY`, `OTA_EMQX_API_SECRET` (or `OTA_MQTT_HOST` for a direct MQTT 5 client; retained-notify clears only), `OTA_TLS_CERT_FILE/KEY_FILE/CA_FILE` |
 | Kafka | `OTA_KAFKA_BROKERS`, `OTA_KAFKA_TOPIC_INGEST/AUDIT/CAMPAIGNS/COMMANDS`, `OTA_KAFKA_CONSUMER_GROUP`, `OTA_KAFKA_TLS_ENABLED` |
-| Controller | `OTA_CONTROLLER_ENABLED`, `OTA_CONTROLLER_INTERVAL_S`, `OTA_DEVICE_TIMEOUT_S`, `OTA_NOTIFY_REFRESH_S`, `OTA_HALT_MIN_SAMPLE`, `OTA_FOUR_EYES_MIN_DWELL_S`, `OTA_LEADER_LOCK_KEY` |
+| Controller | `OTA_CONTROLLER_ENABLED`, `OTA_CONTROLLER_INTERVAL_S`, `OTA_DEVICE_TIMEOUT_S`, `OTA_NOTIFY_RETRY_S` (default 60: re-send notifies the registry did not accept), `OTA_HALT_MIN_SAMPLE`, `OTA_FOUR_EYES_MIN_DWELL_S`, `OTA_LEADER_LOCK_KEY` |
 
-`OTA_ENV=prod` refuses to start without Postgres, S3, KMS-wrapped signing and tenant keys, OIDC,
-a broker, Kafka, the registry and the PKI.
+`OTA_ENV=prod` refuses to start without Postgres, S3, KMS-wrapped firmware signing, OIDC, a
+broker, Kafka, the registry (with `OTA_REGISTRY_TOKEN` or `OTA_SERVICE_TOKEN_KEY_FILE`) and the
+PKI. The service holds no tenant command keys.
 
 ## Development
 
@@ -198,14 +212,14 @@ python -m venv .venv
 Tests marked `postgres` run against `OTA_TEST_DATABASE_URL` (an owner role; CI service
 container) or a throw-away server from the `pgserver` wheel, and are skipped when neither is
 available. S3, KMS and Secrets Manager are exercised with `moto`. Registry, PKI and EMQX are
-exercised with `httpx.MockTransport`.
+exercised with `httpx.MockTransport`; campaign tests use a registry fake that decodes the
+downlink JSON like the registry, signs with a test tenant key and publishes to a recording broker.
 
 Schema: `OTA_MIGRATION_DATABASE_URL=postgresql+asyncpg://owner@host/ota python -m ironmesh_ota.migrate`.
 The migration creates `ota_app NOLOGIN` if it is missing. Infrastructure grants it LOGIN and a
 credential.
 
-Dev keys: `OTA_SIGNING_PASSPHRASE=… python -m ironmesh_ota.keytool init --out ring.json --mldsa`
-and `OTA_TENANT_KEYS_PASSPHRASE=… python -m ironmesh_ota.keytool tenant-key --tenant <uuid> --dir keys/`.
+Dev keys: `OTA_SIGNING_PASSPHRASE=… python -m ironmesh_ota.keytool init --out ring.json --mldsa`.
 
 ## Container
 
@@ -224,7 +238,10 @@ HEALTHCHECK.
   cluster environment.
 * `OTA_KAFKA_TOPIC_COMMANDS` is accepted but not consumed. Campaign device state comes from
   OtaStatus.
-* Downlink `seq` uses a microsecond clock so that it stays monotonic alongside the registry, which
-  signs with the same tenant key. The registry must use the same scheme (see `sequencer.py`).
+* Retained-notify clears still go straight to the broker (EMQX API): the registry's downlink
+  endpoint only accepts signed `ota_notify` bodies. A registry `409` (device no longer `active`)
+  is retried by redelivery until the device times out.
+* Firmware-key pushes run on the controller leader (and once at startup); with
+  `OTA_CONTROLLER_ENABLED=false` only the startup push happens.
 
 Maintained by lumidren.

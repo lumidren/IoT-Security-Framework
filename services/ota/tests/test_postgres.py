@@ -226,10 +226,8 @@ async def test_repository_contract(any_db: Database) -> None:
         ]
         await repo.add_campaign_devices(devices)
         await repo.add_campaign_devices([])
-        notified = [
-            replace(
-                d, state=DeviceState.NOTIFIED, notified_at=now, last_notified_at=now, notify_count=1
-            )
+        notified = [  # queued for the registry, not yet delivered
+            replace(d, state=DeviceState.NOTIFIED, notified_at=now, notify_count=1)
             for d in devices[:3]
         ]
         await repo.update_campaign_devices(notified)
@@ -239,22 +237,31 @@ async def test_repository_contract(any_db: Database) -> None:
         dev = await repo.get_campaign_device(campaign.id, device_id(0), for_update=True)
         assert dev is not None and dev.state is DeviceState.NOTIFIED and dev.from_fw_hash == sha[1]
         assert await repo.get_campaign_device(campaign.id, "dev-ffffffffffffffff") is None
+        later = now + timedelta(seconds=1)
         found = await repo.find_campaign_devices(
             campaign.id,
             stage_index=0,
             states={DeviceState.NOTIFIED},
-            notified_before=now + timedelta(seconds=1),
-            refresh_before=now + timedelta(seconds=1),
+            notified_before=later,
+            undelivered_before=later,
         )
         assert [d.device_id for d in found] == [device_id(0), device_id(2)]
         assert await repo.find_campaign_devices(campaign.id, notified_before=now) == []
         assert (
             await repo.find_campaign_devices(
-                campaign.id, states={DeviceState.NOTIFIED}, refresh_before=now
+                campaign.id, states={DeviceState.NOTIFIED}, undelivered_before=now
             )
             == []
         )
-        assert len(await repo.find_campaign_devices(campaign.id, refresh_before=now)) == 3
+        await repo.mark_notified(campaign.id, [device_id(0), "dev-ffffffffffffffff"], later)
+        await repo.mark_notified(campaign.id, [], later)
+        undelivered = await repo.find_campaign_devices(
+            campaign.id, states={DeviceState.NOTIFIED}, undelivered_before=later
+        )
+        assert [d.device_id for d in undelivered] == [device_id(1), device_id(2)]
+        marked = await repo.get_campaign_device(campaign.id, device_id(0))
+        assert marked is not None and marked.last_notified_at == later
+        assert len(await repo.find_campaign_devices(campaign.id, undelivered_before=later)) == 5
         dpage = await repo.list_campaign_devices(campaign.id, None, None, 4)
         assert len(dpage.items) == 4 and dpage.next_cursor
         rest = await repo.list_campaign_devices(campaign.id, None, dpage.next_cursor, 4)
@@ -296,6 +303,21 @@ async def test_repository_contract(any_db: Database) -> None:
 
     refs = await any_db.due_campaigns()
     assert any(r.campaign_id == campaign.id and r.tenant_id == tenant for r in refs)
+
+    # firmware-key sync outbox: add_firmware registered the tenant; due until the PKI accepted
+    # the current key-set digest, back-off on failure, everything again after a restart
+    soon = now + timedelta(days=1)
+    assert tenant in await any_db.due_key_syncs("digest-1", soon, 10_000)
+    await any_db.finish_key_sync(
+        tenant, digest="digest-1", now=now, error="boom", retry_at=now + timedelta(days=2)
+    )
+    assert tenant not in await any_db.due_key_syncs("digest-1", soon, 10_000)
+    await any_db.finish_key_sync(tenant, digest="digest-1", now=now)
+    assert tenant not in await any_db.due_key_syncs("digest-1", now + timedelta(days=3), 10_000)
+    assert tenant in await any_db.due_key_syncs("digest-2", now + timedelta(days=3), 10_000)
+    assert await any_db.request_key_sync_all(soon) >= 1
+    assert tenant in await any_db.due_key_syncs("digest-1", soon, 10_000)
+    assert await any_db.due_key_syncs("digest-1", now - timedelta(days=1), 10_000) == []
     assert sha[1].hex() in await any_db.known_hashes("gw")
     assert await any_db.ping()
 
@@ -358,6 +380,16 @@ async def test_migration_enables_forced_rls(pg_urls: tuple[str, str]) -> None:
             )
         ).scalar()
         assert owners != "ota_app"
+        # the firmware-key sync outbox is identifier-only (no RLS) and writable by the service
+        sync = (
+            await conn.execute(
+                text(
+                    "SELECT relrowsecurity, has_table_privilege('ota_app', 'pki_key_sync', "
+                    "'UPDATE') FROM pg_class WHERE relname = 'pki_key_sync'"
+                )
+            )
+        ).one()
+        assert sync == (False, True)
     await engine.dispose()
 
 

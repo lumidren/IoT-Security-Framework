@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import uuid
 from typing import Any
@@ -300,7 +301,9 @@ async def test_device_timeout_counts_as_failed(env: Env) -> None:
     assert late["device_state"] == "success"
 
 
-async def test_notify_refresh_resigns_unacknowledged_notifies(env: Env) -> None:
+async def test_retained_notifies_are_not_resigned(env: Env) -> None:
+    """Retained OtaNotify stays valid (receivers enforce only the future bound for type 7), so
+    a delivered notify is never re-sent, however old it gets."""
     tenant, fw, campaign, devices, image = await _setup(
         env,
         10,
@@ -311,13 +314,53 @@ async def test_notify_refresh_resigns_unacknowledged_notifies(env: Env) -> None:
     cid = campaign["id"]
     await env.action(tenant, cid, "start")
     notified = await _stage_devices(env, tenant, cid, "notified")
-    await env.status(tenant, cid, notified[0], S.RECEIVED)
-    env.clock.advance(250)
+    assert len(notified) == 10
+    env.clock.advance(1800)
     await env.tick()
-    assert len(env.notifies(tenant, notified[0])) == 1  # acknowledged: no refresh
-    refreshed = env.notifies(tenant, notified[1])
-    assert len(refreshed) == 2
-    assert refreshed[1].seq > refreshed[0].seq and refreshed[1].ts == int(env.clock.now.timestamp())
+    for dev in notified:
+        assert len(env.notifies(tenant, dev)) == 1
+    # the hour-old retained message still verifies on a device
+    key = env.keys.tenant_key(tenant).public_key()
+    topic = ids.build_topic(str(tenant), notified[0], TopicClass.OTA_NOTIFY)
+    msg = envelope.decode(
+        env.publisher.retained[topic],
+        envelope.StaticKeyResolver({ids.tenant_kid(str(tenant)): key}),
+        envelope.InMemoryReplayStore(),
+        now=int(env.clock.now.timestamp()),
+    )
+    assert isinstance(msg.body, envelope.OtaNotify) and msg.body.campaign_id == cid
+    # the registry received the contract's JSON body (bstr fields hex-encoded)
+    request = env.registry.requests[0]
+    assert request["type"] == "ota_notify" and request["retain"] is True
+    assert set(request["body"]) == {"campaign_id", "manifest", "url", "delta_from"}
+    assert bytes.fromhex(request["body"]["manifest"]) == base64.b64decode(fw["signed_manifest_b64"])
+    assert request["body"]["delta_from"] is None
+    rows = await env.devices(tenant, cid, "notified")
+    assert all(r["notified_at"] for r in rows)
+
+
+async def test_undelivered_notifies_are_redelivered(env: Env) -> None:
+    tenant, fw, campaign, devices, image = await _setup(
+        env,
+        10,
+        [
+            {"percent": 100, "dwell_s": 0, "max_failure_rate": 1.0},
+        ],
+    )
+    cid = campaign["id"]
+    env.registry.fail = 3  # three downlinks fail at start
+    await env.action(tenant, cid, "start")
+    assert len(env.publisher.retained) == 7
+    await env.tick()  # within OTA_NOTIFY_RETRY_S: nothing re-sent yet
+    assert len(env.registry.downlinks) == 7
+    env.clock.advance(env.container.settings.notify_retry_s + 1)
+    await env.tick()
+    assert len(env.publisher.retained) == 10
+    assert len(env.registry.downlinks) == 10
+    env.clock.advance(3600)
+    await env.tick()
+    assert len(env.registry.downlinks) == 10  # delivered: never re-sent
+    assert all(len(env.notifies(tenant, d)) == 1 for d in devices)
 
 
 async def test_status_edge_cases(env: Env) -> None:
@@ -475,7 +518,7 @@ async def test_registry_outage_returns_503(env: Env) -> None:
     assert resp.status_code == 503
 
 
-async def test_broker_outage_does_not_fail_start_and_refresh_recovers(env: Env) -> None:
+async def test_registry_outage_does_not_fail_start_and_redelivery_recovers(env: Env) -> None:
     tenant, fw, campaign, devices, image = await _setup(
         env,
         10,
@@ -483,15 +526,29 @@ async def test_broker_outage_does_not_fail_start_and_refresh_recovers(env: Env) 
             {"percent": 100, "dwell_s": 0, "max_failure_rate": 1.0},
         ],
     )
-    env.publisher.fail = True
+    env.registry.fail = 10_000
     env.events.fail = True
     started = await env.action(tenant, campaign["id"], "start")
     assert started["state"] == "running"
     assert env.publisher.messages == []
-    env.publisher.fail = False
-    env.clock.advance(250)
+    env.registry.fail = 0
+    env.clock.advance(env.container.settings.notify_retry_s + 1)
     await env.tick()
     assert len(env.publisher.retained) == 10
+
+
+async def test_clear_failure_is_logged_not_raised(env: Env) -> None:
+    tenant, fw, campaign, devices, image = await _setup(
+        env,
+        4,
+        [
+            {"percent": 100, "dwell_s": 0, "max_failure_rate": 1.0},
+        ],
+    )
+    await env.action(tenant, campaign["id"], "start")
+    env.publisher.fail = True
+    cancelled = await env.action(tenant, campaign["id"], "cancel", body={"reason": "x"})
+    assert cancelled["state"] == "cancelled"
 
 
 async def test_idempotency_key_replays_response(env: Env) -> None:

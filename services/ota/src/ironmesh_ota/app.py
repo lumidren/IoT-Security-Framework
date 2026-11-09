@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -32,9 +34,19 @@ def create_app(
     )
     consumer_on = container.settings.kafka_enabled if run_consumer is None else run_consumer
 
+    async def initial_key_sync() -> None:
+        """Startup: re-push every tenant's firmware keys to the PKI (outbox, retried)."""
+        try:
+            marked = await bundle.key_sync.request_all()
+            pushed = await bundle.key_sync.run_due()
+            log.info("pki firmware keys reconciled", tenants=marked, pushed=pushed)
+        except Exception:
+            log.exception("pki firmware key reconciliation failed; the controller retries")
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         consumer: IngestConsumer | None = None
+        key_task = asyncio.create_task(initial_key_sync(), name="ota-pki-key-sync")
         if controller_on:
             bundle.controller.start()
         if consumer_on:  # pragma: no cover - needs Redpanda
@@ -51,6 +63,9 @@ def create_app(
         try:
             yield
         finally:
+            key_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await key_task
             if consumer is not None:  # pragma: no cover
                 await consumer.stop()
             if controller_on:

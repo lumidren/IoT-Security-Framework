@@ -8,6 +8,7 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -39,12 +40,22 @@ from ironmesh_ota.integrations.mqtt import (
     OutboundMessage,
     tls_context,
 )
-from ironmesh_ota.integrations.registry import HttpRegistryClient, device_from_json, select_eligible
+from ironmesh_ota.integrations.pki import FakePkiPolicy, HttpPkiPolicyClient, PkiPolicyError
+from ironmesh_ota.integrations.registry import (
+    Downlink,
+    FakeRegistry,
+    HttpRegistryClient,
+    RegistryError,
+    device_from_json,
+    notify_json,
+    select_eligible,
+)
 from ironmesh_ota.problems import Problem
 from ironmesh_ota.repository.memory import MemoryDatabase
 from ironmesh_ota.settings import ArtifactStoreKind, Environment, Settings, SigningProvider
 from ironmesh_ota.storage import LocalArtifactStore, S3ArtifactStore
 from ironmesh_ota.upload import parse_firmware_upload
+from ironmesh_wire import envelope
 
 from .conftest import Clock, Keys, build_container, new_tenant
 
@@ -99,6 +110,7 @@ def test_production_profile_requires_hardened_backends() -> None:
     with pytest.raises(ValidationError) as info:
         Settings(env=Environment.PROD)
     assert "OTA_SIGNING_PROVIDER=kms-wrapped" in str(info.value)
+    assert "OTA_REGISTRY_TOKEN or OTA_SERVICE_TOKEN_KEY_FILE" in str(info.value)
     ok = Settings(
         env=Environment.PROD,
         db_host="db",
@@ -106,7 +118,7 @@ def test_production_profile_requires_hardened_backends() -> None:
         artifact_bucket="b",
         signing_provider=SigningProvider.KMS_WRAPPED,
         signing_key_secret_arn="arn",
-        tenant_keys_provider=SigningProvider.KMS_WRAPPED,
+        registry_token=SecretStr("ota-registry-token"),
         oidc_issuer="https://idp",
         emqx_api_url="http://emqx",
         kafka_brokers="k:9092",
@@ -231,7 +243,6 @@ async def test_build_container_dev_profile(tmp_path: Path) -> None:
         emqx_api_url="http://emqx:18083",
         emqx_api_key=SecretStr("k"),
         emqx_api_secret=SecretStr("s"),
-        tenant_keys_dir=tmp_path / "tk",
         oidc_jwks_url="http://idp/jwks",
         controller_enabled=False,
     )
@@ -239,6 +250,7 @@ async def test_build_container_dev_profile(tmp_path: Path) -> None:
     assert isinstance(container.db, MemoryDatabase)
     assert isinstance(container.registry, HttpRegistryClient)
     assert isinstance(container.publisher, EmqxApiPublisher)
+    assert isinstance(container.pki, HttpPkiPolicyClient)
     assert container.service_verifier is not None
     app = create_app(container)
     transport = httpx.ASGITransport(app=app)
@@ -292,6 +304,21 @@ async def test_build_container_without_peers(tmp_path: Path) -> None:
     container = runtime.build_container(settings)
     assert isinstance(container.publisher, LoggingPublisher)
     assert isinstance(container.events, LoggingEventPublisher)
+    assert isinstance(container.registry, FakeRegistry)
+    assert isinstance(container.pki, FakePkiPolicy)
+    # the registry token alone is enough for registry calls (no service JWT key)
+    with_token = runtime.build_container(
+        Settings(
+            database_backend="memory",
+            artifact_path=tmp_path / "a",
+            signing_key_file=tmp_path / "k.pem",
+            registry_url="http://r",
+            registry_token=SecretStr("ota-registry-token"),
+        )
+    )
+    assert isinstance(with_token.registry, HttpRegistryClient)
+    for close in with_token.closers:
+        await close()
     with pytest.raises(runtime.ConfigurationError):
         runtime.build_container(
             Settings(artifact_path=tmp_path / "a", signing_key_file=tmp_path / "k.pem")
@@ -310,7 +337,7 @@ async def test_build_container_without_peers(tmp_path: Path) -> None:
             database_url=SecretStr("postgresql+asyncpg://ota_app@127.0.0.1:1/ota"),
             artifact_path=tmp_path / "a",
             signing_key_file=tmp_path / "k.pem",
-            internal_token=SecretStr("t" * 32),
+            registry_token=SecretStr("t" * 32),
             registry_url="http://r",
         )
     )
@@ -473,69 +500,147 @@ def test_service_token_from_file(tmp_path: Path) -> None:
 
 
 def _device(i: int, **kw: Any) -> dict[str, Any]:
+    """A registry ``resolve`` item (API_CONTRACT §1.12)."""
     return {
-        "id": f"dev-{i:016x}",
+        "device_id": f"dev-{i:016x}",
         "product": "gw",
         "state": "active",
+        "fw_version": "1.0.0",
         "fw_hash_hex": "ab" * 32,
-        "groups": ["g"],
-        "tags": {"site": "lab"},
+        "connected": True,
         **kw,
     }
 
 
-async def test_http_registry_client_paginates_and_filters() -> None:
+async def test_http_registry_client_resolve_and_downlink() -> None:
     tenant = new_tenant()
     calls: list[httpx.Request] = []
+    status = {"code": 200}
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        assert request.headers["X-IronMesh-Tenant"] == str(tenant)
         assert request.headers["Authorization"] == "Bearer tok-registry"
-        if request.url.path == "/v1/devices":
-            if request.url.params.get("group") == "g":
-                if request.url.params.get("cursor") == "c2":
-                    return httpx.Response(200, json={"items": [_device(2)], "next_cursor": None})
-                return httpx.Response(200, json={"items": [_device(1)], "next_cursor": "c2"})
+        assert "X-IronMesh-Tenant" not in request.headers
+        if status["code"] != 200:
+            return httpx.Response(status["code"], json={"detail": "nope"})
+        if request.url.path == f"/internal/v1/tenants/{tenant}/devices/resolve":
             return httpx.Response(
                 200,
                 json={
                     "items": [
-                        _device(3),
-                        _device(4, tags={"site": "lab", "rack": "9"}),
-                        _device(5, tags={"site": "other"}),
-                    ],
-                    "next_cursor": None,
+                        _device(1),
+                        _device(7, state="quarantined", fw_hash_hex="zz"),
+                        _device(9, product="x", fw_hash_hex=None),
+                    ]
                 },
             )
-        if request.url.path.endswith("0000000000000063"):
-            return httpx.Response(404)
-        return httpx.Response(200, json=_device(7, state="quarantined", fw_hash_hex="zz"))
+        return httpx.Response(200, json={"seq": 42, "published_at": "2026-11-09T10:00:00Z"})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://r")
     registry = HttpRegistryClient(client, lambda aud: f"tok-{aud}")
-    found = await registry.resolve(
-        tenant,
-        Target(
-            groups=["g"],
-            device_ids=["dev-0000000000000063", "dev-0000000000000007"],
-            tags={"site": "lab", "rack": "9"},
-        ),
-    )
+    target = Target(groups=["g"], device_ids=["dev-0000000000000007"], tags={"site": "lab"})
+    found = await registry.resolve(tenant, target)
+    assert json.loads(calls[0].content) == {
+        "groups": ["g"],
+        "tags": {"site": "lab"},
+        "device_ids": ["dev-0000000000000007"],
+    }
     assert [d.id for d in found] == [
         "dev-0000000000000001",
-        "dev-0000000000000002",
-        "dev-0000000000000004",
         "dev-0000000000000007",
+        "dev-0000000000000009",
     ]
-    assert found[0].fw_hash == bytes.fromhex("ab" * 32) and found[-1].fw_hash is None
-    eligible = select_eligible(found + [found[0], device_from_json(_device(9, product="x"))], "gw")
-    assert len(eligible.devices) == 3
+    assert found[0].fw_hash == bytes.fromhex("ab" * 32) and found[0].fw_version == "1.0.0"
+    assert found[1].fw_hash is None and found[2].fw_hash is None
+    eligible = select_eligible(found + [found[0]], "gw")
+    assert [d.id for d in eligible.devices] == ["dev-0000000000000001"]
     assert eligible.skipped == {
         "dev-0000000000000007": "state quarantined",
         "dev-0000000000000009": "product x",
     }
-    assert device_from_json({"id": "dev-1", "fw_hash_hex": "g" * 64}).fw_hash is None
+    assert device_from_json({"device_id": "dev-1", "fw_hash_hex": "g" * 64}).fw_hash is None
+
+    campaign = str(uuid.uuid4())
+    body = envelope.OtaNotify(
+        campaign_id=campaign, manifest=b"", url="https://a/b", delta_from=bytes(32)
+    )
+    receipt = await registry.ota_notify(
+        Downlink(tenant, uuid.UUID(campaign), "dev-0000000000000001", body)
+    )
+    assert receipt.seq == 42 and receipt.published_at == datetime(2026, 11, 9, 10, tzinfo=UTC)
+    sent = calls[-1]
+    assert sent.url.path == (f"/internal/v1/tenants/{tenant}/devices/dev-0000000000000001/downlink")
+    assert json.loads(sent.content) == {
+        "type": "ota_notify",
+        "body": {
+            "campaign_id": campaign,
+            "manifest": "0102",
+            "url": "https://a/b",
+            "delta_from": "00" * 32,
+        },
+        "retain": True,
+    }
+    assert notify_json(replace(body, delta_from=None))["delta_from"] is None
+
+    status["code"] = 409
+    with pytest.raises(RegistryError) as info:
+        await registry.ota_notify(
+            Downlink(tenant, uuid.UUID(campaign), "dev-0000000000000001", body)
+        )
+    assert info.value.status == 409 and info.value.detail == "nope"
+    status["code"] = 502
+
+    def plain(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="bad gateway")
+
+    plain_client = httpx.AsyncClient(transport=httpx.MockTransport(plain), base_url="http://r")
+    with pytest.raises(RegistryError, match="HTTP 502"):
+        await HttpRegistryClient(plain_client, lambda aud: "t").resolve(tenant, target)
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    dead = httpx.AsyncClient(transport=httpx.MockTransport(boom), base_url="http://r")
+    with pytest.raises(RegistryError) as down:
+        await HttpRegistryClient(dead, lambda aud: "t").resolve(tenant, target)
+    assert down.value.status == 0 and "ConnectError" in str(down.value)
+    for c in (client, plain_client, dead):
+        await c.aclose()
+
+
+async def test_http_pki_policy_client() -> None:
+    tenant = new_tenant()
+    seen: list[httpx.Request] = []
+    status = {"code": 204}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status["code"])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://p")
+    pki = HttpPkiPolicyClient(client, lambda aud: f"tok-{aud}")
+    keys = [bytes(32), b"" * 1952]
+    await pki.put_firmware_keys(tenant, keys)
+    assert seen[0].method == "PUT"
+    assert seen[0].url.path == f"/v1/tenants/{tenant}/firmware-keys"
+    assert seen[0].headers["Authorization"] == "Bearer tok-pki"
+    assert json.loads(seen[0].content) == {
+        "public_keys_b64": [base64.b64encode(k).decode() for k in keys]
+    }
+    for code in (404, 500):
+        status["code"] = code
+        with pytest.raises(PkiPolicyError, match=f"HTTP {code}"):
+            await pki.put_firmware_keys(tenant, keys)
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    dead = HttpPkiPolicyClient(
+        httpx.AsyncClient(transport=httpx.MockTransport(boom), base_url="https://p"),
+        lambda aud: "t",
+    )
+    with pytest.raises(PkiPolicyError, match="ConnectError"):
+        await dead.put_firmware_keys(tenant, keys)
     await client.aclose()
 
 

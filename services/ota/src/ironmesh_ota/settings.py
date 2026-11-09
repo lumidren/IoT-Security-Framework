@@ -92,13 +92,6 @@ class Settings(BaseSettings):
     signing_keyring_file: Path | None = None
     signing_passphrase: SecretStr | None = None
 
-    # --- tenant command keys (OtaNotify signing) ------------------------------------------
-    tenant_keys_provider: SigningProvider = SigningProvider.FILE
-    tenant_keys_dir: Path | None = None
-    tenant_keys_passphrase: SecretStr | None = None
-    tenant_key_secret_prefix: str = "ironmesh/tenant-cmd/"  # noqa: S105 - a name
-    tenant_keys_kek_key_id: str = "alias/ironmesh-tenant-kek"
-
     # --- upload limits --------------------------------------------------------------------
     max_image_bytes: int = Field(default=512 * 1024 * 1024, ge=1)
     max_metadata_bytes: int = Field(default=16 * 1024, ge=256)
@@ -119,6 +112,9 @@ class Settings(BaseSettings):
 
     # --- peers ----------------------------------------------------------------------------
     registry_url: str | None = None
+    registry_token: SecretStr | None = None
+    """Bearer token for the registry's internal endpoints: the ``ota`` entry of
+    ``REGISTRY_INTERNAL_TOKENS``. Without it an ES256 service JWT (``aud=registry``) is used."""
     pki_url: str | None = None
     emqx_api_url: str | None = None
     emqx_api_key: SecretStr | None = None
@@ -128,7 +124,7 @@ class Settings(BaseSettings):
     tls_ca_file: Path | None = None
     http_timeout_s: float = 10.0
 
-    # --- direct MQTT (alternative to the EMQX HTTP publish API) ---------------------------
+    # --- direct MQTT (alternative to the EMQX HTTP publish API; clears retained notifies) ---
     mqtt_host: str | None = None
     mqtt_port: int = 8883
     mqtt_client_id: str = "svc-ota"
@@ -149,8 +145,8 @@ class Settings(BaseSettings):
     controller_enabled: bool = True
     controller_interval_s: float = Field(default=5.0, gt=0)
     device_timeout_s: int = Field(default=7200, ge=60)
-    notify_refresh_s: int = Field(default=240, ge=10, le=290)
-    """Re-sign retained OtaNotify messages before devices would reject them (ts skew 300 s)."""
+    notify_retry_s: int = Field(default=60, ge=5, le=3600)
+    """Re-send an OtaNotify the registry has not accepted after this many seconds."""
     halt_min_sample: int = Field(default=5, ge=1)
     four_eyes_min_dwell_s: int = Field(default=3600, ge=0)
     leader_lock_key: int = 0x4F544101  # "OTA\x01"
@@ -171,7 +167,7 @@ class Settings(BaseSettings):
     def _store_alias(cls, value: Any) -> Any:
         return "filesystem" if value == "local" else value
 
-    @field_validator("signing_provider", "tenant_keys_provider", mode="before")
+    @field_validator("signing_provider", mode="before")
     @classmethod
     def _provider_alias(cls, value: Any) -> Any:
         return "kms-wrapped" if value == "kms" else value
@@ -213,8 +209,8 @@ class Settings(BaseSettings):
             ),
             ("OTA_SIGNING_KEY_SECRET_ARN", self.signing_key_secret_arn is not None),
             (
-                "OTA_TENANT_KEYS_PROVIDER=kms-wrapped",
-                self.tenant_keys_provider is SigningProvider.KMS_WRAPPED,
+                "OTA_REGISTRY_TOKEN or OTA_SERVICE_TOKEN_KEY_FILE",
+                self.registry_token is not None or self.service_token_key_file is not None,
             ),
             (
                 "OTA_OIDC_ISSUER or OTA_OIDC_JWKS_URL",

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 from collections.abc import Iterator
@@ -19,13 +18,6 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from moto import mock_aws
 
 from ironmesh_ota import keytool, signing
-from ironmesh_ota.integrations.tenant_keys import (
-    FileTenantKeyProvider,
-    KmsTenantKeyProvider,
-    StaticTenantKeyProvider,
-    TenantKeyError,
-    kms_context,
-)
 from ironmesh_ota.storage import (
     ArtifactConflict,
     ArtifactError,
@@ -38,8 +30,6 @@ from ironmesh_ota.storage import (
 from ironmesh_wire import cose
 from ironmesh_wire.errors import CoseError
 from ironmesh_wire.manifest import Manifest, verify_manifest
-
-from .conftest import new_tenant
 
 PASS = b"correct horse battery staple"
 
@@ -215,58 +205,6 @@ def test_kms_wrapped_keyring_from_secrets_manager(aws: None) -> None:
         signing.load_kms_signer(sm, kms, secret_id="other", key_id=key_id)
 
 
-async def test_tenant_key_providers(aws: None, tmp_path: Path) -> None:
-    tenant = new_tenant()
-    key = ed25519.Ed25519PrivateKey.generate()
-    pem = key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.BestAvailableEncryption(PASS),
-    )
-    (tmp_path / f"{tenant}.pem").write_bytes(pem)
-    provider = FileTenantKeyProvider(tmp_path, PASS)
-    identity = await provider.identity(tenant)
-    assert identity.kid == f"tenant-cmd-{tenant}"
-    assert await provider.identity(tenant) is identity  # cached
-    with pytest.raises(TenantKeyError):
-        await provider.identity(new_tenant())
-    (tmp_path / "x.pem").write_bytes(b"")
-    other = new_tenant()
-    from cryptography.hazmat.primitives.asymmetric import ec
-
-    (tmp_path / f"{other}.pem").write_bytes(
-        ec.generate_private_key(ec.SECP256R1()).private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-    )
-    with pytest.raises(TenantKeyError):
-        await FileTenantKeyProvider(tmp_path, None).identity(other)
-
-    kms = boto3.client("kms", region_name="eu-west-1")
-    sm = boto3.client("secretsmanager", region_name="eu-west-1")
-    key_id = kms.create_key()["KeyMetadata"]["KeyId"]
-    seed = key.private_bytes_raw()
-    blob = kms.encrypt(KeyId=key_id, Plaintext=seed, EncryptionContext=kms_context(tenant))
-    sm.create_secret(
-        Name=f"ironmesh/tenant-cmd/{tenant}",
-        SecretString=base64.b64encode(blob["CiphertextBlob"]).decode(),
-    )
-    kms_provider = KmsTenantKeyProvider(sm, kms, prefix="ironmesh/tenant-cmd/", key_id=key_id)
-    kms_identity = await kms_provider.identity(tenant)
-    assert kms_identity.key.public_key().public_bytes_raw() == key.public_key().public_bytes_raw()  # type: ignore[union-attr]
-    # the secret of tenant A cannot be unwrapped as tenant B (encryption context binding)
-    sm.create_secret(Name=f"ironmesh/tenant-cmd/{other}", SecretBinary=blob["CiphertextBlob"])
-    with pytest.raises(TenantKeyError):
-        await kms_provider.identity(other)
-
-    static = StaticTenantKeyProvider(generate_missing=True)
-    assert str((await static.identity(tenant)).kid).endswith(str(tenant))
-    with pytest.raises(TenantKeyError):
-        await StaticTenantKeyProvider().identity(tenant)
-
-
 def test_keytool_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -282,10 +220,9 @@ def test_keytool_cli(
     assert out.count("active") >= 2 and "trusted" in out
     signer = signing.load_file_signer(ring, PASS)
     assert len(signer.list_keys()) == 3
-    tenant = new_tenant()
-    monkeypatch.setenv("OTA_TENANT_KEYS_PASSPHRASE", "tenant-pass")
-    assert keytool.main(["tenant-key", "--tenant", str(tenant), "--dir", str(tmp_path / "t")]) == 0
-    assert (tmp_path / "t" / f"{tenant}.pem").exists()
+    # tenant command keys are the registry's alone: the tool no longer creates them
+    with pytest.raises(SystemExit):
+        keytool.main(["tenant-key", "--tenant", "x", "--dir", str(tmp_path / "t")])
 
 
 # --- storage -----------------------------------------------------------------------------------
