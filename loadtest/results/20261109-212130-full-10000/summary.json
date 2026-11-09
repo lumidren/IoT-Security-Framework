@@ -1,0 +1,364 @@
+{
+  "run": "20261109-212130-full-10000",
+  "started_at": "2026-11-09T21:21:30.9343521Z",
+  "command": "ironmesh-conformance load --devices 10000 --label full-10000",
+  "environment": {
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-12700H",
+    "physical_cores": 14,
+    "logical_cpus": 20,
+    "ram_total_mb": 16088.0546875,
+    "ram_available_at_start_mb": 3542.20703125,
+    "os": "Windows 11 Home",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "go": "go version go1.27.3 windows/amd64",
+    "git_commit": "d99b00ca1f278a1c03a8f0c07bf3ab1c454a138d (working tree modified)",
+    "tcp_dynamic_ports": "start 1024, 64511 ports"
+  },
+  "config": {
+    "devices": 10000,
+    "rate": 200.0,
+    "stages": [
+      25,
+      50,
+      75,
+      100
+    ],
+    "stage_hold_s": 15,
+    "interval_s": 10,
+    "sustain_s": 600,
+    "ramp_grace_s": 60,
+    "cmd_fraction": 0.05,
+    "sample_s": 5,
+    "rss_cap_mb": null,
+    "min_available_mb": 768,
+    "hook_pool": 64,
+    "publish_timeout_s": 30,
+    "backoff_scale": 1.0,
+    "fleet_threads": 0,
+    "verify_shards": 4,
+    "policy_bin": null,
+    "out": null,
+    "label": "full-10000",
+    "keep_fleet": false
+  },
+  "outcome": {
+    "completed": true,
+    "abort_reason": null,
+    "provision_s": 132.3975125,
+    "ramp_s": 135.080613,
+    "sustain_s": 600.1808462
+  },
+  "devices": {
+    "requested": 10000,
+    "provisioned": 10000,
+    "started": 10000,
+    "enrolled": 10000,
+    "ever_connected": 10000,
+    "connected_end_of_sustain": 10000,
+    "connected_at_stop": 10000,
+    "never_connected": 0,
+    "broker_peak_sessions": 10000
+  },
+  "throughput": {
+    "target_start_rate": 200.0,
+    "achieved_connect_rate": 115.49390131214194,
+    "first_connect_span_s": 131.576,
+    "telemetry_accepted_total": 671924,
+    "telemetry_accepted_sustain": 600534,
+    "sustain_telemetry_per_s": 1000.5884123131152,
+    "expected_telemetry_per_s": 1000.0,
+    "device_acked_total": 671924
+  },
+  "latency": {
+    "publish_sustain": {
+      "count": 600534,
+      "min_ms": 0.129,
+      "mean_ms": 4.967609570815308,
+      "p50_ms": 0.726,
+      "p95_ms": 7.211,
+      "p99_ms": 128.576,
+      "max_ms": 781.83
+    },
+    "publish_ramp": {
+      "count": 71161,
+      "min_ms": 0.23,
+      "mean_ms": 406.10869342757974,
+      "p50_ms": 192.106,
+      "p95_ms": 1671.113,
+      "p99_ms": 2477.005,
+      "max_ms": 7448.148
+    },
+    "publish_all": {
+      "count": 671924,
+      "min_ms": 0.129,
+      "mean_ms": 47.577275690405465,
+      "p50_ms": 0.784,
+      "p95_ms": 251.983,
+      "p99_ms": 1147.042,
+      "max_ms": 7448.148
+    },
+    "connect": {
+      "count": 10000,
+      "min_ms": 11.616,
+      "mean_ms": 1439.3800562,
+      "p50_ms": 1202.074,
+      "p95_ms": 3374.016,
+      "p99_ms": 4885.093,
+      "max_ms": 8776.194
+    },
+    "enroll": {
+      "count": 10000,
+      "min_ms": 40.178,
+      "mean_ms": 4048.0631076,
+      "p50_ms": 3511.129,
+      "p95_ms": 8586.728,
+      "p99_ms": 10747.713,
+      "max_ms": 15222.901
+    },
+    "command_rtt": {
+      "count": 500,
+      "min_ms": 0.956,
+      "mean_ms": 5.386792000000001,
+      "p50_ms": 2.026,
+      "p95_ms": 7.675,
+      "p99_ms": 30.347,
+      "max_ms": 680.06
+    },
+    "authn_hook": {
+      "count": 10000,
+      "min_ms": 0.415,
+      "mean_ms": 250.35438380000002,
+      "p50_ms": 84.872,
+      "p95_ms": 967.318,
+      "p99_ms": 1452.46,
+      "max_ms": 2165.48
+    },
+    "authz_hook": {
+      "count": 682424,
+      "min_ms": 0.058,
+      "mean_ms": 21.004905445881153,
+      "p50_ms": 0.511,
+      "p95_ms": 75.524,
+      "p99_ms": 569.353,
+      "max_ms": 2184.37
+    },
+    "hook_pool_wait": {
+      "count": 692924,
+      "min_ms": 0.0,
+      "mean_ms": 17.69869514982884,
+      "p50_ms": 0.0,
+      "p95_ms": 45.255,
+      "p99_ms": 555.161,
+      "max_ms": 2060.844
+    }
+  },
+  "commands": {
+    "sent": 500,
+    "not_delivered": 0,
+    "inject_errors": 0,
+    "acked": 500,
+    "unacked": 0,
+    "ack_mismatch": 0,
+    "ack_status": {
+      "0": 500
+    },
+    "executed_on_devices": 500,
+    "rejected_by_devices": 0
+  },
+  "policy": {
+    "authn_allow": 10000.0,
+    "authn_deny": 0.0,
+    "authz_allow": 682924.0,
+    "authz_deny": 0.0,
+    "authz_cache_hit": 254555.0,
+    "authz_cache_miss": 428369.0,
+    "registry_lookups": 10000.0,
+    "process_cpu_seconds": 363.625,
+    "deltas": [
+      {
+        "series": "go_goroutines",
+        "before": 13.0,
+        "after": 78.0,
+        "delta": 65.0
+      },
+      {
+        "series": "go_memstats_heap_alloc_bytes",
+        "before": 2856328.0,
+        "after": 18656856.0,
+        "delta": 15800528.0
+      },
+      {
+        "series": "go_memstats_heap_idle_bytes",
+        "before": 15187968.0,
+        "after": 58023936.0,
+        "delta": 42835968.0
+      },
+      {
+        "series": "go_memstats_heap_inuse_bytes",
+        "before": 8765440.0,
+        "after": 28155904.0,
+        "delta": 19390464.0
+      },
+      {
+        "series": "go_memstats_heap_objects",
+        "before": 29797.0,
+        "after": 165069.0,
+        "delta": 135272.0
+      },
+      {
+        "series": "go_memstats_heap_released_bytes",
+        "before": 14442496.0,
+        "after": 36757504.0,
+        "delta": 22315008.0
+      },
+      {
+        "series": "go_memstats_heap_sys_bytes",
+        "before": 23953408.0,
+        "after": 86179840.0,
+        "delta": 62226432.0
+      },
+      {
+        "series": "ironmesh_authn_decisions_total{kind=\"device\",result=\"allow\"}",
+        "before": 0.0,
+        "after": 10000.0,
+        "delta": 10000.0
+      },
+      {
+        "series": "ironmesh_authz_cache_total{outcome=\"hit\"}",
+        "before": 0.0,
+        "after": 254555.0,
+        "delta": 254555.0
+      },
+      {
+        "series": "ironmesh_authz_cache_total{outcome=\"miss\"}",
+        "before": 0.0,
+        "after": 428369.0,
+        "delta": 428369.0
+      },
+      {
+        "series": "ironmesh_authz_decisions_total{action=\"publish\",result=\"allow\"}",
+        "before": 0.0,
+        "after": 672924.0,
+        "delta": 672924.0
+      },
+      {
+        "series": "ironmesh_authz_decisions_total{action=\"subscribe\",result=\"allow\"}",
+        "before": 0.0,
+        "after": 10000.0,
+        "delta": 10000.0
+      },
+      {
+        "series": "ironmesh_crl_poll_total{result=\"not_modified\"}",
+        "before": 26.0,
+        "after": 174.0,
+        "delta": 148.0
+      },
+      {
+        "series": "ironmesh_registry_lookups_total{result=\"ok\"}",
+        "before": 0.0,
+        "after": 10000.0,
+        "delta": 10000.0
+      },
+      {
+        "series": "process_cpu_seconds_total",
+        "before": 0.03125,
+        "after": 363.65625,
+        "delta": 363.625
+      },
+      {
+        "series": "process_open_fds",
+        "before": 257.0,
+        "after": 685.0,
+        "delta": 428.0
+      },
+      {
+        "series": "process_resident_memory_bytes",
+        "before": 27131904.0,
+        "after": 97095680.0,
+        "delta": 69963776.0
+      },
+      {
+        "series": "process_virtual_memory_bytes",
+        "before": 63234048.0,
+        "after": 149602304.0,
+        "delta": 86368256.0
+      }
+    ],
+    "latency_note": "services/policy exports decision counters but no authn/authz latency histogram; hook latency is the broker-side HTTP round trip (what EMQX would observe)"
+  },
+  "errors": {
+    "fleet": {},
+    "broker_handshake": {},
+    "broker_hook": {},
+    "broker_closes": {
+      "client_disconnect": 10000
+    },
+    "connects_denied": 0,
+    "publishes_denied": 0,
+    "subscribes_denied": 0,
+    "est_status": {
+      "200": 10000
+    },
+    "verifier": {}
+  },
+  "verification": {
+    "uplinks_verified": 672424,
+    "telemetry_verified": 671924,
+    "acks_verified": 500,
+    "replay_rejections": 0,
+    "devices_with_acked_uplinks": 10000,
+    "last_seq_matched": 10000,
+    "last_seq_mismatched": 0,
+    "mismatch_examples": [],
+    "verifier_peak_backlog": 365,
+    "passed": true
+  },
+  "resources": {
+    "fleet_sustain": {
+      "cpu_mean_pct": 57.68467251459757,
+      "cpu_max_pct": 83.4920654296875,
+      "rss_mean_mb": 636.7443033854166,
+      "rss_max_mb": 687.3515625
+    },
+    "harness_sustain": {
+      "cpu_mean_pct": 66.87757660547892,
+      "cpu_max_pct": 97.1875,
+      "rss_mean_mb": 470.77301432291665,
+      "rss_max_mb": 505.76171875
+    },
+    "policy_sustain": {
+      "cpu_mean_pct": 46.30744355519612,
+      "cpu_max_pct": 83.54430389404297,
+      "rss_mean_mb": 76.0318359375,
+      "rss_max_mb": 116.69921875
+    },
+    "fleet_all": {
+      "cpu_mean_pct": 115.32172629946754,
+      "cpu_max_pct": 522.4999389648438,
+      "rss_mean_mb": 595.5059523809524,
+      "rss_max_mb": 687.3515625
+    },
+    "harness_all": {
+      "cpu_mean_pct": 79.63057104097743,
+      "cpu_max_pct": 183.1746063232422,
+      "rss_mean_mb": 438.16996173469386,
+      "rss_max_mb": 505.76171875
+    },
+    "policy_all": {
+      "cpu_mean_pct": 49.44067834348095,
+      "cpu_max_pct": 109.68750762939453,
+      "rss_mean_mb": 77.84948979591837,
+      "rss_max_mb": 116.69921875
+    },
+    "peak_total_rss_mb": 1273.72265625,
+    "min_host_available_mb": 1147.08984375,
+    "fleet_rss_per_device_kib": 53.3344,
+    "harness_rss_per_session_kib": 47.8836,
+    "rss_cap_mb": 11261.63828125,
+    "min_available_floor_mb": 768.0,
+    "hook_pool": [
+      64,
+      73
+    ]
+  }
+}

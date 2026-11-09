@@ -1,0 +1,355 @@
+{
+  "run": "20261109-211048-smoke-1000",
+  "started_at": "2026-11-09T21:10:48.3691659Z",
+  "command": "ironmesh-conformance load --devices 1000 --sustain-s 120 --label smoke-1000",
+  "environment": {
+    "cpu_model": "12th Gen Intel(R) Core(TM) i7-12700H",
+    "physical_cores": 14,
+    "logical_cpus": 20,
+    "ram_total_mb": 16088.0546875,
+    "ram_available_at_start_mb": 3992.921875,
+    "os": "Windows 11 Home",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "go": "go version go1.27.3 windows/amd64",
+    "git_commit": "d99b00ca1f278a1c03a8f0c07bf3ab1c454a138d (working tree modified)",
+    "tcp_dynamic_ports": "start 1024, 64511 ports"
+  },
+  "config": {
+    "devices": 1000,
+    "rate": 200.0,
+    "stages": [
+      25,
+      50,
+      75,
+      100
+    ],
+    "stage_hold_s": 15,
+    "interval_s": 10,
+    "sustain_s": 120,
+    "ramp_grace_s": 60,
+    "cmd_fraction": 0.05,
+    "sample_s": 5,
+    "rss_cap_mb": null,
+    "min_available_mb": 768,
+    "hook_pool": 64,
+    "publish_timeout_s": 30,
+    "backoff_scale": 1.0,
+    "fleet_threads": 0,
+    "verify_shards": 4,
+    "policy_bin": null,
+    "out": null,
+    "label": "smoke-1000",
+    "keep_fleet": false
+  },
+  "outcome": {
+    "completed": true,
+    "abort_reason": null,
+    "provision_s": 6.3094827,
+    "ramp_s": 55.0278117,
+    "sustain_s": 120.2390328
+  },
+  "devices": {
+    "requested": 1000,
+    "provisioned": 1000,
+    "started": 1000,
+    "enrolled": 1000,
+    "ever_connected": 1000,
+    "connected_end_of_sustain": 1000,
+    "connected_at_stop": 1000,
+    "never_connected": 0,
+    "broker_peak_sessions": 1000
+  },
+  "throughput": {
+    "target_start_rate": 200.0,
+    "achieved_connect_rate": 199.08330011956951,
+    "first_connect_span_s": 50.018,
+    "telemetry_accepted_total": 15000,
+    "telemetry_accepted_sustain": 12027,
+    "sustain_telemetry_per_s": 100.02575469818649,
+    "expected_telemetry_per_s": 100.0,
+    "device_acked_total": 15000
+  },
+  "latency": {
+    "publish_sustain": {
+      "count": 12027,
+      "min_ms": 0.16,
+      "mean_ms": 0.6959890246944375,
+      "p50_ms": 0.615,
+      "p95_ms": 1.32,
+      "p99_ms": 1.748,
+      "max_ms": 4.657
+    },
+    "publish_ramp": {
+      "count": 2973,
+      "min_ms": 0.183,
+      "mean_ms": 5.370391187352842,
+      "p50_ms": 0.695,
+      "p95_ms": 8.076,
+      "p99_ms": 168.566,
+      "max_ms": 698.175
+    },
+    "publish_all": {
+      "count": 15000,
+      "min_ms": 0.16,
+      "mean_ms": 1.6224555333333333,
+      "p50_ms": 0.63,
+      "p95_ms": 1.402,
+      "p99_ms": 7.89,
+      "max_ms": 698.175
+    },
+    "connect": {
+      "count": 1000,
+      "min_ms": 3.058,
+      "mean_ms": 155.47657199999998,
+      "p50_ms": 35.214,
+      "p95_ms": 796.682,
+      "p99_ms": 971.85,
+      "max_ms": 1040.947
+    },
+    "enroll": {
+      "count": 1000,
+      "min_ms": 21.582,
+      "mean_ms": 57.137417,
+      "p50_ms": 50.403,
+      "p95_ms": 104.422,
+      "p99_ms": 142.077,
+      "max_ms": 172.42
+    },
+    "command_rtt": {
+      "count": 50,
+      "min_ms": 1.018,
+      "mean_ms": 1.98312,
+      "p50_ms": 1.851,
+      "p95_ms": 3.172,
+      "p99_ms": 3.364,
+      "max_ms": 3.364
+    },
+    "authn_hook": {
+      "count": 1000,
+      "min_ms": 0.494,
+      "mean_ms": 146.21431099999998,
+      "p50_ms": 23.81,
+      "p95_ms": 788.889,
+      "p99_ms": 966.744,
+      "max_ms": 1035.033
+    },
+    "authz_hook": {
+      "count": 16050,
+      "min_ms": 0.086,
+      "mean_ms": 3.137304672897196,
+      "p50_ms": 0.432,
+      "p95_ms": 3.594,
+      "p99_ms": 46.879,
+      "max_ms": 1049.243
+    }
+  },
+  "commands": {
+    "sent": 50,
+    "not_delivered": 0,
+    "inject_errors": 0,
+    "acked": 50,
+    "unacked": 0,
+    "ack_mismatch": 0,
+    "ack_status": {
+      "0": 50
+    },
+    "executed_on_devices": 50,
+    "rejected_by_devices": 0
+  },
+  "policy": {
+    "authn_allow": 1000.0,
+    "authn_deny": 0.0,
+    "authz_allow": 16100.0,
+    "authz_deny": 0.0,
+    "authz_cache_hit": 5751.0,
+    "authz_cache_miss": 10349.0,
+    "registry_lookups": 1000.0,
+    "process_cpu_seconds": 9.6875,
+    "deltas": [
+      {
+        "series": "go_goroutines",
+        "before": 13.0,
+        "after": 17.0,
+        "delta": 4.0
+      },
+      {
+        "series": "go_memstats_heap_alloc_bytes",
+        "before": 3949224.0,
+        "after": 6715208.0,
+        "delta": 2765984.0
+      },
+      {
+        "series": "go_memstats_heap_idle_bytes",
+        "before": 18038784.0,
+        "after": 36478976.0,
+        "delta": 18440192.0
+      },
+      {
+        "series": "go_memstats_heap_inuse_bytes",
+        "before": 9846784.0,
+        "after": 9953280.0,
+        "delta": 106496.0
+      },
+      {
+        "series": "go_memstats_heap_objects",
+        "before": 50841.0,
+        "after": 74428.0,
+        "delta": 23587.0
+      },
+      {
+        "series": "go_memstats_heap_released_bytes",
+        "before": 14278656.0,
+        "after": 35561472.0,
+        "delta": 21282816.0
+      },
+      {
+        "series": "go_memstats_heap_sys_bytes",
+        "before": 27885568.0,
+        "after": 46432256.0,
+        "delta": 18546688.0
+      },
+      {
+        "series": "ironmesh_authn_decisions_total{kind=\"device\",result=\"allow\"}",
+        "before": 0.0,
+        "after": 1000.0,
+        "delta": 1000.0
+      },
+      {
+        "series": "ironmesh_authz_cache_total{outcome=\"hit\"}",
+        "before": 0.0,
+        "after": 5751.0,
+        "delta": 5751.0
+      },
+      {
+        "series": "ironmesh_authz_cache_total{outcome=\"miss\"}",
+        "before": 0.0,
+        "after": 10349.0,
+        "delta": 10349.0
+      },
+      {
+        "series": "ironmesh_authz_decisions_total{action=\"publish\",result=\"allow\"}",
+        "before": 0.0,
+        "after": 15100.0,
+        "delta": 15100.0
+      },
+      {
+        "series": "ironmesh_authz_decisions_total{action=\"subscribe\",result=\"allow\"}",
+        "before": 0.0,
+        "after": 1000.0,
+        "delta": 1000.0
+      },
+      {
+        "series": "ironmesh_crl_poll_total{result=\"not_modified\"}",
+        "before": 1.0,
+        "after": 36.0,
+        "delta": 35.0
+      },
+      {
+        "series": "ironmesh_registry_lookups_total{result=\"ok\"}",
+        "before": 0.0,
+        "after": 1000.0,
+        "delta": 1000.0
+      },
+      {
+        "series": "process_cpu_seconds_total",
+        "before": 0.109375,
+        "after": 9.796875,
+        "delta": 9.6875
+      },
+      {
+        "series": "process_open_fds",
+        "before": 262.0,
+        "after": 408.0,
+        "delta": 146.0
+      },
+      {
+        "series": "process_resident_memory_bytes",
+        "before": 31907840.0,
+        "after": 36503552.0,
+        "delta": 4595712.0
+      },
+      {
+        "series": "process_virtual_memory_bytes",
+        "before": 68186112.0,
+        "after": 73801728.0,
+        "delta": 5615616.0
+      }
+    ],
+    "latency_note": "services/policy exports decision counters but no authn/authz latency histogram; hook latency is the broker-side HTTP round trip (what EMQX would observe)"
+  },
+  "errors": {
+    "fleet": {},
+    "broker_handshake": {},
+    "broker_hook": {},
+    "broker_closes": {
+      "client_disconnect": 1000
+    },
+    "connects_denied": 0,
+    "publishes_denied": 0,
+    "subscribes_denied": 0,
+    "est_status": {
+      "200": 1000
+    },
+    "verifier": {}
+  },
+  "verification": {
+    "uplinks_verified": 15050,
+    "telemetry_verified": 15000,
+    "acks_verified": 50,
+    "replay_rejections": 0,
+    "devices_with_acked_uplinks": 1000,
+    "last_seq_matched": 1000,
+    "last_seq_mismatched": 0,
+    "mismatch_examples": [],
+    "verifier_peak_backlog": 5,
+    "passed": true
+  },
+  "resources": {
+    "fleet_sustain": {
+      "cpu_mean_pct": 6.093896985054016,
+      "cpu_max_pct": 8.736349105834961,
+      "rss_mean_mb": 85.31722005208333,
+      "rss_max_mb": 85.46875
+    },
+    "harness_sustain": {
+      "cpu_mean_pct": 6.679833700259526,
+      "cpu_max_pct": 10.31088924407959,
+      "rss_mean_mb": 75.78304036458333,
+      "rss_max_mb": 76.015625
+    },
+    "policy_sustain": {
+      "cpu_mean_pct": 4.427052746216456,
+      "cpu_max_pct": 6.869633197784424,
+      "rss_mean_mb": 36.217936197916664,
+      "rss_max_mb": 37.609375
+    },
+    "fleet_all": {
+      "cpu_mean_pct": 20.06364302294595,
+      "cpu_max_pct": 146.1003875732422,
+      "rss_mean_mb": 77.16183035714286,
+      "rss_max_mb": 85.46875
+    },
+    "harness_all": {
+      "cpu_mean_pct": 12.157467596871513,
+      "cpu_max_pct": 66.2086181640625,
+      "rss_mean_mb": 70.12433035714285,
+      "rss_max_mb": 76.015625
+    },
+    "policy_all": {
+      "cpu_mean_pct": 5.530689930915832,
+      "cpu_max_pct": 18.22393798828125,
+      "rss_mean_mb": 38.034598214285715,
+      "rss_max_mb": 55.79296875
+    },
+    "peak_total_rss_mb": 213.93359375,
+    "min_host_available_mb": 3511.90625,
+    "fleet_rss_per_device_kib": 87.52,
+    "harness_rss_per_session_kib": 77.796,
+    "rss_cap_mb": 11261.63828125,
+    "min_available_floor_mb": 768.0,
+    "hook_pool": [
+      64,
+      65
+    ]
+  }
+}
