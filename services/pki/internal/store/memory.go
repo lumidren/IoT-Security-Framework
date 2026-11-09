@@ -194,6 +194,10 @@ func (m *Memory) AddRevocationWithEvent(_ context.Context, rev *Revocation, ev *
 	if ev == nil || ev.EventID == "" {
 		return errors.New("store: outbox event id is required")
 	}
+	kind, err := OutboxKind(ev.Kind)
+	if err != nil {
+		return err
+	}
 	if _, ok := m.revocations[rev.Serial]; ok {
 		return ErrAlreadyRevoked
 	}
@@ -202,7 +206,32 @@ func (m *Memory) AddRevocationWithEvent(_ context.Context, rev *Revocation, ev *
 	}
 	r := *rev
 	m.revocations[rev.Serial] = &r
-	m.outbox[ev.EventID] = copyOutbox(ev)
+	c := copyOutbox(ev)
+	c.Kind = kind
+	m.outbox[ev.EventID] = c
+	return nil
+}
+
+// AddOutboxEvent implements Store.
+func (m *Memory) AddOutboxEvent(_ context.Context, ev *OutboxEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.checkOpen(); err != nil {
+		return err
+	}
+	if ev == nil || ev.EventID == "" {
+		return errors.New("store: outbox event id is required")
+	}
+	kind, err := OutboxKind(ev.Kind)
+	if err != nil {
+		return err
+	}
+	if _, ok := m.outbox[ev.EventID]; ok {
+		return ErrAlreadyExists
+	}
+	c := copyOutbox(ev)
+	c.Kind = kind
+	m.outbox[ev.EventID] = c
 	return nil
 }
 

@@ -24,6 +24,7 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("Certificates", func(t *testing.T) { testCertificates(t, newStore(t)) })
 	t.Run("Revocations", func(t *testing.T) { testRevocations(t, newStore(t)) })
 	t.Run("Outbox", func(t *testing.T) { testOutbox(t, newStore(t)) })
+	t.Run("OutboxKinds", func(t *testing.T) { testOutboxKinds(t, newStore(t)) })
 	t.Run("Nonces", func(t *testing.T) { testNonces(t, newStore(t)) })
 	t.Run("CRLNumber", func(t *testing.T) { testCRLNumber(t, newStore(t)) })
 	t.Run("TenantPolicy", func(t *testing.T) { testTenantPolicy(t, newStore(t)) })
@@ -280,6 +281,57 @@ func testOutbox(t *testing.T, s store.Store) {
 	}
 	if err := s.AckOutbox(ctx, "nope", now); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("unknown ack: %v", err)
+	}
+}
+
+func testOutboxKinds(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	rev := &store.Revocation{Serial: "00000000000000000000000000000d01", DeviceID: "dev-8f3a1c2b9d4e5f60", TenantID: tenantA,
+		IssuerCN: "IronMesh Device CA", NotAfter: now.Add(time.Hour), Reason: 5, RevokedAt: now, RevokedBy: "test"}
+	// A revocation without an explicit kind is stored as "revocation".
+	if err := s.AddRevocationWithEvent(ctx, rev, &store.OutboxEvent{EventID: "k-rev", TenantID: tenantA, Payload: []byte(`{}`), CreatedAt: now.Add(-time.Second), NextAttemptAt: now}); err != nil {
+		t.Fatalf("AddRevocationWithEvent: %v", err)
+	}
+	rel := &store.OutboxEvent{EventID: "k-rel", TenantID: tenantA, Kind: store.OutboxKindDeviceRelease, Payload: []byte(`{"event":"device_release"}`), CreatedAt: now, NextAttemptAt: now}
+	if err := s.AddOutboxEvent(ctx, rel); err != nil {
+		t.Fatalf("AddOutboxEvent: %v", err)
+	}
+	if err := s.AddOutboxEvent(ctx, rel); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("duplicate release event: %v", err)
+	}
+	if err := s.AddOutboxEvent(ctx, &store.OutboxEvent{TenantID: tenantA}); err == nil {
+		t.Fatal("empty event id must be rejected")
+	}
+	if err := s.AddOutboxEvent(ctx, &store.OutboxEvent{EventID: "k-bad", TenantID: tenantA, Kind: "teleport", CreatedAt: now, NextAttemptAt: now}); err == nil {
+		t.Fatal("unknown kind must be rejected")
+	}
+	bad := *rev
+	bad.Serial = "00000000000000000000000000000d02"
+	if err := s.AddRevocationWithEvent(ctx, &bad, &store.OutboxEvent{EventID: "k-bad2", TenantID: tenantA, Kind: "teleport", CreatedAt: now, NextAttemptAt: now}); err == nil {
+		t.Fatal("unknown kind must be rejected with the revocation")
+	}
+	if _, err := s.GetRevocation(ctx, bad.Serial); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revocation committed with a rejected event: %v", err)
+	}
+	if n, _ := s.CountPendingOutbox(ctx); n != 2 {
+		t.Fatalf("pending = %d want 2", n)
+	}
+	got, err := s.ClaimOutbox(ctx, now, time.Second, 10)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("ClaimOutbox = %+v, %v", got, err)
+	}
+	if got[0].EventID != "k-rev" || got[0].Kind != store.OutboxKindRevocation || got[1].EventID != "k-rel" || got[1].Kind != store.OutboxKindDeviceRelease {
+		t.Fatalf("kinds not round-tripped: %+v %+v", got[0], got[1])
+	}
+	if string(got[1].Payload) != `{"event":"device_release"}` {
+		t.Fatalf("payload = %s", got[1].Payload)
+	}
+	if err := s.AckOutbox(ctx, "k-rel", now); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.CountPendingOutbox(ctx); n != 1 {
+		t.Fatalf("pending after ack = %d want 1", n)
 	}
 }
 

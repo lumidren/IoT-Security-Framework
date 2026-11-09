@@ -260,6 +260,10 @@ func (s *Store) AddRevocationWithEvent(ctx context.Context, rev *store.Revocatio
 	if ev == nil || ev.EventID == "" {
 		return errors.New("store: outbox event id is required")
 	}
+	kind, err := store.OutboxKind(ev.Kind)
+	if err != nil {
+		return err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -274,16 +278,38 @@ func (s *Store) AddRevocationWithEvent(ctx context.Context, rev *store.Revocatio
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO revocation_outbox (event_id, tenant_id, payload, created_at, attempts, next_attempt_at, last_error)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-		ev.EventID, ev.TenantID, ev.Payload, ev.CreatedAt, ev.Attempts, ev.NextAttemptAt, ev.LastError)
-	if isUniqueViolation(err) {
-		return store.ErrAlreadyExists
-	}
-	if err != nil {
+	if err := insertOutbox(ctx, tx, ev, kind); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// outboxExecer is satisfied by pgx.Tx and *pgxpool.Pool.
+type outboxExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func insertOutbox(ctx context.Context, db outboxExecer, ev *store.OutboxEvent, kind string) error {
+	_, err := db.Exec(ctx, `INSERT INTO revocation_outbox (event_id, tenant_id, event_kind, payload, created_at, attempts, next_attempt_at, last_error)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		ev.EventID, ev.TenantID, kind, ev.Payload, ev.CreatedAt, ev.Attempts, ev.NextAttemptAt, ev.LastError)
+	if isUniqueViolation(err) {
+		return store.ErrAlreadyExists
+	}
+	return err
+}
+
+// AddOutboxEvent implements store.Store: one INSERT, so the row is written
+// atomically like the revocation transaction.
+func (s *Store) AddOutboxEvent(ctx context.Context, ev *store.OutboxEvent) error {
+	if ev == nil || ev.EventID == "" {
+		return errors.New("store: outbox event id is required")
+	}
+	kind, err := store.OutboxKind(ev.Kind)
+	if err != nil {
+		return err
+	}
+	return insertOutbox(ctx, s.pool, ev, kind)
 }
 
 // ClaimOutbox implements store.Store. FOR UPDATE SKIP LOCKED lets several
@@ -297,7 +323,7 @@ func (s *Store) ClaimOutbox(ctx context.Context, now time.Time, lease time.Durat
               WHERE delivered_at IS NULL AND next_attempt_at <= $1
               ORDER BY created_at, event_id LIMIT $3 FOR UPDATE SKIP LOCKED) due
         WHERE o.event_id = due.event_id
-        RETURNING o.event_id, o.tenant_id, o.payload, o.created_at, o.attempts, o.next_attempt_at, o.last_error`,
+        RETURNING o.event_id, o.tenant_id, o.event_kind, o.payload, o.created_at, o.attempts, o.next_attempt_at, o.last_error`,
 		now, now.Add(lease), limit)
 	if err != nil {
 		return nil, err
@@ -306,7 +332,7 @@ func (s *Store) ClaimOutbox(ctx context.Context, now time.Time, lease time.Durat
 	out := []*store.OutboxEvent{}
 	for rows.Next() {
 		var ev store.OutboxEvent
-		if err := rows.Scan(&ev.EventID, &ev.TenantID, &ev.Payload, &ev.CreatedAt, &ev.Attempts, &ev.NextAttemptAt, &ev.LastError); err != nil {
+		if err := rows.Scan(&ev.EventID, &ev.TenantID, &ev.Kind, &ev.Payload, &ev.CreatedAt, &ev.Attempts, &ev.NextAttemptAt, &ev.LastError); err != nil {
 			return nil, err
 		}
 		out = append(out, &ev)

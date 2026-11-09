@@ -232,6 +232,77 @@ func (s *Service) RevokeDevice(ctx context.Context, deviceID, reason, revokedBy 
 	return results, nil
 }
 
+// ErrTenantMismatch means a release names a tenant that does not own the
+// device's certificates.
+var ErrTenantMismatch = errors.New("revocation: device belongs to another tenant")
+
+// ReleaseResult describes a queued device release.
+type ReleaseResult struct {
+	EventID      string    `json:"event_id"`
+	Event        string    `json:"event"`
+	DeviceID     string    `json:"device_id"`
+	TenantID     string    `json:"tenant_id"`
+	ReleasedAt   time.Time `json:"released_at"`
+	Published    bool      `json:"published"`
+	PublishError string    `json:"publish_error,omitempty"`
+}
+
+// Release queues a device_release event for the Policy service, which lifts
+// the device-level deny a quarantine (RevokeDevice) installed. Serial-level
+// denies are untouched: every certificate revoked by the quarantine stays
+// revoked, so the device must re-enroll.
+//
+// The event goes through the same durable outbox as revocations (written
+// atomically, one inline delivery attempt, then retried by the Dispatcher
+// with backoff and DNS fan-out until every Policy endpoint acknowledged). A
+// failed first attempt is reported in the result, not as an error.
+// ErrTenantMismatch when a known certificate of the device belongs to
+// another tenant.
+func (s *Service) Release(ctx context.Context, deviceID, tenantID, releasedBy string) (*ReleaseResult, error) {
+	if err := ca.ValidateDeviceID(deviceID); err != nil {
+		return nil, err
+	}
+	if err := ca.ValidateTenantID(tenantID); err != nil {
+		return nil, err
+	}
+	certs, err := s.store.ListCertificatesByDevice(ctx, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range certs {
+		if c.TenantID != tenantID {
+			return nil, ErrTenantMismatch
+		}
+	}
+	eventID, err := newEventID()
+	if err != nil {
+		return nil, err
+	}
+	start := s.opts.Clock()
+	now := start.UTC()
+	ev := Event{EventID: eventID, Kind: KindDeviceRelease, DeviceID: deviceID, TenantID: tenantID, ReleasedAt: now}
+	payload, err := json.Marshal(ev)
+	if err != nil {
+		return nil, err
+	}
+	outbox := &store.OutboxEvent{EventID: eventID, TenantID: tenantID, Kind: store.OutboxKindDeviceRelease, Payload: payload,
+		CreatedAt: now, NextAttemptAt: now.Add(s.dispatcher.Lease())}
+	if err := s.store.AddOutboxEvent(ctx, outbox); err != nil {
+		return nil, err
+	}
+	log := s.opts.Logger.With("event_id", eventID, "event", KindDeviceRelease, "device_id", deviceID, "tenant_id", tenantID, "released_by", releasedBy)
+	log.Info("device release queued")
+	res := &ReleaseResult{EventID: eventID, Event: KindDeviceRelease, DeviceID: deviceID, TenantID: tenantID, ReleasedAt: now}
+	if pubErr := s.dispatcher.Attempt(ctx, outbox); pubErr != nil {
+		res.PublishError = pubErr.Error()
+		log.Error("first device release delivery failed; queued in the outbox for retry", "error", pubErr.Error())
+	} else {
+		res.Published = true
+	}
+	s.dispatcher.RefreshPending(ctx)
+	return res, nil
+}
+
 // newEventID returns a random UUIDv4 string.
 func newEventID() (string, error) {
 	var b [16]byte

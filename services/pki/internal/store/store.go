@@ -90,13 +90,26 @@ type TenantPolicy struct {
 	UpdatedAt  time.Time
 }
 
-// OutboxEvent is a revocation event queued for delivery to the Policy
-// service (the durable revocation outbox, THREAT_MODEL T-26). It is written
-// in the same transaction as the revocation and stays pending until every
-// Policy endpoint acknowledged it.
+// Outbox event kinds (revocation_outbox.event_kind).
+const (
+	// OutboxKindRevocation is a certificate revocation (the default for rows
+	// written before migration 0004).
+	OutboxKindRevocation = "revocation"
+	// OutboxKindDeviceRelease lifts the device-level deny of a released
+	// device (registry release after quarantine).
+	OutboxKindDeviceRelease = "device_release"
+)
+
+// OutboxEvent is an event queued for delivery to the Policy service (the
+// durable revocation outbox, THREAT_MODEL T-26). A revocation is written in
+// the same transaction as the revocation row; every event stays pending until
+// every Policy endpoint acknowledged it.
 type OutboxEvent struct {
 	EventID  string
 	TenantID string
+	// Kind is OutboxKindRevocation (default when empty) or
+	// OutboxKindDeviceRelease.
+	Kind string
 	// Payload is the JSON event body that is signed and pushed.
 	Payload   []byte
 	CreatedAt time.Time
@@ -108,6 +121,18 @@ type OutboxEvent struct {
 	LastError     string
 	// DeliveredAt is zero while the event is pending.
 	DeliveredAt time.Time
+}
+
+// OutboxKind returns the event kind to store: OutboxKindRevocation for an
+// empty kind, the kind itself when it is known, and an error otherwise.
+func OutboxKind(kind string) (string, error) {
+	switch kind {
+	case "", OutboxKindRevocation:
+		return OutboxKindRevocation, nil
+	case OutboxKindDeviceRelease:
+		return kind, nil
+	}
+	return "", errors.New("store: unknown outbox event kind " + kind)
 }
 
 // Stats are aggregate certificate counts.
@@ -142,6 +167,10 @@ type Store interface {
 	// outbox atomically (both or neither). ErrAlreadyRevoked on a duplicate
 	// serial, ErrAlreadyExists on a duplicate event id.
 	AddRevocationWithEvent(ctx context.Context, rev *Revocation, ev *OutboxEvent) error
+	// AddOutboxEvent queues an event that has no revocation row (a
+	// device_release) in the outbox, atomically. ErrAlreadyExists on a
+	// duplicate event id.
+	AddOutboxEvent(ctx context.Context, ev *OutboxEvent) error
 	// ClaimOutbox returns up to limit pending events with NextAttemptAt <= now,
 	// oldest first, after moving their NextAttemptAt to now+lease so another
 	// dispatcher (replica) does not pick them up while they are in flight.

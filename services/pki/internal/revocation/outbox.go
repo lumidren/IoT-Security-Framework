@@ -58,7 +58,8 @@ type DispatcherOptions struct {
 	BatchSize int
 }
 
-// Dispatcher delivers the revocation outbox: every pending event is
+// Dispatcher delivers the revocation outbox (revocations and device
+// releases, by the row's event kind): every pending event is
 // published until the Publisher reports that all Policy endpoints
 // acknowledged it, with exponential backoff (BaseBackoff doubling, capped at
 // MaxBackoff) between attempts. Pending rows survive restarts because they
@@ -162,9 +163,19 @@ func (d *Dispatcher) Attempt(ctx context.Context, ev *store.OutboxEvent) error {
 		d.mu.Unlock()
 	}()
 
-	log := d.opts.Logger.With("event_id", ev.EventID, "tenant_id", ev.TenantID, "attempt", ev.Attempts+1)
+	kind, err := store.OutboxKind(ev.Kind)
+	if err != nil {
+		kind = ev.Kind
+	}
+	log := d.opts.Logger.With("event_id", ev.EventID, "event", kind, "tenant_id", ev.TenantID, "attempt", ev.Attempts+1)
 	var event Event
-	err := json.Unmarshal(ev.Payload, &event)
+	if err == nil {
+		err = json.Unmarshal(ev.Payload, &event)
+	}
+	if err == nil && kind == store.OutboxKindDeviceRelease {
+		// The row's kind is authoritative for the wire format.
+		event.Kind = KindDeviceRelease
+	}
 	if err == nil {
 		actx, cancel := context.WithTimeout(ctx, d.opts.AttemptTimeout)
 		start := d.opts.Clock()
@@ -172,7 +183,7 @@ func (d *Dispatcher) Attempt(ctx context.Context, ev *store.OutboxEvent) error {
 		cancel()
 		d.opts.Metrics.RevocationPublishLatency.Observe(d.opts.Clock().Sub(start).Seconds())
 	} else {
-		err = fmt.Errorf("revocation: undecodable outbox payload: %w", err)
+		err = fmt.Errorf("revocation: undeliverable outbox row: %w", err)
 	}
 	// Bookkeeping must not depend on the caller's (request) context.
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -186,18 +197,21 @@ func (d *Dispatcher) Attempt(ctx context.Context, ev *store.OutboxEvent) error {
 		if rerr := d.store.RecordOutboxAttempt(bctx, ev.EventID, attempts, next, truncate(err.Error(), 1024)); rerr != nil {
 			log.Error("cannot record revocation delivery attempt", "error", rerr.Error())
 		}
-		log.Warn("revocation event delivery failed; will retry", "error", err.Error(), "retry_at", next)
+		log.Warn("policy event delivery failed; will retry", "error", err.Error(), "retry_at", next)
 		return err
 	}
 	d.opts.Metrics.RevocationPublishAttempts.WithLabelValues("ok").Inc()
 	if aerr := d.store.AckOutbox(bctx, ev.EventID, now); aerr != nil {
 		// The row stays pending and is delivered again later; the Policy
 		// service deduplicates by event_id.
-		log.Error("cannot acknowledge delivered revocation event", "error", aerr.Error())
+		log.Error("cannot acknowledge delivered policy event", "error", aerr.Error())
 	}
 	total := now.Sub(ev.CreatedAt)
-	d.opts.Metrics.RevocationLatency.Observe(total.Seconds())
-	log.Info("revocation event delivered", "total_ms", total.Milliseconds())
+	if kind == store.OutboxKindRevocation {
+		// ironmesh_revocation_latency_seconds is revoke request -> ack.
+		d.opts.Metrics.RevocationLatency.Observe(total.Seconds())
+	}
+	log.Info("policy event delivered", "total_ms", total.Milliseconds())
 	return nil
 }
 

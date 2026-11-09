@@ -33,7 +33,16 @@ const (
 	DefaultBackoff = 500 * time.Millisecond
 )
 
-// Event is the JSON revocation event pushed to the Policy service.
+// Event kinds on the wire ("event" member). A body without "event" is a
+// revocation, so the revocation wire format is unchanged.
+const (
+	KindRevocation    = "revocation"
+	KindDeviceRelease = "device_release"
+)
+
+// Event is the JSON event pushed to the Policy service: a certificate
+// revocation (Kind empty or KindRevocation) or a device release
+// (KindDeviceRelease).
 //
 // DeviceDeny tells the Policy service to deny-list the whole device id (every
 // certificate of the device): it is true for revoke-all (registry quarantine
@@ -41,7 +50,27 @@ const (
 // operator revocation of one serial) carry false and deny only that serial,
 // so a renewed device is not locked out by the revocation of its previous
 // certificate.
+//
+// A device release ({event_id, event: "device_release", device_id,
+// tenant_id, released_at}) lifts the device-level deny again after the
+// registry released a quarantined device; serial-level denies stay.
 type Event struct {
+	EventID    string    `json:"event_id"`
+	Kind       string    `json:"event,omitempty"`
+	Serial     string    `json:"serial"`
+	DeviceID   string    `json:"device_id"`
+	TenantID   string    `json:"tenant_id"`
+	Reason     string    `json:"reason"`
+	RevokedAt  time.Time `json:"revoked_at"`
+	DeviceDeny bool      `json:"device_deny"`
+	ReleasedAt time.Time `json:"released_at"`
+}
+
+// IsRelease reports whether the event is a device release.
+func (e Event) IsRelease() bool { return e.Kind == KindDeviceRelease }
+
+// revocationWire is the (unchanged) revocation body.
+type revocationWire struct {
 	EventID    string    `json:"event_id"`
 	Serial     string    `json:"serial"`
 	DeviceID   string    `json:"device_id"`
@@ -49,6 +78,23 @@ type Event struct {
 	Reason     string    `json:"reason"`
 	RevokedAt  time.Time `json:"revoked_at"`
 	DeviceDeny bool      `json:"device_deny"`
+}
+
+// releaseWire is the device_release body.
+type releaseWire struct {
+	EventID    string    `json:"event_id"`
+	Kind       string    `json:"event"`
+	DeviceID   string    `json:"device_id"`
+	TenantID   string    `json:"tenant_id"`
+	ReleasedAt time.Time `json:"released_at"`
+}
+
+// MarshalJSON renders the wire body of the event's kind.
+func (e Event) MarshalJSON() ([]byte, error) {
+	if e.IsRelease() {
+		return json.Marshal(releaseWire{EventID: e.EventID, Kind: KindDeviceRelease, DeviceID: e.DeviceID, TenantID: e.TenantID, ReleasedAt: e.ReleasedAt})
+	}
+	return json.Marshal(revocationWire{EventID: e.EventID, Serial: e.Serial, DeviceID: e.DeviceID, TenantID: e.TenantID, Reason: e.Reason, RevokedAt: e.RevokedAt, DeviceDeny: e.DeviceDeny})
 }
 
 // Publisher delivers revocation events. Publish returns nil only when the
@@ -339,6 +385,10 @@ func (n NoopPublisher) Publish(_ context.Context, ev Event) error {
 	if l == nil {
 		l = slog.Default()
 	}
-	l.Warn("revocation event not published: PKI_POLICY_URL is not configured", "event_id", ev.EventID, "serial", ev.Serial, "device_id", ev.DeviceID, "tenant_id", ev.TenantID)
+	kind := ev.Kind
+	if kind == "" {
+		kind = KindRevocation
+	}
+	l.Warn("policy event not published: PKI_POLICY_URL is not configured", "event_id", ev.EventID, "event", kind, "serial", ev.Serial, "device_id", ev.DeviceID, "tenant_id", ev.TenantID)
 	return nil
 }
