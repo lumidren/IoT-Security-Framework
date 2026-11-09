@@ -289,7 +289,7 @@ class ActionRecord:
     created_at: datetime
     next_attempt_at: datetime
     attempts: int = 0
-    status: str = "pending"  # pending | done | failed
+    status: str = "pending"  # pending | done | failed | cancelled
     last_error: str | None = None
 
 

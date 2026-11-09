@@ -50,6 +50,8 @@ log = structlog.get_logger("app.devices")
 
 MAX_TELEMETRY_POINTS = 2000
 ACTION_RETRY_MAX = 20
+PKI_REVOKE_ALL = "pki_revoke_all"
+PKI_RELEASE = "pki_release"
 
 
 # ------------------------------------------------------------------------------------------------
@@ -279,14 +281,14 @@ async def _revoke_credentials(
     and an audit event with outcome ``failure`` so the gap is visible.
     """
     try:
-        count = await app.retry("pki_revoke_all", lambda: app.pki.revoke_all(device_id, reason))
+        count = await app.retry(PKI_REVOKE_ALL, lambda: app.pki.revoke_all(device_id, reason))
     except Exception as exc:
         async with app.unit(p, tenant_id) as u:
             now = u.now()
             action = ActionRecord(
                 tenant_id=tenant_id,
                 id=str(uuid.uuid4()),
-                kind="pki_revoke_all",
+                kind=PKI_REVOKE_ALL,
                 device_id=device_id,
                 payload={"reason": reason, "cause": cause},
                 created_at=now,
@@ -335,6 +337,20 @@ async def _record_revocation(u: Unit, device_id: str, reason: str, count: int, c
     )
 
 
+async def _cancel_pending_releases(u: Unit, device_id: str, cause: str) -> None:
+    """Drop queued PKI releases of a device that is being quarantined or decommissioned again, so
+    a late release can never lift the new device-level deny."""
+    for action in await u.tx.pending_device_actions(device_id, (PKI_RELEASE,)):
+        action.status = "cancelled"
+        await u.tx.save_action(action)
+        await u.audit(
+            f"action.{PKI_RELEASE}.cancelled",
+            "device",
+            device_id,
+            {"action_id": action.id, "cause": cause},
+        )
+
+
 async def quarantine(
     app: AppContext,
     p: Principal,
@@ -359,6 +375,7 @@ async def quarantine(
             raise TransitionError(DeviceState.DECOMMISSIONED, DeviceState.QUARANTINED)
         dev.quarantine_reason = reason
         await transition(u, dev, DeviceState.QUARANTINED, reason)
+        await _cancel_pending_releases(u, dev.id, "quarantine")
         await u.audit(
             "device.quarantine", "device", dev.id, {"reason": reason, "alert_id": alert_id}
         )
@@ -367,14 +384,108 @@ async def quarantine(
         return await detail(u, await require_device(u, device_id))
 
 
+async def _complete_pending_revocations(
+    app: AppContext, p: Principal, tenant_id: str, device_id: str, pending: list[ActionRecord]
+) -> None:
+    """Finish the quarantine's revoke-all before a release (its deny must predate the release).
+
+    Raises 503 when the PKI still cannot revoke: releasing first would let the queued revoke-all
+    deny (and revoke the re-enrolled certificate of) the released device later.
+    """
+    reason = str(pending[0].payload.get("reason", "retry"))
+    try:
+        count = await app.retry(PKI_REVOKE_ALL, lambda: app.pki.revoke_all(device_id, reason))
+    except Exception as exc:
+        async with app.unit(p, tenant_id) as u:
+            await u.audit(
+                "device.release",
+                "device",
+                device_id,
+                {"error": str(exc), "blocked_by": [a.id for a in pending]},
+                outcome="failure",
+            )
+        raise ProblemError(
+            503,
+            "the quarantine's certificate revocation is still pending at the PKI; "
+            "retry the release later",
+            headers={"Retry-After": "30"},
+        ) from exc
+    async with app.unit(p, tenant_id) as u:
+        for action in pending:
+            action.status = "done"
+            action.attempts += 1
+            await u.tx.save_action(action)
+            await u.audit(
+                f"action.{PKI_REVOKE_ALL}.completed",
+                "device",
+                device_id,
+                {"action_id": action.id, "attempts": action.attempts, "trigger": "release"},
+            )
+        await _record_revocation(u, device_id, reason, count, str(pending[0].payload.get("cause")))
+
+
+async def _pki_release(u: Unit, device_id: str, note: str) -> str:
+    """PKI ``device_release`` (lifts the policy service's device-level deny), with retries.
+
+    Called while the device row is locked, so a concurrent quarantine waits and its revoke-all
+    (a newer deny) is always issued after this release. On final failure the release is queued in
+    the action outbox (``pki_release``) and audited with outcome ``failure``; the device stays
+    refused at CONNECT until the retry succeeds (fail closed).
+    """
+    app = u.app
+    try:
+        event_id = await app.retry(
+            PKI_RELEASE, lambda: app.pki.release(device_id, u.tenant_id, note)
+        )
+    except Exception as exc:
+        now = u.now()
+        action = ActionRecord(
+            tenant_id=u.tenant_id,
+            id=str(uuid.uuid4()),
+            kind=PKI_RELEASE,
+            device_id=device_id,
+            payload={"note": note},
+            created_at=now,
+            next_attempt_at=now + timedelta(seconds=30),
+            attempts=app.settings.orchestration_attempts,
+            last_error=str(exc),
+        )
+        await u.tx.insert_action(action)
+        await u.audit(
+            "device.pki_release_failed",
+            "device",
+            device_id,
+            {"error": str(exc), "compensation": "retry_scheduled", "action_id": action.id},
+            outcome="failure",
+        )
+        return "pending"
+    await u.audit("device.pki_released", "device", device_id, {"event_id": event_id})
+    return "done"
+
+
 async def release(app: AppContext, p: Principal, device_id: str, note: str) -> m.DeviceDetail:
+    """Quarantined -> active. Revoked certificates stay revoked (the device must re-enroll); the
+    PKI ``device_release`` lifts the device-level deny the quarantine installed in policy."""
     async with app.unit(p) as u:
         dev = await require_device(u, device_id, for_update=True)
         if dev.state != DeviceState.QUARANTINED:
             raise TransitionError(DeviceState(dev.state), DeviceState.ACTIVE)
+        pending = await u.tx.pending_device_actions(device_id, (PKI_REVOKE_ALL,))
+    if pending:
+        await _complete_pending_revocations(app, p, p.tenant_id, device_id, pending)
+    async with app.unit(p) as u:
+        dev = await require_device(u, device_id, for_update=True)
+        if dev.state != DeviceState.QUARANTINED:  # changed while the revocation completed
+            raise TransitionError(DeviceState(dev.state), DeviceState.ACTIVE)
+        pki_release = await _pki_release(u, dev.id, note)
         dev.quarantine_reason = None
         await transition(u, dev, DeviceState.ACTIVE, note or None)
-        await u.audit("device.release", "device", dev.id, {"note": note, "reenroll_required": True})
+        await u.audit(
+            "device.release",
+            "device",
+            dev.id,
+            {"note": note, "reenroll_required": True, "pki_release": pki_release},
+        )
         return await detail(u, dev)
 
 
@@ -384,6 +495,7 @@ async def decommission(
     async with app.unit(p) as u:
         dev = await require_device(u, device_id, for_update=True)
         await transition(u, dev, DeviceState.DECOMMISSIONED, reason)
+        await _cancel_pending_releases(u, dev.id, "decommission")
         now = u.now()
         for status in ("pending", "sent"):
             for cmd in await u.tx.list_commands(dev.id, status, None, 1000):
@@ -624,6 +736,41 @@ async def pki_device(app: AppContext, p: Principal, tenant_id: str, device_id: s
 # ------------------------------------------------------------------------------------------------
 
 
+async def _retry_pki_release(
+    app: AppContext, p: Principal, tenant_id: str, action: ActionRecord
+) -> bool:
+    """One outbox retry of a queued PKI release, with the device row locked (see ``_pki_release``).
+
+    Returns ``False`` when the release no longer applies (cancelled by a new quarantine or
+    decommission, or the device is not ``active``); raises when the PKI call fails.
+    """
+    async with app.unit(p, tenant_id) as u:
+        dev = await u.tx.get_device(action.device_id, for_update=True)
+        pending = await u.tx.pending_device_actions(action.device_id, (PKI_RELEASE,))
+        if action.id not in {a.id for a in pending}:
+            return False
+        if dev is None or dev.state != DeviceState.ACTIVE:
+            action.status = "cancelled"
+            await u.tx.save_action(action)
+            await u.audit(
+                f"action.{PKI_RELEASE}.cancelled",
+                "device",
+                action.device_id,
+                {"action_id": action.id, "cause": f"state {dev.state if dev else 'missing'}"},
+            )
+            return False
+        event_id = await app.pki.release(
+            action.device_id, tenant_id, str(action.payload.get("note", ""))
+        )
+        await u.audit(
+            "device.pki_released",
+            "device",
+            action.device_id,
+            {"event_id": event_id, "action_id": action.id},
+        )
+    return True
+
+
 async def run_pending_actions(
     app: AppContext, p: Principal, tenant_ids: list[str] | None = None
 ) -> int:
@@ -640,13 +787,16 @@ async def run_pending_actions(
             # tenant-level actions (PKI policy) carry no device id
             target = ("device", action.device_id) if action.device_id else ("tenant", tenant_id)
             try:
-                if action.kind == "pki_revoke_all":
+                if action.kind == PKI_REVOKE_ALL:
                     reason = str(action.payload.get("reason", "retry"))
                     count = await app.pki.revoke_all(action.device_id, reason)
                     async with app.unit(p, tenant_id) as u:
                         await _record_revocation(
                             u, action.device_id, reason, count, str(action.payload.get("cause"))
                         )
+                elif action.kind == PKI_RELEASE:
+                    if not await _retry_pki_release(app, p, tenant_id, action):
+                        continue  # cancelled: the device was quarantined or decommissioned again
                 elif action.kind == "publish_shadow":
                     await twin_svc.republish(app, p, tenant_id, action.device_id)
                 elif action.kind == "publish_config":

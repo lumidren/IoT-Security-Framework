@@ -599,6 +599,19 @@ class MemoryTenantTx:
         ]
         return [_c(a) for a in sorted(rows, key=lambda a: a.next_attempt_at)[:limit]]
 
+    async def pending_device_actions(
+        self, device_id: str, kinds: tuple[str, ...]
+    ) -> list[ActionRecord]:
+        rows = [
+            a
+            for a in self.s.actions.values()
+            if self._mine(a.tenant_id)
+            and a.status == "pending"
+            and a.device_id == device_id
+            and a.kind in kinds
+        ]
+        return [_c(a) for a in sorted(rows, key=lambda a: (a.created_at, a.id))]
+
     async def save_action(self, rec: ActionRecord) -> None:
         if not self._mine(rec.tenant_id):
             raise PermissionError("row-level security: tenant mismatch")

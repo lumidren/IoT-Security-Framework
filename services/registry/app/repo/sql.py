@@ -825,6 +825,23 @@ class SqlTenantTx:
         )
         return [_rec(ActionRecord, r) for r in rows]
 
+    async def pending_device_actions(
+        self, device_id: str, kinds: tuple[str, ...]
+    ) -> list[ActionRecord]:
+        p = t.pending_actions
+        rows = await self._all(
+            select(p)
+            .where(
+                self._mine(p),
+                p.c.status == "pending",
+                p.c.device_id == device_id,
+                p.c.kind.in_(kinds),
+            )
+            .order_by(p.c.created_at, p.c.id)
+            .with_for_update()
+        )
+        return [_rec(ActionRecord, r) for r in rows]
+
     async def save_action(self, rec: ActionRecord) -> None:
         p = t.pending_actions
         await self.conn.execute(

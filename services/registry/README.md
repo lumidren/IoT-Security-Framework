@@ -51,8 +51,10 @@ Multi-stage `python:3.12-slim`, runs as UID 10001, `uvicorn --proxy-headers` (tr
 | `REGISTRY_OIDC_ISSUER` / `REGISTRY_OIDC_AUDIENCE` | - / `ironmesh-api` | JWKS discovered from the issuer (`REGISTRY_OIDC_JWKS_URL` overrides), cached `REGISTRY_OIDC_JWKS_CACHE_SECONDS` |
 | `REGISTRY_OIDC_TENANT_CLAIM` / `_ROLE_CLAIM` / `_PLATFORM_ROLES_CLAIM` | `tenant_id` / `role` / `platform_roles` | `platform_admin` in the latter enables `X-IronMesh-Tenant` |
 | `REGISTRY_INTERNAL_TOKENS` (secret, JSON) | `{}` | per-caller bearer tokens for `/internal/*`, e.g. `{"pki": "<PKI_REGISTRY_TOKEN>", "policy": "<POLICY_REGISTRY_TOKEN>", "anomaly": "<ANOMALY_INTERNAL_TOKEN>", "ota": "<OTA_REGISTRY_TOKEN>"}`. Keys are free-form caller names; each token is bound to one caller and the per-endpoint allowlist applies |
-| `REGISTRY_SERVICE_JWT_TRUSTED_KEYS` | `{}` | JSON `{"pki": "<PEM>", "policy": "...", "anomaly": "...", "ota": "..."}`: ES256 keys accepted on `/internal/*` (`aud=registry`, <= 5 min; the JWT `iss` must equal the map key) |
-| `REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE` | - | P-256 key used to mint the registry's own service JWTs (`iss=registry`, `aud=pki` / `aud=ota`); the PKI tenant-policy pushes use it |
+| `REGISTRY_SERVICE_JWT_TRUSTED_KEYS` | `{}` | JSON `{"pki": "<PEM>", "policy": "...", "anomaly": "...", "ota": "..."}`: ES256 keys accepted on `/internal/*` (`aud=registry`, `iat`/`exp`/`jti` required, `exp - iat` <= 300 s; the JWT `iss` must equal the map key) |
+| `REGISTRY_SERVICE_JWT_SINGLE_USE` | `true` | remember every accepted service-JWT `jti` (per `iss`) until `exp` + 30 s and reject a second use with 401 on this instance |
+| `REGISTRY_SERVICE_JWT_REPLAY_CACHE_SIZE` | `100000` | bound of that `jti` cache (>= 1000); expired ids are dropped first, then the oldest |
+| `REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE` | - | P-256 key used to mint the registry's own service JWTs (`iss=sub=registry`, `aud=pki` / `aud=ota`): a fresh token per request (random `jti`, 60 s lifetime, never cached) because the receivers accept each `jti` once; the PKI tenant-policy pushes and device releases use it |
 | `REGISTRY_KAFKA_BROKERS` | `localhost:9092` | plus `REGISTRY_KAFKA_TOPIC_{INGEST,AUTH,ALERTS,AUDIT,COMMANDS}`, `REGISTRY_KAFKA_CONSUMER_GROUP` |
 | `REGISTRY_KAFKA_TLS_ENABLED` / `_SASL_MECHANISM` / `_SASL_USERNAME` / `_SASL_PASSWORD` | `false` / `none` | `SCRAM-SHA-512` or `AWS_MSK_IAM` (needs `aws-msk-iam-sasl-signer-python`) |
 | `REGISTRY_PKI_URL` `REGISTRY_OTA_URL` `REGISTRY_POLICY_URL` | chart service names | mTLS with `REGISTRY_TLS_{CERT,KEY,CA}_FILE`; the PKI also receives the tenant command key + enrollment policy |
@@ -119,6 +121,18 @@ API-key scopes: `tenant:read|write`, `devices:read|write|lifecycle`, `twin:read|
   then PKI `revoke-all` (which drives the policy cache deny and the EMQX kick) runs with retries.
   On failure an outbox action is retried with backoff, a `failure` audit event records the
   compensation, and the registry kicks the session through the EMQX API as containment.
+* **Release** (`POST /v1/devices/{id}/release`, quarantined -> active): the quarantine's
+  revoke-all made the policy service deny the whole device id, so the registry calls the PKI
+  `POST /v1/devices/{id}/release` (`HttpPkiClient.release`, retried), which pushes a
+  `device_release` event that lifts that device-level deny; the revoked certificates stay revoked
+  and the device must re-enroll. The PKI call runs while the device row is locked, so a concurrent
+  quarantine's revoke-all is always newer than the release. If the PKI stays unreachable the
+  device still becomes `active` but a `pki_release` outbox action is retried by the sweeper
+  (audits `device.pki_release_failed`, then `action.pki_release.completed` and
+  `device.pki_released`); a later quarantine/decommission cancels it
+  (`action.pki_release.cancelled`). A release while the quarantine's `pki_revoke_all` is still
+  queued first completes that revocation and answers `503` (`Retry-After: 30`, device stays
+  quarantined) if the PKI still fails.
 * **Ingest** (`im.ingest`): topic/header/certificate identity binding (CN = device, OU = tenant
   from the PKI-issued certificate), `envelope.decode` for the WIRE_FORMAT §3.6 order, then the
   replay compare-and-set in `device_replay` (`numeric(20,0)`, uint64) in the same transaction that

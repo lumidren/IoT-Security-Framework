@@ -188,7 +188,14 @@ class Env:
     def service(self, name: str, *, aud: str = "registry", lifetime: int = 300) -> dict[str, str]:
         now = int(time.time())
         token = jwt.encode(
-            {"iss": name, "sub": name, "aud": aud, "iat": now, "exp": now + lifetime},
+            {
+                "iss": name,
+                "sub": name,
+                "aud": aud,
+                "iat": now,
+                "exp": now + lifetime,
+                "jti": str(uuid.uuid4()),
+            },
             SERVICE_KEYS[name],
             algorithm="ES256",
         )

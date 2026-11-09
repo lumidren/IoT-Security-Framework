@@ -79,6 +79,7 @@ def certificate_from_view(view: dict[str, Any]) -> PkiCertificate:
 
 class PkiClient(Protocol):
     async def revoke_all(self, device_id: str, reason: str) -> int: ...
+    async def release(self, device_id: str, tenant_id: str, note: str) -> str: ...
     async def device_certificates(self, device_id: str) -> list[PkiCertificate]: ...
     async def get_certificate(self, serial_hex: str) -> PkiCertificate | None: ...
     def invalidate(self, device_id: str) -> None: ...
@@ -158,6 +159,19 @@ class HttpPkiClient:
             raise UpstreamError(f"pki revoke-all: HTTP {resp.status_code}")
         self.invalidate(device_id)
         return int(resp.json().get("count", 0))
+
+    async def release(self, device_id: str, tenant_id: str, note: str) -> str:
+        """API_CONTRACT §5 ``POST /v1/devices/{id}/release`` -> ``202 {event_id, ...}``: the PKI
+        queues a ``device_release`` event that lifts the policy service's device-level deny."""
+        resp = await self._request(
+            "POST",
+            f"/v1/devices/{device_id}/release",
+            json={"tenant_id": tenant_id, "note": note[:1024]},
+        )
+        if not 200 <= resp.status_code < 300:
+            raise UpstreamError(f"pki release: HTTP {resp.status_code}")
+        self.invalidate(device_id)
+        return str(resp.json().get("event_id", ""))
 
     async def device_certificates(self, device_id: str) -> list[PkiCertificate]:
         cached = self.device_cache.get(device_id)
@@ -246,6 +260,8 @@ class FakePki:
     enrollment: dict[str, bool] = field(default_factory=dict)
     policy_calls: list[tuple[str, str]] = field(default_factory=list)
     fail_policy: int = 0  # number of upcoming tenant-policy PUTs that fail
+    released: list[tuple[str, str]] = field(default_factory=list)  # (device_id, tenant_id)
+    fail_release: int = 0  # number of upcoming release calls that fail
 
     def add(self, cert: PkiCertificate) -> None:
         self.certs[cert.serial_hex] = cert
@@ -267,6 +283,13 @@ class FakePki:
                 )
                 n += 1
         return n
+
+    async def release(self, device_id: str, tenant_id: str, note: str) -> str:
+        if self.fail_release > 0:
+            self.fail_release -= 1
+            raise UpstreamError("pki unavailable")
+        self.released.append((device_id, tenant_id))
+        return f"release-{len(self.released)}"
 
     async def device_certificates(self, device_id: str) -> list[PkiCertificate]:
         if self.fail_lookup:

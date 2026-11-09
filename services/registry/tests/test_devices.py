@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
+import uuid
 from datetime import timedelta
+from typing import Any
 
 from app.auth import SYSTEM
+from app.domain import ActionRecord
 from app.integrations.bus import TOPIC_AUDIT, TOPIC_COMMANDS
 from app.services import devices as device_svc
 
@@ -282,6 +286,8 @@ async def test_quarantine_release_decommission_orchestration(env: Env) -> None:
     )
     assert r.status_code == 200 and r.json()["state"] == "active"
     assert r.json()["quarantine_reason"] is None
+    # the PKI device_release lifts the policy service's device-level deny
+    assert env.pki.released == [(did, t)]
     r = await env.client.post(
         f"/v1/devices/{did}/release", headers=env.auth(t, "admin"), json={"note": ""}
     )
@@ -336,6 +342,136 @@ async def test_quarantine_compensation_when_pki_down(env: Env) -> None:
     r = await env.client.get("/v1/audit", headers=env.auth(t), params={"target_id": dev["id"]})
     assert "action.pki_revoke_all.completed" in {a["action"] for a in r.json()["items"]}
     assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 0
+
+
+async def _audit_actions(env: Env, t: str, device_id: str) -> set[tuple[str, str]]:
+    r = await env.client.get(
+        "/v1/audit", headers=env.auth(t), params={"target_id": device_id, "limit": 200}
+    )
+    return {(a["action"], a["outcome"]) for a in r.json()["items"]}
+
+
+async def _quarantine(env: Env, t: str, did: str) -> None:
+    r = await env.client.post(
+        f"/v1/devices/{did}/quarantine", headers=env.auth(t, "operator"), json={"reason": "x"}
+    )
+    assert r.status_code == 200, r.text
+
+
+async def _release(env: Env, t: str, did: str, note: str = "false positive") -> Any:
+    return await env.client.post(
+        f"/v1/devices/{did}/release", headers=env.auth(t, "admin"), json={"note": note}
+    )
+
+
+async def test_release_calls_pki_release(env: Env) -> None:
+    t = await env.tenant()
+    dev, _ = await env.active_device(t)
+    did = dev["id"]
+    await _quarantine(env, t, did)
+    r = await _release(env, t, did)
+    assert r.status_code == 200 and r.json()["state"] == "active"
+    assert env.pki.revoked == [(did, "x")] and env.pki.released == [(did, t)]
+    actions = await _audit_actions(env, t, did)
+    assert ("device.pki_released", "success") in actions
+    assert ("device.release", "success") in actions
+    r = await env.client.get("/v1/audit", headers=env.auth(t), params={"action": "device.release"})
+    assert r.json()["items"][0]["details"]["pki_release"] == "done"
+    # the device re-enrolls (new certificate) after the release
+    await env.enroll(t, did)
+    r = await env.client.get(f"/v1/devices/{did}", headers=env.auth(t))
+    assert r.json()["state"] == "active" and r.json()["cert"]["status"] == "valid"
+
+
+async def test_release_when_pki_down_is_retried_from_the_outbox(env: Env) -> None:
+    t = await env.tenant()
+    dev, _ = await env.active_device(t)
+    did = dev["id"]
+    await _quarantine(env, t, did)
+    env.pki.fail_release = 3  # every inline attempt fails
+    r = await _release(env, t, did)
+    assert r.status_code == 200 and r.json()["state"] == "active"
+    assert env.pki.released == []
+    actions = await _audit_actions(env, t, did)
+    assert ("device.pki_release_failed", "failure") in actions
+    r = await env.client.get("/v1/audit", headers=env.auth(t), params={"action": "device.release"})
+    assert r.json()["items"][0]["details"]["pki_release"] == "pending"
+    # not due yet
+    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 0
+    env.clock.advance(seconds=31)
+    env.pki.fail_release = 1  # the first retry still fails -> backoff
+    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 0
+    assert env.pki.released == []
+    env.clock.advance(hours=2)
+    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 1
+    assert env.pki.released == [(did, t)]
+    actions = await _audit_actions(env, t, did)
+    assert ("action.pki_release.completed", "success") in actions
+    assert ("device.pki_released", "success") in actions
+    env.clock.advance(hours=2)
+    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 0
+
+
+async def test_requarantine_cancels_a_queued_release(env: Env) -> None:
+    t = await env.tenant()
+    dev, _ = await env.active_device(t)
+    did = dev["id"]
+    await _quarantine(env, t, did)
+    env.pki.fail_release = 3
+    assert (await _release(env, t, did)).status_code == 200
+    await _quarantine(env, t, did)  # quarantined again before the release reached the PKI
+    assert ("action.pki_release.cancelled", "success") in await _audit_actions(env, t, did)
+    env.clock.advance(hours=2)
+    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 0
+    assert env.pki.released == []  # the new device-level deny is never lifted
+
+
+async def test_queued_release_skipped_when_device_not_active(env: Env) -> None:
+    t = await env.tenant()
+    dev = await env.device(t)
+    did = dev["id"]
+    now = env.clock()
+    stale = ActionRecord(
+        tenant_id=t,
+        id=str(uuid.uuid4()),
+        kind=device_svc.PKI_RELEASE,
+        device_id=did,
+        payload={"note": "n"},
+        created_at=now,
+        next_attempt_at=now,
+    )
+    async with env.repo.tenant(t) as tx:
+        await tx.insert_action(stale)
+    # A record that is no longer pending (e.g. cancelled after the due list was read) is skipped.
+    gone = dataclasses.replace(stale, id=str(uuid.uuid4()))
+    assert not await device_svc._retry_pki_release(env.ctx, SYSTEM, t, gone)
+    # The device is "manufactured", not active: the release is cancelled, never sent.
+    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 0
+    assert env.pki.released == []
+    assert ("action.pki_release.cancelled", "success") in await _audit_actions(env, t, did)
+
+
+async def test_release_waits_for_pending_revocation(env: Env) -> None:
+    t = await env.tenant()
+    dev, _ = await env.active_device(t)
+    did = dev["id"]
+    env.pki.fail_revoke = 3  # quarantine's revoke-all is queued in the outbox
+    await _quarantine(env, t, did)
+    assert env.pki.revoked == []
+    env.pki.fail_revoke = 3  # still down at release time -> refused, device stays quarantined
+    r = await _release(env, t, did)
+    assert r.status_code == 503 and r.headers["retry-after"] == "30"
+    r = await env.client.get(f"/v1/devices/{did}", headers=env.auth(t))
+    assert r.json()["state"] == "quarantined" and env.pki.released == []
+    assert ("device.release", "failure") in await _audit_actions(env, t, did)
+    # PKI back: the release first completes the revocation, then releases.
+    r = await _release(env, t, did)
+    assert r.status_code == 200 and r.json()["state"] == "active"
+    assert env.pki.revoked == [(did, "x")] and env.pki.released == [(did, t)]
+    assert ("action.pki_revoke_all.completed", "success") in await _audit_actions(env, t, did)
+    env.clock.advance(hours=2)
+    assert await device_svc.run_pending_actions(env.ctx, SYSTEM, [t]) == 0
+    assert env.pki.revoked == [(did, "x")]  # the queued revoke-all is not replayed
 
 
 async def test_compensation_retry_backoff_and_abandon(env: Env) -> None:
@@ -499,3 +635,16 @@ async def test_telemetry_validation(env: Env) -> None:
         },
     )
     assert r.status_code == 200 and r.json() == {"series": [{"metric": "cpu_pct", "points": []}]}
+
+
+async def test_internal_service_jwt_is_single_use(env: Env) -> None:
+    t = await env.tenant()
+    did = (await env.device(t))["id"]
+    url = f"/internal/v1/devices/{did}/lifecycle"
+    h = env.service("policy")
+    assert (await env.client.get(url, headers=h)).status_code == 200
+    replay = await env.client.get(url, headers=h)
+    assert replay.status_code == 401 and "already used" in replay.json()["detail"]
+    assert (await env.client.get(url, headers=env.service("policy"))).status_code == 200
+    long_lived = await env.client.get(url, headers=env.service("policy", lifetime=301))
+    assert long_lived.status_code == 401
