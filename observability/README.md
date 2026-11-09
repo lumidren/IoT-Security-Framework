@@ -26,7 +26,7 @@ observability/
 | `ironmesh-ota`             | `ota:8001`             | `/metrics`                    |                                                   |
 | `ironmesh-anomaly`         | `anomaly:8002`         | `/metrics`                    |                                                   |
 | `ironmesh-console`         | `console:3000`         | `/metrics`                    | Next.js route handler; drop the job if absent     |
-| `ironmesh-emqx`            | `emqx:18083`           | `/api/v5/prometheus/stats`    | `prometheus.enable_basic_auth = false`            |
+| `ironmesh-emqx`            | `emqx:18083`           | `/api/v5/prometheus/stats`    | `prometheus.enable_basic_auth = false`; 18083 also serves the management API, so NetworkPolicy admits only Prometheus besides policy/registry/ota |
 | `ironmesh-redpanda`        | `redpanda:9644`        | `/public_metrics`             |                                                   |
 | `ironmesh-otel-collector`  | `otel-collector:8888`  | `/metrics`                    | collector self-telemetry                          |
 | `ironmesh-otlp-metrics`    | `otel-collector:8889`  | `/metrics`                    | OTLP-pushed metrics, `honor_labels` keeps job      |
@@ -107,6 +107,7 @@ EMQX native metrics used (`/api/v5/prometheus/stats`): `emqx_connections_count`,
 | BridgeForwardErrors        | > 0.1 errors/s or > 1% of forwarded                                       | warning  |
 | ReplayRejectedSpike        | `rate(ironmesh_replay_rejected_total[5m]) > 1/s` for 5m                   | warning  |
 | BrokerMessagesDropped      | EMQX drops > 10 msg/s for 10m                                             | warning  |
+| BrokerClientQuotaExceeded  | `emqx_messages_dropped_{quota_exceeded,receive_maximum}` > 1/s for 10m (per-client limits, T-40) | warning  |
 | ServiceDown                | `up{job=~"ironmesh-.*"} == 0` for 2m                                      | critical |
 | ApiErrorBudgetBurnFast/Slow| multi-window burn rate on `ironmesh_http_requests_total` (SLO 99.9%)      | critical / warning |
 

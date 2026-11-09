@@ -241,6 +241,26 @@ groups:
           description: "EMQX dropped {{ $value | humanize }} messages per second over 10 minutes (expired, no subscribers, or quota). Check bridge subscription health and broker capacity."
           runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#brokermessagesdropped"
 
+      # T-40: clients hitting EMQX's per-client quotas. EMQX 5.8 enforces the device listener's
+      # messages_rate / bytes_rate by pausing the client's socket and exports no counter for it;
+      # what it does count are messages dropped because a client exceeded its session quota
+      # (mqtt.max_inflight / max_awaiting_rel) or its receive maximum. A sustained rate means
+      # flooding or misbehaving clients; the publish-rate side is visible in emqx_messages_received.
+      - alert: BrokerClientQuotaExceeded
+        expr: |
+          (sum(rate(emqx_messages_dropped_quota_exceeded[5m])) or vector(0))
+          +
+          (sum(rate(emqx_messages_dropped_receive_maximum[5m])) or vector(0))
+          > 1
+        for: 10m
+        labels:
+          severity: warning
+          service: broker
+        annotations:
+          summary: "EMQX clients are exceeding their per-client quotas"
+          description: "EMQX dropped {{ $value | humanize }} messages per second over 10 minutes because clients exceeded their inflight / awaiting-rel quota or receive maximum (per-client limits, THREAT_MODEL T-40). Find the offending client ids with `emqx ctl clients list` / the dashboard and quarantine compromised devices."
+          runbook_url: "https://github.com/lumidren/IoT-Security-Framework/blob/main/RUNBOOK.md#brokermessagesdropped"
+
       - alert: ServiceDown
         expr: up{job=~"ironmesh-.*"} == 0
         for: 2m
