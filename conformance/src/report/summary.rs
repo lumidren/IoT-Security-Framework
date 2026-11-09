@@ -146,7 +146,8 @@ pub fn render(runs: &[RunReport], interop: &[RunReport], generated_at: &str, com
         s.push_str(
             "The same suite with the real `services/pki` binary (key ceremony by the real `pkictl`, in-memory store, file KMS) as the \
              enrollment authority instead of the in-process EST server; everything else as above. Downlink / OTA cases are not \
-             applicable in this mode (the in-memory store cannot hold a tenant policy, so bundles carry no tenant or firmware keys).\n\n",
+             applicable in this mode: the harness does not yet provision the tenant command key and firmware keys through the \
+             PKI tenant-policy API (`PUT /v1/tenants/{t}/command-key`, `/firmware-keys`), so the real PKI's bundles carry none.\n\n",
         );
         if interop.iter().flat_map(|r| &r.results).any(|c| c.reason.contains("invalid attestation payload")) {
             s.push_str(
