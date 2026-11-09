@@ -1,0 +1,27 @@
+[package]
+name = "im-dut-shim"
+version = "0.1.0"
+description = "DUT control-protocol shim (target esp32-host): runs the ESP32 C protocol core on the host; Rust supplies crypto, TLS/MQTT transport bytes and simulated flash"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "im_shim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "im-dut-shim"
+path = "src/main.rs"
+
+[dependencies]
+im-core-tests = { path = "../core-tests" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+sha2 = "0.10"
+base64 = "0.22"
+ed25519-dalek = "2"
+
+[dev-dependencies]
+serde_json = "1"
