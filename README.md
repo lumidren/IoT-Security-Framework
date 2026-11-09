@@ -346,6 +346,27 @@ replay, stale and forged command rejection, offline buffering, and encrypted con
 - An image that fails its health check is rolled back, after 15 s on Linux and 120 s on the ESP32.
 - A delta patch of about 16.6 KB rebuilds a 53–70 KB image whose hash matches the full image.
 
+### Scale: 10,000 devices
+
+[loadtest/REPORT.md](loadtest/REPORT.md) runs 10,000 simulated devices on one laptop (i7-12700H). Each
+device enrolls through EST with attestation, connects over pinned TLS 1.3 with mTLS, and publishes
+COSE-signed telemetry every 10 s for a 10-minute sustained window. Every CONNECT, PUBLISH and
+SUBSCRIBE is decided by the real policy service. The broker and the certificate server are the
+conformance harness doubles.
+
+| Metric | Result |
+|---|---|
+| Devices enrolled and connected | **10,000 / 10,000**, 0 errors, 0 TLS failures, 0 policy denies |
+| Sustained telemetry accepted | **1,000.6 msg/s** (600,534 messages in 600 s) |
+| Publish → PUBACK latency | p50 **0.7 ms**, p95 7.2 ms, p99 128.6 ms |
+| Downlink command round trip | 500 / 500 acked, p50 2.0 ms, p99 30.3 ms |
+| Uplinks verified end to end | 672,424, **0 replay rejections**, every device's last `seq` accounted for |
+| Peak memory | 1.27 GiB total (fleet 687 MiB, harness 506 MiB, policy 117 MiB) |
+
+- **Tail latency:** the p99 comes from the broker waiting on its connection pool to the policy service.
+- **Not covered here:** the EMQX broker, Kafka and registry ingest. The nightly CI job load-tests them
+  against the compose stack.
+
 ---
 
 ## Standards alignment
@@ -463,8 +484,8 @@ cd services/registry && python -m pytest --cov=app
 - **Not compiled here: TPM and OP-TEE backends.** These need Linux system libraries and are built
   in Linux CI.
 - **Not run here: container-level checks.** Docker-based integration (EMQX, Redpanda, the compose
-  stack), the Go race detector, Playwright, Lighthouse and the 10,000-device load test run in
-  GitHub Actions.
+  stack), the Go race detector, Playwright and Lighthouse run in GitHub Actions. The local
+  10,000-device load test uses the harness broker, not EMQX.
 - **Smaller ESP32 offline buffer.** An ESP32 buffers about 2,048 telemetry records offline. Flash
   encryption is incompatible with the ring buffer's in-place acknowledgements, so the buffer
   partition holds signed, plaintext records.
