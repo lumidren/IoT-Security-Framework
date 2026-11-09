@@ -6,7 +6,10 @@ import type { Role } from '@/lib/rbac';
 import { DEMO_TENANT_ID, DEMO_TENANT_NAME } from '@/lib/env';
 import { SessionProvider, type ConsoleUser } from '@/providers/session-context';
 
-export function testUser(role: Role = 'operator'): ConsoleUser {
+export function testUser(
+  role: Role = 'operator',
+  overrides: Partial<ConsoleUser> = {},
+): ConsoleUser {
   return {
     id: `test-${role}`,
     name: `Test ${role}`,
@@ -16,6 +19,7 @@ export function testUser(role: Role = 'operator'): ConsoleUser {
     tenantId: DEMO_TENANT_ID,
     tenantName: DEMO_TENANT_NAME,
     provider: 'demo',
+    ...overrides,
   };
 }
 
@@ -33,14 +37,15 @@ export function renderWithProviders(
   {
     role = 'operator',
     client,
+    user,
     ...options
-  }: RenderOptions & { role?: Role; client?: QueryClient } = {},
+  }: RenderOptions & { role?: Role; client?: QueryClient; user?: Partial<ConsoleUser> } = {},
 ) {
   const queryClient = client ?? createTestQueryClient();
   function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <SessionProvider user={testUser(role)}>
+        <SessionProvider user={testUser(role, user)}>
           <TooltipProvider>{children}</TooltipProvider>
         </SessionProvider>
       </QueryClientProvider>

@@ -10,7 +10,9 @@ import {
   formatProblemError,
   newIdempotencyKey,
   parseProblem,
+  setStepUpHandler,
 } from './client';
+import { stepUpProblemBody } from '@/lib/security/step-up';
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
@@ -236,5 +238,63 @@ describe('newIdempotencyKey', () => {
   it('produces unique keys', () => {
     const keys = new Set(Array.from({ length: 50 }, () => newIdempotencyKey()));
     expect(keys.size).toBe(50);
+  });
+});
+
+describe('apiFetch step-up handling', () => {
+  function stepUpResponse() {
+    return new Response(JSON.stringify(stepUpProblemBody('policy.save', 300)), {
+      status: 401,
+      headers: { 'content-type': 'application/problem+json' },
+    });
+  }
+
+  afterEach(() => {
+    setStepUpHandler(null);
+    vi.unstubAllGlobals();
+  });
+
+  it('retries once with the same body and idempotency key after re-authentication', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(stepUpResponse())
+      .mockResolvedValueOnce(jsonResponse({ version: 2 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const handler = vi.fn().mockResolvedValue(true);
+    setStepUpHandler(handler);
+
+    const result = await apiFetch('policy', '/v1/policy', {
+      method: 'PUT',
+      body: { rego: 'package x' },
+      idempotencyKey: 'key-1',
+    });
+    expect(result).toEqual({ version: 2 });
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler.mock.calls[0]?.[0]).toMatchObject({ code: 'step_up_required' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const second = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(second.body).toBe(JSON.stringify({ rego: 'package x' }));
+    expect(new Headers(second.headers).get('idempotency-key')).toBe('key-1');
+  });
+
+  it('throws the step-up problem when re-authentication is declined or fails again', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => stepUpResponse()),
+    );
+    setStepUpHandler(vi.fn().mockResolvedValue(false));
+    const declined = apiFetch('policy', '/v1/policy', { method: 'PUT', body: {} });
+    await expect(declined).rejects.toMatchObject({ status: 401, isStepUpRequired: true });
+
+    const fetchMock = vi.fn().mockImplementation(async () => stepUpResponse());
+    vi.stubGlobal('fetch', fetchMock);
+    const handler = vi.fn().mockResolvedValue(true);
+    setStepUpHandler(handler);
+    await expect(
+      apiFetch('policy', '/v1/policy', { method: 'PUT', body: {} }),
+    ).rejects.toBeInstanceOf(ApiError);
+    // One retry only: no re-authentication loop.
+    expect(handler).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

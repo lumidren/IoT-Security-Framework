@@ -6,6 +6,7 @@ import {
   type ProblemDetails,
   type ProblemError,
 } from '@/lib/api/schemas';
+import { isStepUpProblem } from '@/lib/security/step-up';
 
 export type Service = 'registry' | 'ota' | 'anomaly' | 'policy';
 export const SERVICES: readonly Service[] = ['registry', 'ota', 'anomaly', 'policy'];
@@ -28,6 +29,24 @@ export interface RequestOptions<T> {
   idempotencyKey?: string;
   /** `X-IronMesh-Tenant`, platform admins only. */
   tenantId?: string;
+  /** Internal: set on the single retry after a step-up re-authentication. */
+  stepUpRetry?: boolean;
+}
+
+/**
+ * Called when the proxy answers 401 `step_up_required` (destructive action, stale `auth_time`).
+ * Resolves `true` once the user has re-authenticated, so the request is retried once.
+ */
+export type StepUpHandler = (problem: ProblemDetails) => Promise<boolean>;
+
+let stepUpHandler: StepUpHandler | null = null;
+
+/** Registers the UI's step-up handler (StepUpProvider); returns an unregister function. */
+export function setStepUpHandler(handler: StepUpHandler | null): () => void {
+  stepUpHandler = handler;
+  return () => {
+    if (stepUpHandler === handler) stepUpHandler = null;
+  };
 }
 
 /** Error thrown for non-2xx responses (RFC 9457 body) and for responses that fail schema parsing. */
@@ -64,6 +83,11 @@ export class ApiError extends Error {
 
   get isForbidden(): boolean {
     return this.status === 403;
+  }
+
+  /** The proxy demands a recent re-authentication for this destructive action. */
+  get isStepUpRequired(): boolean {
+    return isStepUpProblem(this.problem);
   }
 
   get isConflict(): boolean {
@@ -221,7 +245,14 @@ export async function apiFetch<T = unknown>(
 
   const replayed = response.headers.get('idempotency-replayed') === 'true';
   if (!response.ok) {
-    throw new ApiError(parseProblem(response.status, await readText(response)), { replayed });
+    const problem = parseProblem(response.status, await readText(response));
+    // The proxy refused before contacting the service, so retrying (same idempotency key) is safe.
+    if (isStepUpProblem(problem) && stepUpHandler && !options.stepUpRetry) {
+      if (await stepUpHandler(problem)) {
+        return apiFetch(service, path, { ...options, stepUpRetry: true });
+      }
+    }
+    throw new ApiError(problem, { replayed });
   }
   if (response.status === 204 || response.status === 205) {
     return undefined as T;

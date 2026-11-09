@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label';
 import { DEMO_TENANT_NAME, isMockMode } from '@/lib/env';
 import { ROLE_LABEL, RoleSchema, isRole } from '@/lib/rbac-values';
+import { safeRedirectPath } from '@/lib/safe-redirect';
 
 export const metadata: Metadata = { title: 'Sign in' };
 
@@ -22,18 +23,13 @@ const ERROR_MESSAGES: Record<string, string> = {
   Default: 'Sign-in failed. Try again.',
 };
 
-function safeCallbackUrl(value: string | undefined): string {
-  if (!value || !value.startsWith('/') || value.startsWith('//')) return '/';
-  return value;
-}
-
 export default async function SignInPage({
   searchParams,
 }: {
   searchParams: Promise<{ callbackUrl?: string; error?: string }>;
 }) {
   const params = await searchParams;
-  const callbackUrl = safeCallbackUrl(params.callbackUrl);
+  const callbackUrl = safeRedirectPath(params.callbackUrl);
   const errorMessage = params.error
     ? (ERROR_MESSAGES[params.error] ?? ERROR_MESSAGES['Default'])
     : null;

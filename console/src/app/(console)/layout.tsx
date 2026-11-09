@@ -5,6 +5,7 @@ import { AppShell } from '@/components/layout/app-shell';
 import { SIDEBAR_COOKIE } from '@/lib/constants';
 import { userFromSession } from '@/lib/session-user';
 import { SessionProvider } from '@/providers/session-context';
+import { StepUpProvider } from '@/providers/step-up-provider';
 import { WsProvider } from '@/providers/ws-provider';
 
 export default async function ConsoleLayout({ children }: { children: React.ReactNode }) {
@@ -16,9 +17,11 @@ export default async function ConsoleLayout({ children }: { children: React.Reac
 
   return (
     <SessionProvider user={user}>
-      <WsProvider>
-        <AppShell defaultCollapsed={defaultCollapsed}>{children}</AppShell>
-      </WsProvider>
+      <StepUpProvider>
+        <WsProvider>
+          <AppShell defaultCollapsed={defaultCollapsed}>{children}</AppShell>
+        </WsProvider>
+      </StepUpProvider>
     </SessionProvider>
   );
 }
