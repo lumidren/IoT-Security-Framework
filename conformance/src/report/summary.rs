@@ -95,15 +95,38 @@ pub fn render(runs: &[RunReport], interop: &[RunReport], generated_at: &str, com
     s.push_str(
         "| Target | revoke -> broker disconnect | revoke -> reconnect denied (end to end) | revoke -> kick call |\n|---|---|---|---|\n",
     );
-    for r in runs {
+    for (r, mode) in runs.iter().map(|r| (r, "")).chain(interop.iter().map(|r| (r, " (real PKI)"))) {
         if let Some(c) = r.results.iter().find(|c| c.id == "C-REV-1") {
             let _ = writeln!(
                 s,
-                "| `{}` | {} | {} | {} |",
+                "| `{}`{mode} | {} | {} | {} |",
                 r.target,
                 stats(c.series("revoke_to_disconnect_s").unwrap_or(&[])),
                 stats(c.series("revoke_to_denied_s").unwrap_or(&[])),
                 stats(c.series("revoke_to_kick_s").unwrap_or(&[]))
+            );
+        }
+    }
+    let rev2: Vec<(&RunReport, &str, &super::StoredResult)> = runs
+        .iter()
+        .map(|r| (r, ""))
+        .chain(interop.iter().map(|r| (r, " (real PKI)")))
+        .filter_map(|(r, m)| r.results.iter().find(|c| c.id == "C-REV-2").map(|c| (r, m, c)))
+        .collect();
+    if !rev2.is_empty() {
+        s.push_str("\n### Single-certificate revocation (C-REV-2)\n\n");
+        s.push_str("| Target | Verdict | CONNECT presenting the superseded serial | renewed certificate | revoke current serial -> own reconnect refused | device-level denials |\n|---|---|---|---|---|---|\n");
+        for (r, mode, c) in rev2 {
+            let m = |k: &str| c.measurements.iter().find(|(n, _)| n == k).map_or_else(|| "-".to_string(), |(_, v)| md_cell(v));
+            let _ = writeln!(
+                s,
+                "| `{}`{mode} | {} | {} | {} | {} | {} |",
+                r.target,
+                c.label(),
+                m("CONNECT presenting A (cert_pem + cert_serial)"),
+                m("CONNECT presenting B after A was revoked"),
+                m("revoke B -> DUT reconnect presenting B refused"),
+                m("ironmesh_auth_failures_total{reason=revoked} (device-level)")
             );
         }
     }
@@ -145,9 +168,13 @@ pub fn render(runs: &[RunReport], interop: &[RunReport], generated_at: &str, com
         s.push_str("\n## Real PKI interoperability probe (`--pki-bin`)\n\n");
         s.push_str(
             "The same suite with the real `services/pki` binary (key ceremony by the real `pkictl`, in-memory store, file KMS) as the \
-             enrollment authority instead of the in-process EST server; everything else as above. Downlink / OTA cases are not \
-             applicable in this mode: the harness does not yet provision the tenant command key and firmware keys through the \
-             PKI tenant-policy API (`PUT /v1/tenants/{t}/command-key`, `/firmware-keys`), so the real PKI's bundles carry none.\n\n",
+             enrollment authority instead of the in-process EST server; everything else as above. Before any device enrolls, the \
+             harness provisions the tenant policy through the PKI tenant-policy API exactly as the owning services do - \
+             `PUT /v1/tenants/{t}/command-key` and `/enrollment` as `svc-registry`, `PUT /v1/tenants/{t}/firmware-keys` as \
+             `svc-ota` (Services CA client certificates from the `pkictl` ceremony plus a fresh single-use ES256 JWT per request) - \
+             so the PKI's trust bundles carry the tenant command key and firmware key and the downlink / OTA cases apply. \
+             `PKI_SUPERSEDE_GRACE` is 5 s, so C-REV-2 observes the PKI's own supersede-on-renewal revocation. C-ROT-2 stays \
+             not applicable (`PKI_OPERATIONAL_CERT_TTL` is bounded to 168h-720h).\n\n",
         );
         if interop.iter().flat_map(|r| &r.results).any(|c| c.reason.contains("invalid attestation payload")) {
             s.push_str(

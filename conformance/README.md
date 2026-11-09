@@ -2,7 +2,7 @@
 
 One suite, run unchanged against every firmware target through the DUT control protocol
 ([`DUT_PROTOCOL.md`](DUT_PROTOCOL.md)). It implements every case of the protocol's case table
-(C-TLS-1..5, C-ENR-1..2, C-ROT-1..2, C-REV-1, C-ACL-1..3, C-OTA-1..7, C-RPL-1..4, C-OFF-1,
+(C-TLS-1..5, C-ENR-1..2, C-ROT-1..2, C-REV-1..2, C-ACL-1..3, C-OTA-1..7, C-RPL-1..4, C-OFF-1,
 C-CFG-1, C-HOOK-1) and writes JUnit XML, a Markdown report with the measured values and a
 machine-readable `results.json` per target, plus a cross-target [`results/SUMMARY.md`](results/SUMMARY.md).
 
@@ -67,10 +67,11 @@ flowchart LR
   agent & shim & hil -- "EST over TLS (mTLS)" --> est
   agent & shim & hil -- "MQTT 5 / TLS 1.3 / mTLS" --> broker
   agent & shim & hil -- HTTPS --> art
-  broker -- "POST /emqx/authn, /emqx/authz\n(EMQX templates)" --> policy
+  broker -- "POST /emqx/authn (cert_pem + cert_serial), /emqx/authz\n(EMQX templates)" --> policy
   policy -- "GET /internal/v1/devices/{id}/lifecycle" --> reg
   policy -- "GET /crl/device-ca.crl (5 s)" --> reg
-  cases -- "revoke: signed POST /internal/v1/revocations\n(bearer + X-IronMesh-Signature HMAC)" --> policy
+  cases -- "revoke: signed POST /internal/v1/revocations\n(bearer + X-IronMesh-Signature HMAC, device_deny)" --> policy
+  cases -- "GET /v1/revocations\n(single-use ES256 JWT)" --> policy
   policy -- "kick" --> mgmt
   mgmt --> broker
   realpki -. "replaces EST + CA,\npublisher -> policy" .-> policy
@@ -81,10 +82,11 @@ flowchart LR
 | `src/harness/pki.rs` | Contract §2 hierarchy with rcgen, certificate profiles mirroring `services/pki/internal/ca` (CN/OU/O, SAN URI, KU/EKU, CRL DP, AIA OCSP, 128-bit serials, `assurance:software` OU, bootstrap OU), rogue CAs, CRL, persistence for HIL |
 | `src/harness/est.rs` | EST: `cacerts`, `csrattrs`, `ironmesh/nonce`, `simpleenroll`, `simplereenroll` with the checks of `services/pki/internal/est/handler.go`; records every request |
 | `src/harness/broker.rs` | MQTT 5 broker double; every decision delegated to the real policy service; EMQX management API |
-| `src/harness/policy.rs` | Policy subprocess, EMQX hook client, PKI revocation publisher (HMAC-SHA256 + bearer), `/metrics` reader |
-| `src/harness/registry.rs` | Registry internal endpoints (lifecycle, manufacture record, assurance, enrolled) and the CRL distribution point |
+| `src/harness/policy.rs` | Policy subprocess (Device / Services CA files, JWT key, `POLICY_REQUIRE_CERT_SERIAL`), EMQX hook client, PKI event publisher (revocations with `device_deny`, `device_release`; HMAC-SHA256 + bearer), management API client, `/metrics` reader |
+| `src/harness/jwt.rs` | ES256 service JWTs minted per request (`iss`/`sub`/`aud`/`iat`/`exp`/`jti`, 60 s), as the services mint them for each other |
+| `src/harness/registry.rs` | Registry internal endpoints of API_CONTRACT §1.12 (lifecycle, PKI device lookup, assurance, `enrolled` with validation / `404` / `409`), admin `release` (§1.2) and the CRL distribution point |
 | `src/harness/ota.rs`, `downlink.rs`, `keys.rs` | Manifests / signatures / IMDELTA1 patches, tenant-signed downlinks, HPKE Config wrap, uplink verification, test-vector keys |
-| `src/harness/realpki.rs` | `--pki-bin`: real `pkictl` ceremony + real `pki` service as the enrollment authority |
+| `src/harness/realpki.rs` | `--pki-bin`: real `pkictl` ceremony (CAs, bundle key, broker / artifact server / `svc-registry` / `svc-ota` certificates) + real `pki` service as the enrollment authority; tenant policy provisioned through its tenant-policy API |
 | `src/harness/stack.rs` | `--stack`: the same cases against a real deployment |
 | `src/dut/` | `Dut` handle, line-protocol transport (`link.rs`, stdio and `@@IM ` serial framing), launchers per target |
 | `src/cases/` | One module per case family |
@@ -95,12 +97,25 @@ flowchart LR
 
 * **Real policy service, faithful broker double.** The broker double renders the EMQX HTTP
   authn/authz request bodies exactly like `services/policy/deploy/emqx/emqx.conf` (strings for
-  `qos`/`retain`, nested and flat `client_attrs`, `X-IronMesh-Hook-Token`, `cert_pem` as on EMQX
-  >= 5.8, username = certificate CN) and implements `deny_action = disconnect`, `max_qos_allowed = 1`,
-  retained messages, `clean_start=false` sessions and `DELETE /api/v5/clients/{clientid}` with HTTP
-  basic auth. Every CONNECT, PUBLISH and SUBSCRIBE in every case is therefore decided by the real
-  Rego policy and the real revocation cache. Downlinks are published as `svc-registry` and are
-  authorized by the policy too (retained Config only works because the policy allows it).
+  `qos`/`retain`, nested and flat `client_attrs`, `X-IronMesh-Hook-Token`, username = certificate
+  CN, and in every authn call `cert_pem` = the PEM of the presented client certificate and
+  `cert_serial` = its serial, as `mqtt.client_attrs_init` would set it from the TLS peer
+  certificate) and implements `deny_action = disconnect`, `max_qos_allowed = 1`, retained
+  messages, `clean_start=false` sessions and `DELETE /api/v5/clients/{clientid}` with HTTP basic
+  auth. The policy service runs with its hardened defaults: `POLICY_REQUIRE_CERT_SERIAL=true`,
+  `POLICY_DEVICE_CA_FILE` (Device CA) and `POLICY_SERVICES_CA_FILE` (Services CA) set, so every
+  CONNECT is checked for issuer and revoked serial; `POLICY_JWT_PUBLIC_KEY_PEM` with single-use
+  `jti` for the management API, which the harness calls with a freshly minted token per request
+  (each run records that a replayed token is refused). Every CONNECT, PUBLISH and SUBSCRIBE in
+  every case is therefore decided by the real Rego policy and the real revocation cache.
+  Downlinks are published as `svc-registry`, whose CONNECT is authenticated once with a Services
+  CA client certificate (`cert_pem` + `cert_serial`), and are authorized by the policy too
+  (retained Config only works because the policy allows it).
+* **Revocation events like the PKI publisher.** The harness's in-process authority sends the
+  PKI's wire body: `{event_id, serial, device_id, tenant_id, reason, revoked_at, device_deny}`,
+  `device_deny=false` for single-certificate revocations and `true` for revoke-all (quarantine),
+  and `{event_id, event: "device_release", device_id, tenant_id, released_at}` for releases; the
+  CRL carries the revocation reason.
 * **C-REV-1 traverses the production code.** Revoke = CRL regenerated + the PKI publisher's request
   (`POST /internal/v1/revocations`, JSON event in the Go field order, `Authorization: Bearer`,
   `X-IronMesh-Signature: sha256=<hex HMAC-SHA256(body)>`, `X-IronMesh-Event-ID`) to the real policy
@@ -108,15 +123,18 @@ flowchart LR
   drops the session; the DUT's reconnect is refused by the real authn hook. The suite measures
   revoke -> policy 202, -> kick call, -> broker disconnect, -> DUT `disconnected`, -> first
   denied CONNECT, over 20 iterations (fresh device each), p50/p95/max, and asserts < 10 s.
-* **Why the default EST server is in-process, and what `--pki-bin` adds.** The real PKI *can* run
-  with the in-memory store and the file KMS (`pkictl` ceremony in a temp dir works, see
-  `realpki.rs`), but not for the whole suite: (1) the in-memory store has no way to set a tenant
-  policy, so its bundles carry an empty `tenant_cmd_pubkey` and no `fw_signing_pubkeys` - every
-  downlink and OTA case would be impossible; (2) `PKI_OPERATIONAL_CERT_TTL` is bounded to
-  168h-720h, so C-ROT-2 cannot use short-lived certificates. The in-process EST server mirrors the
-  PKI's checks instead, and `--pki-bin` runs the same suite with the real PKI as the enrollment
-  authority (downlink/OTA cases then report `not_applicable` with that reason). That interop run
-  is what found the attestation-format mismatch reported in `results/SUMMARY.md`.
+* **Why the default EST server is in-process, and what `--pki-bin` adds.** The real PKI runs with
+  the in-memory store and the file KMS (`pkictl` ceremony in a temp dir, see `realpki.rs`).
+  Before any device enrolls the harness provisions the tenant policy through the PKI
+  tenant-policy API the way the owning services do: `PUT /v1/tenants/{t}/command-key` and
+  `/enrollment` as `svc-registry`, `PUT /v1/tenants/{t}/firmware-keys` as `svc-ota` (Services CA
+  client certificates issued by the ceremony's `pkictl issue-server`, plus a single-use ES256 JWT
+  whose `sub` names the same service). The PKI's bundles then carry the harness's command key and
+  firmware key, so the downlink and OTA cases apply; the artifact server presents a certificate
+  from the real Services CA. `PKI_SUPERSEDE_GRACE` is 5 s so the PKI's own supersede-on-renewal
+  revocation is observed in C-REV-2. The remaining limit: `PKI_OPERATIONAL_CERT_TTL` is bounded to
+  168h-720h, so C-ROT-2 cannot use short-lived certificates and stays `not_applicable` there. The
+  in-process EST server mirrors the PKI's checks for the default run.
 * **The wire code of the Rust agent is reused** (`ironmesh-agent` as a path dependency, default
   features off) for CBOR/COSE/envelopes/manifests/deltas/HPKE/MQTT codec. To make sure a bug there
   cannot hide, the harness unit tests reproduce the published deterministic vectors
@@ -127,6 +145,10 @@ flowchart LR
   reference). C-RPL-3 forges with a random non-tenant key.
 * **Fresh device per case** (and per C-REV-1 iteration): the policy's revocation deny list is
   persistent and keyed by device id, so cases never influence each other.
+* **DUT configuration.** agent-rs gets `ota.base_url` (the artifact server) and
+  `ota.allowed_hosts` (its host) besides the EST pins; the esp32-host shim gets `--est-pin` (the
+  Services CA SPKI) and `--ota-host` (the artifact host), in hermetic, real-PKI and `--stack` runs
+  (with `artifact_base_url` from the stack configuration).
 * **Health-failing update (C-OTA-6).** The image is valid; the broker refuses every CONNECT of the
   new boot (CONNACK 0x88), so the contract health check (MQTT connected + telemetry acked within
   the deadline) cannot pass and the device must roll back by itself. agent-rs is configured with
@@ -154,6 +176,7 @@ flowchart LR
 | C-ROT-1 | `renew` | `simplereenroll` with the operational cert, new serial, new SPKI, same CN; broker session with the new cert; telemetry kid = new serial and verifies with the new key |
 | C-ROT-2 | 40 s certificates, wait | renewal at 50-60 % of the lifetime (EST timestamp), reconnect |
 | C-REV-1 | revoke (real policy path above), 20 iterations | kick, broker disconnect, denied CONNECT, no re-admission; policy `/metrics` and log |
+| C-REV-2 | `renew` (A -> B, DUT session on B); A revoked as `superseded`, `device_deny=false` (real PKI: its own supersede after `PKI_SUPERSEDE_GRACE`); then B revoked as `affiliationChanged`, `device_deny=false` | B session not kicked (policy log "kick skipped"); CONNECT presenting A (the certificate the DUT presented earlier, rendered as EMQX renders it) denied `revoked_serial`; DUT reconnect with B admitted; after B's revocation: kick, the DUT's own reconnect presenting B refused (`revoked_serial`) within 10 s, no re-admission; `ironmesh_auth_failures_total{reason="revoked"}` unchanged (device id never deny-listed); policy `GET /v1/revocations` entries |
 | C-ACL-1 | `publish_raw` to another device / tenant / own downlink topic | policy authz denied, session dropped (`deny_action = disconnect`), nothing routed; own telemetry accepted |
 | C-ACL-2 | `subscribe_raw` to foreign / wildcard / `$SYS` / shared / own uplink filters | every filter denied by the policy; own `cmd/req` granted |
 | C-ACL-3 | retained `publish_raw` on own telemetry (and events) | denied, nothing retained |
@@ -181,13 +204,16 @@ without `at_ms`, answers slower than 5 s) is reported as a warning of the case.
   agent-rs` and `--target esp32-host`; publish `results/*/junit.xml`. Exit status is 1 when any case
   failed or errored.
 * **Real PKI interop job**: `ironmesh-conformance build` then `run --target <t> --pki-bin
-  conformance/target/bin/pki --results-dir conformance/results/real-pki`.
+  conformance/target/bin/pki --results-dir conformance/results/real-pki`. Every case except
+  C-ROT-2 (certificate TTL bounds) and C-HOOK-1 on ESP32 applies.
 * **Stack job** (docker-compose / Helm with EMQX): `run --target agent-rs --stack https://<host>
   --stack-config stack.toml`. The config gives the registry URL and API key, the PKI port, the
   devices' factory anchors (`anchors_pem`), the bundle public key, `pkictl` + `pki_ca_dir` (factory
   issuance; passphrase in `PKI_FILE_KMS_PASSPHRASE`), a Services CA client certificate for the PKI
-  management API and for `svc-registry` MQTT publishes, and optionally the stack's test tenant /
-  firmware key seeds and an artifact directory + base URL. Secrets can come from
+  management API and for `svc-registry` MQTT publishes, optionally a P-256 `svc_jwt_key` (its
+  public key in `PKI_MGMT_JWT_PUBLIC_KEY_FILE`; every PKI management request then carries a fresh
+  single-use JWT), and optionally the stack's test tenant / firmware key seeds and an artifact
+  directory + base URL. Secrets can come from
   `IRONMESH_STACK_*` variables (see `src/harness/stack.rs`). Cases that need broker-side fault
   injection or observation (C-TLS-2/3/5, C-REV-1 timing, C-ACL, C-OFF-1, C-OTA-6) report `n/a` in
   this mode; this mode is compiled and its configuration unit-tested here but was not run against
@@ -221,7 +247,9 @@ without `at_ms`, answers slower than 5 s) is reported as a warning of the case.
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test        # harness unit tests: broker topic filters, policy hook/revocation signer (RFC 4231 HMAC vectors,
-                  # PKI publisher request shape), PKI profiles + persistence, artifact builder variants, manifest and
+                  # PKI publisher request shapes incl. device_deny and device_release), service JWTs (fresh jti, lifetime),
+                  # registry double enrolled/release routes, PKI profiles + persistence, artifact builder variants, manifest and
                   # command vectors reproduced byte for byte, HPKE config round trip, line framing (stdio and @@IM serial
                   # over a fake serial pair), backoff analysis, JUnit rendering, stack config
+cargo test --release -- --ignored authn_certificate_check_cost --nocapture   # cost of the CONNECT certificate checks in the real policy service
 ```

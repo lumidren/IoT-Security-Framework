@@ -17,6 +17,9 @@ pub fn headline(r: &StoredResult) -> String {
         "C-ENR-2" => pick(&["http_status"]),
         "C-ROT-2" => pick(&["renewed_at_fraction_of_lifetime"]),
         "C-REV-1" => r.measurement("revoke -> reconnect denied (end to end)").map(|s| format!("denied {s}")),
+        "C-REV-2" => r
+            .measurement("revoke B -> DUT reconnect presenting B refused")
+            .map(|s| format!("superseded serial refused, renewed admitted; own serial refused in {s}")),
         "C-OTA-1" | "C-OTA-2" | "C-OTA-3" | "C-OTA-4" => {
             r.measurement("final_state").map(|s| format!("{s} ({})", r.measurement("error").filter(|e| !e.is_empty()).unwrap_or("-")))
         }

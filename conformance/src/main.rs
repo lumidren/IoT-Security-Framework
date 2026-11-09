@@ -302,6 +302,7 @@ async fn run(a: RunArgs) -> Result<bool> {
         }
     };
     environment.push(("signing_keys".into(), cloud.keys.source.clone()));
+    environment.extend(cloud.wiring_report().await);
     let launcher = match target {
         Target::AgentRs => {
             environment.push(("dut_binary".into(), format!("{} (sha256 {})", agent_bin.display(), sha_prefix(&agent_bin))));
