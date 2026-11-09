@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
+import { headers } from 'next/headers';
 import { Toaster } from '@/components/ui/sonner';
 import { MockProvider } from '@/providers/mock-provider';
 import { QueryProvider } from '@/providers/query-provider';
@@ -32,11 +33,14 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Per-request CSP nonce from src/middleware.ts. Reading request headers also keeps every page
+  // dynamically rendered, which nonces require (a prerendered page cannot carry a fresh nonce).
+  const nonce = (await headers()).get('x-nonce') ?? undefined;
   return (
     <html lang="en" suppressHydrationWarning className={inter.variable}>
       <body className="min-h-dvh font-sans">
-        <ThemeProvider>
+        <ThemeProvider nonce={nonce}>
           <MockProvider>
             <QueryProvider>
               {children}
