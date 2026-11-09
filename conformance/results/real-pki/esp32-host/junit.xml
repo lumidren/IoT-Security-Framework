@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="ironmesh-conformance" tests="27" failures="0" errors="0" skipped="13" time="78.494">
+  <testsuite name="ironmesh-conformance.esp32-host" tests="27" failures="0" errors="0" skipped="13" time="78.494" timestamp="2026-11-09T20:44:24.1083713Z" hostname="MUSTAFAGOMAA (windows x86_64)">
+    <properties>
+      <property name="target" value="esp32-host"/>
+      <property name="mode" value="hermetic + real PKI"/>
+      <property name="git_commit" value="8904ed970ffcb9fbbf516fb6cd9b1d79c7509427 (working tree modified)"/>
+      <property name="tenant_id" value="275a7dc9-91de-40a2-8d47-7412a31004fc"/>
+      <property name="run_dir" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\runs\esp32-host-1794257064"/>
+      <property name="policy_service" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\bin\policy.exe (sha256 2965de8111b46a59)"/>
+      <property name="signing_keys" value="test-vector keys from C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\libs\python\ironmesh-wire\tests\keys"/>
+      <property name="dut_binary" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\duts\esp32-host\debug\im-dut-shim.exe (sha256 bbfccb0e331ff831), real-network mode"/>
+      <property name="pki_service" value="target/bin/pki.exe (sha256 a66e8ce986730a79): real PKI is the enrollment authority"/>
+      <property name="product" value="sensor-esp32"/>
+      <property name="reconnect_backoff_clock_scale" value="1"/>
+      <property name="ota_health_timeout_s" value="120"/>
+    </properties>
+    <testcase classname="conformance.esp32-host.tls" name="C-TLS-1 mTLS handshake with valid operational cert" time="0.312">
+      <system-out>criterion: `connected` with `tls_version=TLSv1.3`, `alpn=mqtt`
+measure tls_version = TLSv1.3
+measure alpn = mqtt
+evidence: DUT dev-7c41d0cd1b8d1b5f (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 79d75fce1e90eb4629f2689d04e77eae
+evidence: connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: broker handshake: version Some(&quot;TLSv1.3&quot;), alpn Some(&quot;mqtt&quot;), client cert serial Some(&quot;c6c1c5aa29692200fc656e3bb4c0960b&quot;)
+evidence: CONNECT: client id = CN, clean_start=false, session_expiry=Some(604800), keep_alive=60, receive_maximum=Some(32); policy authn allow=true
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.tls" name="C-TLS-2 Broker presents cert from an unpinned CA (rogue broker)" time="0.530">
+      <system-out>criterion: `connect_failed{reason=tls_pin_mismatch}`; no CONNECT packet observed
+measure RogueUnknownCa: connect_failed.reason = tls_pin_mismatch
+measure RogueUnknownCa: CONNECT packets observed = 0
+measure Rogue: connect_failed.reason = tls_pin_mismatch
+measure Rogue: CONNECT packets observed = 0
+evidence: DUT dev-92f07f982fee16f6 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial f29a6b91fff7dbef2b24dffd32d60787
+evidence: broker mode RogueUnknownCa: connect_failed {&quot;reason&quot;:&quot;tls_pin_mismatch&quot;}
+evidence: broker-side handshakes in mode RogueUnknownCa: [&quot;ok=false version=None error=Some(\&quot;received fatal alert: UnknownCA\&quot;)&quot;]
+evidence: broker mode Rogue: connect_failed {&quot;reason&quot;:&quot;tls_pin_mismatch&quot;}
+evidence: broker-side handshakes in mode Rogue: [&quot;ok=false version=None error=Some(\&quot;received fatal alert: UnknownCA\&quot;)&quot;]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.tls" name="C-TLS-3 Broker offers TLS 1.2 only" time="0.315">
+      <system-out>criterion: `connect_failed{reason=tls_handshake}`
+measure Tls12Only: connect_failed.reason = tls_handshake
+measure Tls12Only: CONNECT packets observed = 0
+evidence: DUT dev-7f2b150a9b13d152 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 142f87e6fe6e24af65ec4ee295bbb6ab
+evidence: broker mode Tls12Only: connect_failed {&quot;reason&quot;:&quot;tls_handshake&quot;}
+evidence: broker-side handshakes in mode Tls12Only: [&quot;ok=false version=None error=Some(\&quot;peer is incompatible: Tls12NotOfferedOrEnabled\&quot;)&quot;]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.tls" name="C-TLS-4 Session resumption on reconnect" time="0.387">
+      <system-out>criterion: second `connected.resumed=true` (where the target supports tickets)
+measure dut_reported_resumed = true
+measure broker_observed_resumed = true
+measure session_present = true
+evidence: DUT dev-a7afacb9b68916fa (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial ee93af7e9cf2c59dbf754e5f6fcd90a9
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;d981737158bffa5b301fd6bb8e20fece&quot;,&quot;not_after&quot;:1795466667,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: second connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:true,&quot;session_present&quot;:true,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: target semantics: ticket offered (the broker-side resumed handshake is the criterion)
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.tls" name="C-TLS-5 Bounded reconnect backoff" time="8.829">
+      <system-out>criterion: reconnect attempts follow base 1 s, factor 2, cap 300 s, full jitter (verified on attempt timestamps with clock scaling)
+measure clock_scale = 1
+measure attempts_observed = 5
+measure max_gap_s = 5.977
+measure capped_gaps_checked = 0
+evidence: DUT dev-a579c3dedb054a93 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial de52e60de65e6db8a9d06845d2ccfe75
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;1c2ae4d337c7be6581643cdb6b6f1cc0&quot;,&quot;not_after&quot;:1795466667,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: connect_failed reasons (first 3): [&quot;not_authorized&quot;, &quot;not_authorized&quot;, &quot;not_authorized&quot;]; status.state=backoff observed: true
+evidence: gap_k &lt;= min(300, 2^k) x scale [s]: 0.390&lt;=1.000, 0.044&lt;=2.000, 0.928&lt;=4.000, 1.237&lt;=8.000, 5.977&lt;=16.000
+warning: no clock scaling on this target: bound and jitter verified for 5 attempts (up to 16 s); the 300 s cap was not reached
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.enr" name="C-ENR-1 Zero-touch enrollment with attestation" time="0.126">
+      <system-out>criterion: `enrolled`; harness verifies attestation, CSR CN, fresh key
+measure issued_serial = 50052bf38b6716b3d64c9eed6c5cd739
+measure attestation_verified_by = services/pki EST handler (real PKI)
+evidence: DUT dev-6626a72584c3a5b2 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 7ceaf63a3603b890b62a76cf5049e5d3
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;50052bf38b6716b3d64c9eed6c5cd739&quot;,&quot;not_after&quot;:1795466676,&quot;se_type&quot;:&quot;software&quot;}
+evidence: issued by the real PKI: subject O=IronMesh, OU=assurance:software + OU=275a7dc9-91de-40a2-8d47-7412a31004fc, CN=dev-6626a72584c3a5b2, issuer O=IronMesh, CN=IronMesh Device CA, SAN [&quot;urn:ironmesh:tenant:275a7dc9-91de-40a2-8d47-7412a31004fc:device:dev-6626a72584c3a5b2&quot;]
+evidence: PKI record: {&quot;assurance_level&quot;:&quot;software&quot;,&quot;device_id&quot;:&quot;dev-6626a72584c3a5b2&quot;,&quot;issuer&quot;:&quot;IronMesh Device CA&quot;,&quot;kind&quot;:&quot;operational&quot;,&quot;not_after&quot;:&quot;2026-11-23T20:44:36Z&quot;,&quot;not_before&quot;:&quot;2026-11-09T20:44:36Z&quot;,&quot;serial&quot;:&quot;50052bf38b6716b3d64c9eed6c5cd739&quot;,&quot;status&quot;:&quot;valid&quot;,&quot;tenant_id&quot;:&quot;275a7dc9-91de-40a2-8d47-7412a31004fc&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.enr" name="C-ENR-2 Enrollment refused for quarantined device" time="0.119">
+      <system-out>criterion: `enroll_failed{http_status=403}`
+measure http_status = 403
+evidence: DUT dev-44bc851f18314c9a (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial ff780e736fec4c28013b1bacab409431
+evidence: enroll_failed {&quot;http_status&quot;:403,&quot;reason&quot;:&quot;device lifecycle state \&quot;quarantined\&quot; does not permit enrollment\n&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.rot" name="C-ROT-1 Certificate rotation (`renew`) keeps identity, changes key and serial" time="8.234">
+      <system-out>criterion: `cert_renewed`, new serial, new SPKI, reconnect succeeds
+measure old_serial = 0f7f41abc5c6d721f616a180e0495f2c
+measure new_serial = 6164acfbd1d6d7c1f540a9b90cc10f97
+measure spki_changed = true
+measure reconnected_automatically = false
+evidence: DUT dev-b52b0aa804268e7a (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 15d40a1fff18779396b7e7f49bd919d3
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;0f7f41abc5c6d721f616a180e0495f2c&quot;,&quot;not_after&quot;:1795466676,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: cert_renewed {&quot;new_serial_hex&quot;:&quot;6164acfbd1d6d7c1f540a9b90cc10f97&quot;,&quot;not_after&quot;:1795466676,&quot;old_serial_hex&quot;:&quot;0f7f41abc5c6d721f616a180e0495f2c&quot;}
+evidence: telemetry seq 3 verified with the renewed key (kid 6164acfbd1d6d7c1f540a9b90cc10f97)
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.rot" name="C-ROT-2 Automatic rotation at 50 % lifetime (short-lived test certs)" time="0.124">
+      <skipped message="not applicable: short-lived operational certificates (the real PKI bounds PKI_OPERATIONAL_CERT_TTL to 168h-720h) needs the in-process EST server (the real PKI handles EST in this run)"/>
+      <system-out>criterion: `cert_renewed` without an explicit `renew`
+evidence: DUT dev-eefa0d962848145b (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d78a9dd7bd2d9c55d50cf1088d803a9f
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.rev" name="C-REV-1 Revocation reaction time" time="43.368">
+      <system-out>criterion: revoke -&gt; broker disconnect -&gt; DUT cannot reconnect with the revoked cert, measured &lt; 10 s
+measure iterations = 20
+measure revoke -&gt; policy 202 = p50 0.004 s, p95 0.014 s, max 0.014 s
+measure revoke -&gt; kick (EMQX API) = p50 0.004 s, p95 0.013 s, max 0.014 s
+measure revoke -&gt; broker disconnect = p50 0.004 s, p95 0.013 s, max 0.014 s
+measure revoke -&gt; DUT disconnected event = p50 0.020 s, p95 0.022 s, max 0.023 s
+measure revoke -&gt; reconnect denied (end to end) = p50 0.364 s, p95 1.024 s, max 1.029 s
+evidence: DUT dev-3553e6d3b3b583aa (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d2622436a15ea5d54cfb29fab223a2be
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;1ae94b7d3c90fb5ff8d8691230bd37d3&quot;,&quot;not_after&quot;:1795466685,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: revocation path: real PKI POST /v1/certificates/{serial}/revoke (ES256 JWT) -&gt; PKI publisher -&gt; real policy -&gt; EMQX API kick
+evidence: DUT disconnected {&quot;reason&quot;:&quot;broker&quot;,&quot;reason_code&quot;:152} then connect_failed {&quot;reason&quot;:&quot;not_authorized&quot;}
+evidence: reconnect with revoked serial Some(&quot;1ae94b7d3c90fb5ff8d8691230bd37d3&quot;) answered CONNACK 0x87 by the policy authn hook
+evidence: DUT dev-3ccd9dd79a8fa6ff (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d8d4ea1d361aeb2f33a7018ae820ae80
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;c0fe281025a78dec77035a02c4ab80b6&quot;,&quot;not_after&quot;:1795466686,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-06e4692b2e01b480 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 515ce5e87c6f9a433aaa9d6005310572
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;4d78d23d159809404a6e08cb900d6dd2&quot;,&quot;not_after&quot;:1795466688,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-b9f650fbaa9f8f56 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial b607c0f04e2d2ff572069a502316fe1f
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;9291fe893d37c488be39e953cf2103c8&quot;,&quot;not_after&quot;:1795466690,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-069ad84dedc51b6e (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 3fe1257d1af15d2253f3cf94102ebcf3
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;3b2a958a09b6c9b52ca7f904f5b8f1dd&quot;,&quot;not_after&quot;:1795466693,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-db8592c94df5cf4d (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial c1930cd4f8e67cf0e538a168cd3bdd08
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;c0f7a41ac74c9a6186200fdbdeac36c7&quot;,&quot;not_after&quot;:1795466695,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-636ff72a90777ab9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d6ee68629b0aaccf0962f8e3f7439463
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;a1810b1380a0dd66700e214c27fec0fc&quot;,&quot;not_after&quot;:1795466697,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-41ed9b3f3988763f (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 0cd670e02033214b61d883fefdc88ed9
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;752ec30f4cda9a55587acedf0e94596f&quot;,&quot;not_after&quot;:1795466700,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-a1047f7e198c8492 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial a983e279e782ea948d5276b8cc06af1d
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;27251a2ef3976dbfb00a499274f68e6d&quot;,&quot;not_after&quot;:1795466702,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-d2d27c2f2065edeb (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 0c76daa49df30f85a29da33bf084dec5
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;2c49e44de24e2bc5991bb8b0d0cf5eff&quot;,&quot;not_after&quot;:1795466703,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-9c59118688112ea6 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 7725e2bef10712bfd27016cab98a1c37
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;55b37afd866819e5e3b1ac026568b4cc&quot;,&quot;not_after&quot;:1795466706,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-5e2f599b7f6ed6f9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 306d78d409d4c04df7e851721815f03d
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;5b4d5c0804c2af2c9a010647adbe4c55&quot;,&quot;not_after&quot;:1795466708,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-89d31c1f117606ba (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 875f142950fe6c83c70a3d22ab436c09
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;a5d53148c14b828dddc65afe8561d331&quot;,&quot;not_after&quot;:1795466711,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-e790983f43cbbbf9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 8f16d348b2e67cd6a5c5067f824bd130
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;054afccdff4f11759110fec98cc4dca3&quot;,&quot;not_after&quot;:1795466713,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-97249ed8ca96b8c4 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial b00290cf7f9e5991cd7a18791d050c72
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;617160d6ad9192d9a5857d28e4380124&quot;,&quot;not_after&quot;:1795466715,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-92345905adf5ccf1 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial f048f632e4d262c17104794a0bc9b241
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;7783dd3b7caf93fa3274c2b85dd28ba6&quot;,&quot;not_after&quot;:1795466717,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-5c63ff285e4fd348 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial fbba62130d8a88c997fe82f15a4d58cd
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;0703674b8a7327236ee3a299c66d06ad&quot;,&quot;not_after&quot;:1795466720,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-e18e59d3427c3287 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial de17c0bd7a9c162bde7fb4895c86fa11
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;53b11bad193ce229698d28560a84d2c5&quot;,&quot;not_after&quot;:1795466722,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-87f3c439b6a82799 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial f63ea16aa791eb0d62f50ed2d0c6d05d
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;e617e70504d429c84a600ad1456e6d0b&quot;,&quot;not_after&quot;:1795466724,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-0b2374c99fe22eed (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 4518c7024cc4d03999ff60cc2fb262db
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;145e0f93bcd8a9325c314f7a829971e9&quot;,&quot;not_after&quot;:1795466726,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: policy /metrics: ironmesh_kick_total{result=ok} +20, ironmesh_revocation_latency_seconds count 20 sum 0.049 s (mean 0.002 s, revoked_at -&gt; kick)
+evidence: policy log: {&quot;ts&quot;:&quot;2026-11-09T22:45:26.471906+02:00&quot;,&quot;level&quot;:&quot;info&quot;,&quot;msg&quot;:&quot;revoked session kicked&quot;,&quot;service&quot;:&quot;policy&quot;,&quot;device_id&quot;:&quot;dev-0b2374c99fe22eed&quot;,&quot;tenant_id&quot;:&quot;275a7dc9-91de-40a2-8d47-7412a31004fc&quot;,&quot;event_id&quot;:&quot;5d382ff5-2d74-431c-a617-787b4583c7c5
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.acl" name="C-ACL-1 Publish to another device&apos;s topic" time="7.495">
+      <system-out>criterion: `publish_result.ok=false` (or disconnect) and harness subscriber receives nothing
+measure outcome im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-c0e6e66e95edd139/telemetry = disconnected
+measure outcome im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-c0e6e66e95edd139/cmd/ack = disconnected
+measure outcome im/v1/b9d9d14f-e973-4010-84a8-634dc5443d44/dev-b7ba7f514adbe8b9/telemetry = disconnected
+measure outcome im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-b7ba7f514adbe8b9/cmd/req = disconnected
+evidence: DUT dev-b7ba7f514adbe8b9 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial ffa5e5c6242d463b7c58dc02c85d3bac
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;86fe64007cc850098fb9fa1967f92bc5&quot;,&quot;not_after&quot;:1795466728,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-c0e6e66e95edd139/telemetry retain=false: first event disconnected {&quot;reason&quot;:&quot;broker&quot;,&quot;reason_code&quot;:135}; publish_result (none); policy authz allowed=false
+evidence: publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-c0e6e66e95edd139/cmd/ack retain=false: first event disconnected {&quot;reason&quot;:&quot;broker&quot;,&quot;reason_code&quot;:135}; publish_result (none); policy authz allowed=false
+evidence: publish_raw im/v1/b9d9d14f-e973-4010-84a8-634dc5443d44/dev-b7ba7f514adbe8b9/telemetry retain=false: first event disconnected {&quot;reason&quot;:&quot;broker&quot;,&quot;reason_code&quot;:135}; publish_result (none); policy authz allowed=false
+evidence: publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-b7ba7f514adbe8b9/cmd/req retain=false: first event disconnected {&quot;reason&quot;:&quot;broker&quot;,&quot;reason_code&quot;:135}; publish_result (none); policy authz allowed=false
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.acl" name="C-ACL-2 Subscribe to another device&apos;s command topic or wildcard" time="0.396">
+      <system-out>criterion: `subscribe_result.granted=false`
+measure reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/cmd/req = 135
+measure reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/config = 135
+measure reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/# = 135
+measure reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/+/cmd/req = 135
+measure reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/# = 135
+measure reason_code # = 135
+measure reason_code $SYS/# = 135
+measure reason_code $share/bridge/im/v1/# = 135
+measure reason_code im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/telemetry = 135
+evidence: DUT dev-e1c58215a88b991d (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial ecace9fe72588b0ae986e16be45719cb
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;d7dc6651b18be3297a520ef27e03121f&quot;,&quot;not_after&quot;:1795466735,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/cmd/req: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/cmd/req&quot;}
+evidence: subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/config: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-165832819b769900/config&quot;}
+evidence: subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/#&quot;}
+evidence: subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/+/cmd/req: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/+/cmd/req&quot;}
+evidence: subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/#&quot;}
+evidence: subscribe_raw #: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;#&quot;}
+evidence: subscribe_raw $SYS/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;$SYS/#&quot;}
+evidence: subscribe_raw $share/bridge/im/v1/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;$share/bridge/im/v1/#&quot;}
+evidence: subscribe_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/telemetry: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-e1c58215a88b991d/telemetry&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.acl" name="C-ACL-3 Retained publish on telemetry" time="3.830">
+      <system-out>criterion: rejected
+measure outcome = disconnected
+measure outcome events (retained) = disconnected
+evidence: DUT dev-732809f2c280ff4a (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial d722be561e72b17f6f114ca11d937344
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;0cec08521c94c3309cdc054c4a9dbd01&quot;,&quot;not_after&quot;:1795466736,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-732809f2c280ff4a/telemetry retain=true: first event disconnected {&quot;reason&quot;:&quot;broker&quot;,&quot;reason_code&quot;:135}; publish_result (none); policy authz allowed=false
+evidence: publish_raw im/v1/275a7dc9-91de-40a2-8d47-7412a31004fc/dev-732809f2c280ff4a/events retain=true: first event disconnected {&quot;reason&quot;:&quot;broker&quot;,&quot;reason_code&quot;:135}; publish_result (none); policy authz allowed=false
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.ota" name="C-OTA-1 Unsigned image" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `ota_state{state=rejected}`; active slot unchanged
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.ota" name="C-OTA-2 Tampered image (1 byte flipped, valid manifest)" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `ota_state{state=rejected, error=image_hash}`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.ota" name="C-OTA-3 Manifest signed by an untrusted key" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: rejected
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.ota" name="C-OTA-4 Downgrade (`version_code` not greater)" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: rejected
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.ota" name="C-OTA-5 Valid update applies and is marked healthy" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `rebooted{reason=ota_apply}`, new `version_code`, `ota_state=success`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.ota" name="C-OTA-6 Update that fails its health check rolls back" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `rebooted{reason=rollback}`, previous slot active, `ota_state=rolled_back`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.ota" name="C-OTA-7 Delta update" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: applied image hash equals full image hash
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.rpl" name="C-RPL-1 Replayed command (same `seq`)" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `message_rejected{code=ENV_REPLAY}`; command not executed twice
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.rpl" name="C-RPL-2 Command with stale timestamp" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `message_rejected{code=ENV_TS_SKEW}`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.rpl" name="C-RPL-3 Command signed by a non-tenant key" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `message_rejected{code=COSE_SIGNATURE}`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.rpl" name="C-RPL-4 Device `seq` strictly increases across reboot" time="0.244">
+      <system-out>criterion: `status.seq_out` after reboot &gt; before
+measure seq_out_before = 5
+measure seq_out_after = 18
+measure last_seq_sent_before = 4
+measure first_seq_sent_after = 18
+evidence: DUT dev-64c5f405b4af7277 (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 5ce84d164b4ca628b19474682a71bf78
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;0e3720205d77dd3af61787ac8d07273e&quot;,&quot;not_after&quot;:1795466740,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: rebooted {&quot;active_slot&quot;:&quot;ota_0&quot;,&quot;reason&quot;:&quot;requested&quot;,&quot;version_code&quot;:10000}
+evidence: telemetry seqs on the wire: [2, 18]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.off" name="C-OFF-1 Offline buffering and resync" time="2.334">
+      <system-out>criterion: telemetry sent while `net_down` is delivered after `net_up`, in order, no gaps, `buffer_flushed`
+measure buffered_and_flushed = 25
+measure telemetry_on_wire = 32
+evidence: DUT dev-03be2490d4224dab (esp32-host fw 1.0.0 code 10000, se_type software), bootstrap serial 68ab284300f4c89e34a1dc068e7f9041
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;dc496a2fabc26de5def5b00696bb0de1&quot;,&quot;not_after&quot;:1795466740,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: net_down -&gt; disconnected {&quot;reason&quot;:&quot;network&quot;,&quot;reason_code&quot;:0}
+evidence: offline send_telemetry 25 -&gt; {&quot;first_seq&quot;:4,&quot;last_seq&quot;:28}, status.buffered=25
+evidence: net_up -&gt; buffer_flushed {&quot;count&quot;:25,&quot;first_seq&quot;:4,&quot;last_seq&quot;:28}
+evidence: telemetry seqs on the wire (32): [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.cfg" name="C-CFG-1 Encrypted config delivery" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: DUT applies config; retained broker copy is ciphertext only
+</system-out>
+    </testcase>
+    <testcase classname="conformance.esp32-host.hook" name="C-HOOK-1 Release build has no control channel" time="0.000">
+      <skipped message="not applicable: C-HOOK-1 is defined for the agent-rs release binary. On ESP32 the channel is excluded at build time: the prod profile forces CONFIG_IRONMESH_DUT_CONTROL=n (checked by device/esp32/tools/check_prod_config.py in CI); the esp32-host shim and the hil profile are test builds by definition"/>
+      <system-out>criterion: release `agent-rs` exits non-zero on `--dut`
+</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>

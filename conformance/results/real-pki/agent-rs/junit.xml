@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="ironmesh-conformance" tests="27" failures="0" errors="0" skipped="12" time="67.537">
+  <testsuite name="ironmesh-conformance.agent-rs" tests="27" failures="0" errors="0" skipped="12" time="67.537" timestamp="2026-11-09T20:43:15.397666Z" hostname="MUSTAFAGOMAA (windows x86_64)">
+    <properties>
+      <property name="target" value="agent-rs"/>
+      <property name="mode" value="hermetic + real PKI"/>
+      <property name="git_commit" value="8904ed970ffcb9fbbf516fb6cd9b1d79c7509427 (working tree modified)"/>
+      <property name="tenant_id" value="a93c5393-cb7f-4179-810e-2a40f05dad44"/>
+      <property name="run_dir" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\runs\agent-rs-1794256995"/>
+      <property name="policy_service" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\bin\policy.exe (sha256 2965de8111b46a59)"/>
+      <property name="signing_keys" value="test-vector keys from C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\libs\python\ironmesh-wire\tests\keys"/>
+      <property name="dut_binary" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\duts\agent-rs-dut\debug\ironmesh-agent.exe (sha256 ac3501f8013546ad)"/>
+      <property name="release_binary" value="C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\duts\agent-rs-release\release\ironmesh-agent.exe (sha256 1ddff3aeeb44f9dd)"/>
+      <property name="pki_service" value="target/bin/pki.exe (sha256 a66e8ce986730a79): real PKI is the enrollment authority"/>
+      <property name="product" value="gateway-rpi"/>
+      <property name="reconnect_backoff_clock_scale" value="0.02"/>
+      <property name="ota_health_timeout_s" value="15"/>
+    </properties>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-1 mTLS handshake with valid operational cert" time="1.843">
+      <system-out>criterion: `connected` with `tls_version=TLSv1.3`, `alpn=mqtt`
+measure tls_version = TLSv1.3
+measure alpn = mqtt
+evidence: DUT dev-ca651ed022a5d3b0 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 68acec9fb211ae41acbc3a22f17da374
+evidence: connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: broker handshake: version Some(&quot;TLSv1.3&quot;), alpn Some(&quot;mqtt&quot;), client cert serial Some(&quot;654fd4dd41f6be9adc39af8dccb30dc1&quot;)
+evidence: CONNECT: client id = CN, clean_start=false, session_expiry=Some(604800), keep_alive=60, receive_maximum=Some(32); policy authn allow=true
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-2 Broker presents cert from an unpinned CA (rogue broker)" time="0.694">
+      <system-out>criterion: `connect_failed{reason=tls_pin_mismatch}`; no CONNECT packet observed
+measure RogueUnknownCa: connect_failed.reason = tls_pin_mismatch
+measure RogueUnknownCa: CONNECT packets observed = 0
+measure Rogue: connect_failed.reason = tls_pin_mismatch
+measure Rogue: CONNECT packets observed = 0
+evidence: DUT dev-07650205a984ba69 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 7bb0f11d1da2452d81d530e01f625922
+evidence: broker mode RogueUnknownCa: connect_failed {&quot;detail&quot;:&quot;invalid peer certificate: Other(OtherError(PinMismatch))&quot;,&quot;reason&quot;:&quot;tls_pin_mismatch&quot;}
+evidence: broker-side handshakes in mode RogueUnknownCa: [&quot;ok=false version=None error=Some(\&quot;received fatal alert: CertificateUnknown\&quot;)&quot;]
+evidence: broker mode Rogue: connect_failed {&quot;detail&quot;:&quot;invalid peer certificate: Other(OtherError(PinMismatch))&quot;,&quot;reason&quot;:&quot;tls_pin_mismatch&quot;}
+evidence: broker-side handshakes in mode Rogue: [&quot;ok=false version=None error=Some(\&quot;received fatal alert: CertificateUnknown\&quot;)&quot;]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-3 Broker offers TLS 1.2 only" time="0.499">
+      <system-out>criterion: `connect_failed{reason=tls_handshake}`
+measure Tls12Only: connect_failed.reason = tls_handshake
+measure Tls12Only: CONNECT packets observed = 0
+evidence: DUT dev-ba751802b0bf57cb (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 440ab7a297f0d7d9df25219f5536bfcd
+evidence: broker mode Tls12Only: connect_failed {&quot;detail&quot;:&quot;received fatal alert: ProtocolVersion&quot;,&quot;reason&quot;:&quot;tls_handshake&quot;}
+evidence: broker-side handshakes in mode Tls12Only: [&quot;ok=false version=None error=Some(\&quot;peer is incompatible: Tls12NotOfferedOrEnabled\&quot;)&quot;]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-4 Session resumption on reconnect" time="0.500">
+      <system-out>criterion: second `connected.resumed=true` (where the target supports tickets)
+measure dut_reported_resumed = true
+measure broker_observed_resumed = true
+measure session_present = true
+evidence: DUT dev-d0f0c76cf0f5c201 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial a0785ea7ca82605703a662abc1936a82
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;7adc360ae9bae5e781e6efc55f8de72d&quot;,&quot;not_after&quot;:1795466601,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: second connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:true,&quot;session_present&quot;:true,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.tls" name="C-TLS-5 Bounded reconnect backoff" time="18.648">
+      <system-out>criterion: reconnect attempts follow base 1 s, factor 2, cap 300 s, full jitter (verified on attempt timestamps with clock scaling)
+measure clock_scale = 0.02
+measure attempts_observed = 13
+measure max_gap_s = 5.671
+measure capped_gaps_checked = 4
+evidence: DUT dev-0c952310512eddeb (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 97dba8e48fa7d1c3d68042d006d3b4b2
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;40e2cd49e69b14e79ef0280c2fb52619&quot;,&quot;not_after&quot;:1795466602,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: connect_failed reasons (first 3): [&quot;not_authorized&quot;, &quot;not_authorized&quot;, &quot;not_authorized&quot;]; status.state=backoff observed: true
+evidence: gap_k &lt;= min(300, 2^k) x scale [s]: 0.002&lt;=0.020, 0.020&lt;=0.040, 0.006&lt;=0.080, 0.081&lt;=0.160, 0.065&lt;=0.320, 0.095&lt;=0.640, 0.034&lt;=1.280, 0.083&lt;=2.560, 1.980&lt;=5.120, 3.650&lt;=6.000, 3.357&lt;=6.000, 3.166&lt;=6.000, 5.671&lt;=6.000
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.enr" name="C-ENR-1 Zero-touch enrollment with attestation" time="0.283">
+      <system-out>criterion: `enrolled`; harness verifies attestation, CSR CN, fresh key
+measure issued_serial = 8092445c5a2d76070902d7a04c3b128e
+measure attestation_verified_by = services/pki EST handler (real PKI)
+evidence: DUT dev-6ec4012d8d11535a (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial d4afc59b0cfcd14e31bb5eb291f1b6ec
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;8092445c5a2d76070902d7a04c3b128e&quot;,&quot;not_after&quot;:1795466620,&quot;se_type&quot;:&quot;software&quot;}
+evidence: issued by the real PKI: subject O=IronMesh, OU=assurance:software + OU=a93c5393-cb7f-4179-810e-2a40f05dad44, CN=dev-6ec4012d8d11535a, issuer O=IronMesh, CN=IronMesh Device CA, SAN [&quot;urn:ironmesh:tenant:a93c5393-cb7f-4179-810e-2a40f05dad44:device:dev-6ec4012d8d11535a&quot;]
+evidence: PKI record: {&quot;assurance_level&quot;:&quot;software&quot;,&quot;device_id&quot;:&quot;dev-6ec4012d8d11535a&quot;,&quot;issuer&quot;:&quot;IronMesh Device CA&quot;,&quot;kind&quot;:&quot;operational&quot;,&quot;not_after&quot;:&quot;2026-11-23T20:43:40Z&quot;,&quot;not_before&quot;:&quot;2026-11-09T20:43:40Z&quot;,&quot;serial&quot;:&quot;8092445c5a2d76070902d7a04c3b128e&quot;,&quot;status&quot;:&quot;valid&quot;,&quot;tenant_id&quot;:&quot;a93c5393-cb7f-4179-810e-2a40f05dad44&quot;}
+warning: a fresh, never-enrolled device reports status.state=&quot;offline&quot; (DUT_PROTOCOL: unprovisioned = no usable certificate)
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.enr" name="C-ENR-2 Enrollment refused for quarantined device" time="0.209">
+      <system-out>criterion: `enroll_failed{http_status=403}`
+measure http_status = 403
+evidence: DUT dev-f4154cc425935a09 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial e22f7c6eb5b1583d35b72733424e07cd
+evidence: enroll_failed {&quot;http_status&quot;:403,&quot;reason&quot;:&quot;device lifecycle state \&quot;quarantined\&quot; does not permit enrollment&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rot" name="C-ROT-1 Certificate rotation (`renew`) keeps identity, changes key and serial" time="0.375">
+      <system-out>criterion: `cert_renewed`, new serial, new SPKI, reconnect succeeds
+measure old_serial = 2e51102126a30bd571a36542a8931cb0
+measure new_serial = 367a46d496b780c2a05a60456637e464
+measure spki_changed = true
+measure reconnected_automatically = true
+evidence: DUT dev-d123b009ad3999b1 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 6a2b9bc037ebd02cad435caf46c1881f
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;2e51102126a30bd571a36542a8931cb0&quot;,&quot;not_after&quot;:1795466621,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: cert_renewed {&quot;new_serial_hex&quot;:&quot;367a46d496b780c2a05a60456637e464&quot;,&quot;not_after&quot;:1795466621,&quot;old_serial_hex&quot;:&quot;2e51102126a30bd571a36542a8931cb0&quot;}
+evidence: telemetry seq 3 verified with the renewed key (kid 367a46d496b780c2a05a60456637e464)
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rot" name="C-ROT-2 Automatic rotation at 50 % lifetime (short-lived test certs)" time="0.199">
+      <skipped message="not applicable: short-lived operational certificates (the real PKI bounds PKI_OPERATIONAL_CERT_TTL to 168h-720h) needs the in-process EST server (the real PKI handles EST in this run)"/>
+      <system-out>criterion: `cert_renewed` without an explicit `renew`
+evidence: DUT dev-01738c879da768c7 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 725b82182c6f4c0cc398d3cea93e5486
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rev" name="C-REV-1 Revocation reaction time" time="36.294">
+      <system-out>criterion: revoke -&gt; broker disconnect -&gt; DUT cannot reconnect with the revoked cert, measured &lt; 10 s
+measure iterations = 20
+measure revoke -&gt; policy 202 = p50 0.004 s, p95 0.015 s, max 0.015 s
+measure revoke -&gt; kick (EMQX API) = p50 0.004 s, p95 0.015 s, max 0.015 s
+measure revoke -&gt; broker disconnect = p50 0.004 s, p95 0.015 s, max 0.015 s
+measure revoke -&gt; DUT disconnected event = p50 0.006 s, p95 0.016 s, max 0.016 s
+measure revoke -&gt; reconnect denied (end to end) = p50 0.009 s, p95 0.028 s, max 0.028 s
+evidence: DUT dev-801e60f6fbac04d1 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial f3e3672e94acc792a7c586ce240e4c06
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;e64b80956dff4064d30e1a5e6244f98d&quot;,&quot;not_after&quot;:1795466621,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: revocation path: real PKI POST /v1/certificates/{serial}/revoke (ES256 JWT) -&gt; PKI publisher -&gt; real policy -&gt; EMQX API kick
+evidence: DUT disconnected {&quot;reason&quot;:&quot;broker DISCONNECT 0x98 &quot;,&quot;reason_code&quot;:152} then connect_failed {&quot;detail&quot;:&quot;CONNACK reason 0x87 &quot;,&quot;reason&quot;:&quot;not_authorized&quot;}
+evidence: reconnect with revoked serial Some(&quot;e64b80956dff4064d30e1a5e6244f98d&quot;) answered CONNACK 0x87 by the policy authn hook
+evidence: DUT dev-7bd211f17bcf3ab5 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial bacdd538be75b7d90b14ae3e68fcccb6
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;a4ba8343e52d19d17d181ce62fa0e26a&quot;,&quot;not_after&quot;:1795466623,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-49bf855894ac4d2c (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 870ac213312d9366df4436727344c3f8
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;8c34cdfb22d0c768d543f9a3c3906b72&quot;,&quot;not_after&quot;:1795466625,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-bf2c75878f9b2c3f (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 4a4d1f7bbba20944217e1abea10243bd
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;6080142846b4a0878597b730dcbe3c75&quot;,&quot;not_after&quot;:1795466627,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-9734309a2047624a (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 9f675d38ba4f55c8e9df9407db211572
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;e86601fe145e72bdfdc40fc9f891b0d8&quot;,&quot;not_after&quot;:1795466629,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-c1a2f226d29d833e (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 8b1f508bd6a84d2590c14c60dffa092c
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;da6725c33481ceb6bc9bf74b9d51c5cd&quot;,&quot;not_after&quot;:1795466630,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-6bcd744de00d0b3f (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 7d5d052b36fb4c497124fedaa911cfee
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;066821465190185df5fa407c69cd4b21&quot;,&quot;not_after&quot;:1795466632,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-8ded8efde3150140 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 3a2a2f6ff9f3dcd25bc7e2c5e9428d05
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;68375727efec94c88a4f423f933f73f8&quot;,&quot;not_after&quot;:1795466634,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-01881f1c773c854c (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 3bb8653b967292ab0342aae3284e3548
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;e697f5f1f2c36b47be68ef612fb89bf6&quot;,&quot;not_after&quot;:1795466636,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-928bbf61da73e441 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial dea06565b4ae72a6ff222d78c6a3e5fc
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;3b4f897cdda32ef1e9ffd3175a1012a3&quot;,&quot;not_after&quot;:1795466638,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-b99d87141c80cce4 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 50ee9d3aee335f36d6971d605e2c78ad
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;d25cb8ef465c28290ea5d05e705d1c0e&quot;,&quot;not_after&quot;:1795466639,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-6bf0fd5c569b2fc7 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial b69c108106b32cdf651f802692391e13
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;a8bba60bd3ad76d70d71b7fbd494c032&quot;,&quot;not_after&quot;:1795466641,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-312206af05a05eb8 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 204e1623c377bdf68c3fa48c10949368
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;285dec73ca2c65802d795607d73e16a2&quot;,&quot;not_after&quot;:1795466643,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-1a9c0a1c9b35d5e8 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 955f0691a7175ab505470a19e63fc4d5
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;4f9097ef3b66a8875284935b0afe8125&quot;,&quot;not_after&quot;:1795466645,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-8b2eb46f99678cce (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial cc05c3628db4166f34c8b736ea570f75
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;e8cff1d3e7a24d09f84e8bff1de46f77&quot;,&quot;not_after&quot;:1795466647,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-286b664ae76b9859 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 0c3bf08851f4e3a22f7ebb897a74ec0b
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;b6fbc1790ef419820a7bcf58e36de5f0&quot;,&quot;not_after&quot;:1795466649,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-8b6d4bb9ca1e97ed (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 6685b39c4593a17f1f7a698ed7870ade
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;7917ce886d59af3197d138459aafc84f&quot;,&quot;not_after&quot;:1795466650,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-27648d408d829997 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial d80c2cd65bcc535a812ebdfeb209ed16
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;c01fcfab31d561a8c81599c10f8f3170&quot;,&quot;not_after&quot;:1795466652,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-dccba30745cb30ff (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial d97d2b04697fe7492e3a8cc5b701ddfe
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;2288e1b584c8e4bab0841a981b4b2be4&quot;,&quot;not_after&quot;:1795466654,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: DUT dev-f579633cd125f51b (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial c9de2dda5bde1d170be0eecb7eb441f6
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;5f237aa1e3c1382fb1cb90b4215b82e5&quot;,&quot;not_after&quot;:1795466656,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: policy /metrics: ironmesh_kick_total{result=ok} +20, ironmesh_revocation_latency_seconds count 20 sum 0.050 s (mean 0.003 s, revoked_at -&gt; kick)
+evidence: policy log: {&quot;ts&quot;:&quot;2026-11-09T22:44:16.3989034+02:00&quot;,&quot;level&quot;:&quot;info&quot;,&quot;msg&quot;:&quot;revoked session kicked&quot;,&quot;service&quot;:&quot;policy&quot;,&quot;device_id&quot;:&quot;dev-f579633cd125f51b&quot;,&quot;tenant_id&quot;:&quot;a93c5393-cb7f-4179-810e-2a40f05dad44&quot;,&quot;event_id&quot;:&quot;c59ac3f3-eb6d-47d7-a6c6-5760fba03a2
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.acl" name="C-ACL-1 Publish to another device&apos;s topic" time="1.743">
+      <system-out>criterion: `publish_result.ok=false` (or disconnect) and harness subscriber receives nothing
+measure outcome im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4b395aa2ce902276/telemetry = disconnected
+measure outcome im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4b395aa2ce902276/cmd/ack = disconnected
+measure outcome im/v1/c8e7d493-9e27-4a00-b929-5323be93a47e/dev-2275f3deaf513052/telemetry = disconnected
+measure outcome im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-2275f3deaf513052/cmd/req = disconnected
+evidence: DUT dev-2275f3deaf513052 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 1bb38a29e11b8598fafd113245b2bcc4
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;52ad660f7e16b6d0c7f3742f01030465&quot;,&quot;not_after&quot;:1795466658,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: publish_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4b395aa2ce902276/telemetry retain=false: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4b395aa2ce902276/telemetry&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4b395aa2ce902276/telemetry&quot;}; policy authz allowed=false
+evidence: publish_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4b395aa2ce902276/cmd/ack retain=false: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4b395aa2ce902276/cmd/ack&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4b395aa2ce902276/cmd/ack&quot;}; policy authz allowed=false
+evidence: publish_raw im/v1/c8e7d493-9e27-4a00-b929-5323be93a47e/dev-2275f3deaf513052/telemetry retain=false: first event disconnected {&quot;reason&quot;:&quot;broker DISCONNECT 0x87 &quot;,&quot;reason_code&quot;:135}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/c8e7d493-9e27-4a00-b929-5323be93a47e/dev-2275f3deaf513052/telemetry&quot;}; policy authz allowed=false
+evidence: publish_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-2275f3deaf513052/cmd/req retain=false: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-2275f3deaf513052/cmd/req&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-2275f3deaf513052/cmd/req&quot;}; policy authz allowed=false
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.acl" name="C-ACL-2 Subscribe to another device&apos;s command topic or wildcard" time="0.304">
+      <system-out>criterion: `subscribe_result.granted=false`
+measure reason_code im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4a33a686b7af995d/cmd/req = 135
+measure reason_code im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4a33a686b7af995d/config = 135
+measure reason_code im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/# = 135
+measure reason_code im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/+/cmd/req = 135
+measure reason_code im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-3f2299487105a000/# = 135
+measure reason_code # = 135
+measure reason_code $SYS/# = 135
+measure reason_code $share/bridge/im/v1/# = 135
+measure reason_code im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-3f2299487105a000/telemetry = 135
+evidence: DUT dev-3f2299487105a000 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 3450f63ed5a35ee656e32a37a07c224c
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;aa0143513c080170ea17c0101714ad85&quot;,&quot;not_after&quot;:1795466659,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: subscribe_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4a33a686b7af995d/cmd/req: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4a33a686b7af995d/cmd/req&quot;}
+evidence: subscribe_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4a33a686b7af995d/config: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-4a33a686b7af995d/config&quot;}
+evidence: subscribe_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/#&quot;}
+evidence: subscribe_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/+/cmd/req: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/+/cmd/req&quot;}
+evidence: subscribe_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-3f2299487105a000/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-3f2299487105a000/#&quot;}
+evidence: subscribe_raw #: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;#&quot;}
+evidence: subscribe_raw $SYS/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;$SYS/#&quot;}
+evidence: subscribe_raw $share/bridge/im/v1/#: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;$share/bridge/im/v1/#&quot;}
+evidence: subscribe_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-3f2299487105a000/telemetry: subscribe_result {&quot;granted&quot;:false,&quot;reason_code&quot;:135,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-3f2299487105a000/telemetry&quot;}
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.acl" name="C-ACL-3 Retained publish on telemetry" time="0.977">
+      <system-out>criterion: rejected
+measure outcome = disconnected
+measure outcome events (retained) = disconnected
+evidence: DUT dev-1c785b3bb7d8c525 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 5eec35a98c1f844dcc857c2eb3445177
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;f72c5e05eceaa65da8b17b93b78fc3f2&quot;,&quot;not_after&quot;:1795466660,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: publish_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-1c785b3bb7d8c525/telemetry retain=true: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-1c785b3bb7d8c525/telemetry&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-1c785b3bb7d8c525/telemetry&quot;}; policy authz allowed=false
+evidence: publish_raw im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-1c785b3bb7d8c525/events retain=true: first event publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-1c785b3bb7d8c525/events&quot;}; publish_result {&quot;ok&quot;:false,&quot;reason_code&quot;:128,&quot;topic&quot;:&quot;im/v1/a93c5393-cb7f-4179-810e-2a40f05dad44/dev-1c785b3bb7d8c525/events&quot;}; policy authz allowed=false
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-1 Unsigned image" time="0.001">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `ota_state{state=rejected}`; active slot unchanged
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-2 Tampered image (1 byte flipped, valid manifest)" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `ota_state{state=rejected, error=image_hash}`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-3 Manifest signed by an untrusted key" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: rejected
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-4 Downgrade (`version_code` not greater)" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: rejected
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-5 Valid update applies and is marked healthy" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `rebooted{reason=ota_apply}`, new `version_code`, `ota_state=success`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-6 Update that fails its health check rolls back" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `rebooted{reason=rollback}`, previous slot active, `ota_state=rolled_back`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.ota" name="C-OTA-7 Delta update" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: applied image hash equals full image hash
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rpl" name="C-RPL-1 Replayed command (same `seq`)" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `message_rejected{code=ENV_REPLAY}`; command not executed twice
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rpl" name="C-RPL-2 Command with stale timestamp" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `message_rejected{code=ENV_TS_SKEW}`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rpl" name="C-RPL-3 Command signed by a non-tenant key" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: `message_rejected{code=COSE_SIGNATURE}`
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.rpl" name="C-RPL-4 Device `seq` strictly increases across reboot" time="0.364">
+      <system-out>criterion: `status.seq_out` after reboot &gt; before
+measure seq_out_before = 5
+measure seq_out_after = 6
+measure last_seq_sent_before = 4
+measure first_seq_sent_after = 6
+evidence: DUT dev-58fe0dfa5e47389d (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial 51c55466dd8bc6d4e82b83ada74a9ca6
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;4cd18d8973212658a23014977559dcf6&quot;,&quot;not_after&quot;:1795466661,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: rebooted {&quot;active_slot&quot;:&quot;a&quot;,&quot;reason&quot;:&quot;requested&quot;,&quot;version_code&quot;:100}
+evidence: telemetry seqs on the wire: [2, 3, 4, 6]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.off" name="C-OFF-1 Offline buffering and resync" time="1.390">
+      <system-out>criterion: telemetry sent while `net_down` is delivered after `net_up`, in order, no gaps, `buffer_flushed`
+measure buffered_and_flushed = 25
+measure telemetry_on_wire = 32
+evidence: DUT dev-c4b6d7c31bc2a763 (agent-rs fw 1.0.0 code 100, se_type software), bootstrap serial c41cb0db32de3061efb950e01da13730
+evidence: enrolled {&quot;cert_serial_hex&quot;:&quot;2748423189f8fc38248a3db4c6735b8a&quot;,&quot;not_after&quot;:1795466661,&quot;se_type&quot;:&quot;software&quot;}; connected {&quot;alpn&quot;:&quot;mqtt&quot;,&quot;broker&quot;:&quot;127.0.0.1:54113&quot;,&quot;resumed&quot;:false,&quot;session_present&quot;:false,&quot;tls_version&quot;:&quot;TLSv1.3&quot;}
+evidence: net_down -&gt; disconnected {&quot;reason&quot;:&quot;network down&quot;,&quot;reason_code&quot;:128}
+evidence: offline send_telemetry 25 -&gt; {&quot;first_seq&quot;:4,&quot;last_seq&quot;:28}, status.buffered=25
+evidence: net_up -&gt; buffer_flushed {&quot;count&quot;:25,&quot;first_seq&quot;:4,&quot;last_seq&quot;:28}
+evidence: telemetry seqs on the wire (32): [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.cfg" name="C-CFG-1 Encrypted config delivery" time="0.000">
+      <skipped message="not applicable: the real PKI with its in-memory store issues trust bundles without tenant_cmd_pubkey / fw_signing_pubkeys (no API provisions a tenant policy), so devices must and do reject every downlink and update"/>
+      <system-out>criterion: DUT applies config; retained broker copy is ciphertext only
+</system-out>
+    </testcase>
+    <testcase classname="conformance.agent-rs.hook" name="C-HOOK-1 Release build has no control channel" time="0.179">
+      <system-out>criterion: release `agent-rs` exits non-zero on `--dut`
+measure exit_code = 2
+evidence: C:\Users\mgoma\Desktop\Security Assignments\IoT-Security-Framework\conformance\target\duts\agent-rs-release\release\ironmesh-agent.exe --dut -&gt; exit Some(2); stderr: ironmesh-agent: the DUT control channel is not compiled into this build (cargo feature `dut-control`); refusing --dut
+</system-out>
+    </testcase>
+  </testsuite>
+</testsuites>
