@@ -24,5 +24,56 @@ spec:
       targetPort: {{ $portName }}
       protocol: TCP
     {{- end }}
+{{- if $svc.service.headless }}
+---
+# Headless twin: DNS returns every ready pod IP (A records), used by callers that must reach all
+# replicas (pki -> policy revocation fan-out, PKI_POLICY_FANOUT=dns).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ironmesh.svcName" $ctx }}-headless
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "ironmesh.svcLabels" $ctx | nindent 4 }}
+    ironmesh.dev/service-kind: headless
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # Not-ready pods are left out; the PKI revocation outbox redelivers until every resolved
+  # endpoint has acknowledged.
+  publishNotReadyAddresses: false
+  selector:
+    {{- include "ironmesh.svcSelectorLabels" $ctx | nindent 4 }}
+  ports:
+    {{- range $portName, $portNumber := $svc.ports }}
+    - name: {{ $portName }}
+      port: {{ $portNumber }}
+      targetPort: {{ $portName }}
+      protocol: TCP
+    {{- end }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.emqx.enabled }}
+---
+# EMQX internal service listener (ssl:internal, 8884): svc-bridge and svc-registry only
+# (NetworkPolicy), never exposed through the NLB. Selects the EMQX sub-chart pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-emqx-internal
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: emqx
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: emqx
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: mqtt-internal
+      port: 8884
+      targetPort: 8884
+      protocol: TCP
 {{- end }}

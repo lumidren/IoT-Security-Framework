@@ -51,6 +51,9 @@ spec:
             - name: mqttssl
               containerPort: 8883
               protocol: TCP
+            - name: mqtt-internal
+              containerPort: 8884
+              protocol: TCP
             - name: dashboard
               containerPort: 18083
               protocol: TCP

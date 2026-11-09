@@ -23,6 +23,10 @@ spec:
   selector:
     matchLabels:
       {{- include "ironmesh.svcSelectorLabels" $ctx | nindent 6 }}
+    # Skip the headless twin (services.<name>.service.headless): same pods, would double-scrape.
+    matchExpressions:
+      - key: ironmesh.dev/service-kind
+        operator: DoesNotExist
   endpoints:
     - port: {{ $svc.metrics.port }}
       path: {{ $svc.metrics.path }}

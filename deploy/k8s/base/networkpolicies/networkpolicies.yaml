@@ -1,6 +1,10 @@
 # Default deny plus the explicit allow list of DESIGN_CONTRACT.md §7 / API_CONTRACT.md, for the
 # single-namespace dev stack (postgres, redpanda, emqx and otel-collector live in-namespace).
 # Requires a CNI that enforces NetworkPolicy (kind: install Calico or Cilium; see README).
+#
+# Egress is an exact allow list per service (IEC 62443 CR 5.1, THREAT_MODEL T-30): DNS and the
+# OTLP collector (gRPC 4317) for every pod, then only the peers each service calls. The dev stack
+# has no AWS APIs, IdP or SIEM, so only the console has Internet egress (its OIDC issuer).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -35,6 +39,7 @@ spec:
         - protocol: TCP
           port: 53
 ---
+# OTLP/gRPC only: every service and EMQX export with OTEL_EXPORTER_OTLP_PROTOCOL=grpc.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -52,8 +57,6 @@ spec:
       ports:
         - protocol: TCP
           port: 4317
-        - protocol: TCP
-          port: 4318
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -86,13 +89,19 @@ spec:
         - protocol: TCP
           port: 8888
 ---
+# Prometheus scrapes the IronMesh service metrics ports. The EMQX (18083) and Redpanda (9644)
+# admin ports are granted only on those pods (policies emqx / redpanda below).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-prometheus-scrape
   namespace: ironmesh
 spec:
-  podSelector: {}
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [pki, policy, bridge, registry, ota, anomaly]
   policyTypes:
     - Ingress
   ingress:
@@ -114,10 +123,6 @@ spec:
           port: 8001
         - protocol: TCP
           port: 8002
-        - protocol: TCP
-          port: 18083
-        - protocol: TCP
-          port: 9644
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -165,6 +170,8 @@ spec:
         - protocol: TCP
           port: 5432
 ---
+# Kafka clients (SASL/SCRAM, ACLs per service: base/redpanda/init-job.yaml). The policy service
+# has no Kafka client. The admin API (9644) is reachable only from the init Job and Prometheus.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -182,11 +189,55 @@ spec:
             matchExpressions:
               - key: app.kubernetes.io/name
                 operator: In
-                values: [bridge, policy, registry, ota, anomaly]
+                values: [bridge, registry, ota, anomaly]
       ports:
         - protocol: TCP
           port: 9092
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redpanda-init
+      ports:
+        - protocol: TCP
+          port: 9092
+        - protocol: TCP
+          port: 9644
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9644
 ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redpanda-init
+  namespace: ironmesh
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda-init
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redpanda
+      ports:
+        - protocol: TCP
+          port: 9092
+        - protocol: TCP
+          port: 9644
+---
+# EMQX (T-76): devices on 8883 (NodePort), svc-bridge / svc-registry on the internal listener
+# 8884, the management API 18083 ONLY from policy (kick), registry (kick) and ota (publish) plus
+# the Prometheus scraper (/api/v5/prometheus/stats shares the port; NetworkPolicy cannot filter
+# by path). No NodePort exists for 8884 or 18083 (base/emqx/service.yaml).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -200,7 +251,6 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Devices (NodePort / port-forward) and the bridge on the mTLS listener.
     - from:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -209,12 +259,13 @@ spec:
           port: 8883
     - from:
         - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: bridge
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [bridge, registry]
       ports:
         - protocol: TCP
-          port: 8883
-    # Management API: policy (kick), registry and ota (publish), developers via port-forward.
+          port: 8884
     - from:
         - podSelector:
             matchExpressions:
@@ -224,7 +275,16 @@ spec:
       ports:
         - protocol: TCP
           port: 18083
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 18083
   egress:
+    # authn/authz hooks
     - to:
         - podSelector:
             matchLabels:
@@ -232,6 +292,7 @@ spec:
       ports:
         - protocol: TCP
           port: 8081
+    # client-event webhook
     - to:
         - podSelector:
             matchLabels:
@@ -278,6 +339,7 @@ spec:
         - protocol: TCP
           port: 8444
   egress:
+    # revocation push to every policy pod (policy-headless, PKI_POLICY_FANOUT=dns)
     - to:
         - podSelector:
             matchLabels:
@@ -285,6 +347,7 @@ spec:
       ports:
         - protocol: TCP
           port: 8081
+    # enrolled callback / lifecycle checks
     - to:
         - podSelector:
             matchLabels:
@@ -323,6 +386,7 @@ spec:
         - protocol: TCP
           port: 8081
   egress:
+    # session kicks
     - to:
         - podSelector:
             matchLabels:
@@ -330,6 +394,7 @@ spec:
       ports:
         - protocol: TCP
           port: 18083
+    # CRL poll
     - to:
         - podSelector:
             matchLabels:
@@ -337,6 +402,7 @@ spec:
       ports:
         - protocol: TCP
           port: 8444
+    # device lifecycle lookups
     - to:
         - podSelector:
             matchLabels:
@@ -344,13 +410,6 @@ spec:
       ports:
         - protocol: TCP
           port: 8000
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: redpanda
-      ports:
-        - protocol: TCP
-          port: 9092
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -373,13 +432,14 @@ spec:
         - protocol: TCP
           port: 8082
   egress:
+    # shared subscription on the internal service listener
     - to:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: emqx
       ports:
         - protocol: TCP
-          port: 8883
+          port: 8884
     - to:
         - podSelector:
             matchLabels:
@@ -452,6 +512,7 @@ spec:
       ports:
         - protocol: TCP
           port: 8001
+    # kicks (18083) and the downlink publisher on the internal service listener (8884)
     - to:
         - podSelector:
             matchLabels:
@@ -459,6 +520,8 @@ spec:
       ports:
         - protocol: TCP
           port: 18083
+        - protocol: TCP
+          port: 8884
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -517,6 +580,7 @@ spec:
       ports:
         - protocol: TCP
           port: 8000
+    # ota/notify publish (POST /api/v5/publish/bulk)
     - to:
         - podSelector:
             matchLabels:
@@ -567,17 +631,28 @@ spec:
       ports:
         - protocol: TCP
           port: 8443
+    # quarantine
     - to:
         - podSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/name
-                operator: In
-                values: [registry, policy, ota]
+            matchLabels:
+              app.kubernetes.io/name: registry
       ports:
         - protocol: TCP
           port: 8000
+    # kick after quarantine
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: policy
+      ports:
         - protocol: TCP
           port: 8081
+    # known firmware hashes
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ota
+      ports:
         - protocol: TCP
           port: 8001
 ---
@@ -603,17 +678,30 @@ spec:
   egress:
     - to:
         - podSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/name
-                operator: In
-                values: [registry, ota, anomaly, policy]
+            matchLabels:
+              app.kubernetes.io/name: registry
       ports:
         - protocol: TCP
           port: 8000
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ota
+      ports:
         - protocol: TCP
           port: 8001
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: anomaly
+      ports:
         - protocol: TCP
           port: 8002
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: policy
+      ports:
         - protocol: TCP
           port: 8081
     # OIDC issuer (external) when configured.

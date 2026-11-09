@@ -19,14 +19,13 @@ metadata:
 spec:
   type: NodePort
   ports:
+    # Devices only. The management API / dashboard (Service emqx-api) and the internal service
+    # listener (Service emqx-internal) are never NodePorts (T-76); for local debugging use
+    # `kubectl -n ironmesh port-forward svc/emqx-api 18083:18083`.
     - name: mqttssl
       port: 8883
       targetPort: mqttssl
       nodePort: 30883
-    - name: dashboard
-      port: 18083
-      targetPort: dashboard
-      nodePort: 31883
 ---
 apiVersion: v1
 kind: Service

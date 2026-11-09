@@ -6,17 +6,25 @@ metadata:
   labels:
     app.kubernetes.io/name: emqx
 data:
-  # Single-node EMQX 5 with the contract's listener policy (DESIGN_CONTRACT.md §4): one mTLS
-  # listener on 8883, TLS 1.3 only, client certificate chained to the Device CA, EKU clientAuth,
-  # username = certificate CN, authn/authz delegated to the policy service.
+  # Single-node EMQX 5 with the contract's listener policy (DESIGN_CONTRACT.md §4): the device
+  # mTLS listener on 8883 (TLS 1.3 only, client certificate chained to the Device CA, EKU
+  # clientAuth, per-client rate limits) and the internal service listener on 8884 (Services CA
+  # only, svc-bridge / svc-registry, Service emqx-internal); username = certificate CN,
+  # authn/authz delegated to the policy service. Limits and sizing as in
+  # deploy/helm/ironmesh/values.yaml ("EMQX 5"). 18083 (dashboard + REST API) is ClusterIP-only
+  # and admitted from policy, registry, ota and Prometheus only (networkpolicies.yaml, T-76).
   EMQX_NODE__NAME: emqx@127.0.0.1
   EMQX_NODE__COOKIE: ironmesh-dev-cookie
   EMQX_DASHBOARD__DEFAULT_USERNAME: admin
+  EMQX_DASHBOARD__SWAGGER_SUPPORT: "false"
   EMQX_LISTENERS__TCP__DEFAULT__ENABLE: "false"
   EMQX_LISTENERS__WS__DEFAULT__ENABLE: "false"
   EMQX_LISTENERS__WSS__DEFAULT__ENABLE: "false"
   EMQX_LISTENERS__SSL__DEFAULT__BIND: 0.0.0.0:8883
   EMQX_LISTENERS__SSL__DEFAULT__ENABLE_AUTHN: quick_deny_anonymous
+  EMQX_LISTENERS__SSL__DEFAULT__MESSAGES_RATE: 10/s
+  EMQX_LISTENERS__SSL__DEFAULT__BYTES_RATE: 64KB/s
+  EMQX_LISTENERS__SSL__DEFAULT__MAX_CONN_RATE: 500/s
   EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERSIONS: "[tlsv1.3]"
   EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERIFY: verify_peer
   EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "true"
@@ -25,12 +33,32 @@ data:
   EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /etc/ironmesh/tls/tls.crt
   EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /etc/ironmesh/tls/tls.key
   EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /etc/ironmesh/device-ca/tls.crt
+  EMQX_LISTENERS__SSL__INTERNAL__ENABLE: "true"
+  EMQX_LISTENERS__SSL__INTERNAL__BIND: 0.0.0.0:8884
+  EMQX_LISTENERS__SSL__INTERNAL__ZONE: internal
+  EMQX_LISTENERS__SSL__INTERNAL__ENABLE_AUTHN: quick_deny_anonymous
+  EMQX_LISTENERS__SSL__INTERNAL__MAX_CONNECTIONS: "1024"
+  EMQX_LISTENERS__SSL__INTERNAL__MAX_CONN_RATE: 100/s
+  EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__VERSIONS: "[tlsv1.3]"
+  EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__VERIFY: verify_peer
+  EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "true"
+  EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__PARTIAL_CHAIN: "true"
+  EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__VERIFY_PEER_EXT_KEY_USAGE: clientAuth
+  EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__CERTFILE: /etc/ironmesh/tls/tls.crt
+  EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__KEYFILE: /etc/ironmesh/tls/tls.key
+  EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__CACERTFILE: /etc/ironmesh/tls/ca.crt
   EMQX_MQTT__PEER_CERT_AS_USERNAME: cn
   EMQX_MQTT__SESSION_EXPIRY_INTERVAL: 7d
-  EMQX_MQTT__MAX_PACKET_SIZE: 1MB
+  EMQX_MQTT__MAX_PACKET_SIZE: 64KB
+  EMQX_MQTT__MAX_QOS_ALLOWED: "1"
+  EMQX_MQTT__MAX_INFLIGHT: "32"
+  EMQX_MQTT__MAX_AWAITING_REL: "16"
   EMQX_MQTT__RETAIN_AVAILABLE: "true"
   EMQX_MQTT__WILDCARD_SUBSCRIPTION: "true"
   EMQX_MQTT__SHARED_SUBSCRIPTION: "true"
+  EMQX_ZONES__INTERNAL__MQTT__MAX_INFLIGHT: "1024"
+  EMQX_ZONES__INTERNAL__MQTT__MAX_AWAITING_REL: "100"
+  EMQX_ZONES__INTERNAL__MQTT__MAX_PACKET_SIZE: 1MB
   EMQX_AUTHENTICATION__1__MECHANISM: password_based
   EMQX_AUTHENTICATION__1__BACKEND: http
   EMQX_AUTHENTICATION__1__METHOD: post

@@ -12,12 +12,11 @@ nodes:
       - containerPort: 30300 # console
         hostPort: 3000
         protocol: TCP
-      - containerPort: 30883 # emqx mTLS
+      - containerPort: 30883 # emqx mTLS (devices)
         hostPort: 8883
         protocol: TCP
-      - containerPort: 31883 # emqx dashboard / management API
-        hostPort: 18083
-        protocol: TCP
+      # No mapping for the EMQX management API (18083): ClusterIP only (T-76); use
+      # `kubectl -n ironmesh port-forward svc/emqx-api 18083:18083` when debugging.
       - containerPort: 30443 # pki EST/OCSP/API (mTLS)
         hostPort: 8443
         protocol: TCP

@@ -1,3 +1,9 @@
+# Three Services so that each EMQX listener has exactly one exposure (T-76):
+#   emqx           8883  devices (the dev overlay turns this one into a NodePort)
+#   emqx-internal  8884  svc-bridge / svc-registry (internal service listener), ClusterIP only
+#   emqx-api      18083  dashboard + REST API for policy / registry / ota, ClusterIP only;
+#                        developers use `kubectl -n ironmesh port-forward svc/emqx-api 18083`
+# NetworkPolicy (networkpolicies.yaml) restricts who may connect to each port.
 apiVersion: v1
 kind: Service
 metadata:
@@ -14,6 +20,36 @@ spec:
       port: 8883
       targetPort: mqttssl
       protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emqx-internal
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: emqx
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: emqx
+  ports:
+    - name: mqtt-internal
+      port: 8884
+      targetPort: mqtt-internal
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emqx-api
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: emqx
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: emqx
+  ports:
     - name: dashboard
       port: 18083
       targetPort: dashboard
