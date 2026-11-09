@@ -1,12 +1,16 @@
 // Package revocation implements certificate revocation (DESIGN_CONTRACT §2):
-// write the revocation, regenerate the CRL, invalidate OCSP caches and push a
-// signed event to the Policy service synchronously, measuring the end-to-end
-// latency as ironmesh_revocation_latency_seconds.
+// write the revocation together with its Policy event (durable outbox),
+// regenerate the CRL, invalidate OCSP caches, make a first signed delivery
+// attempt to the Policy service and leave retries (exponential backoff, until
+// every Policy endpoint acknowledged) to the outbox Dispatcher. The end-to-end
+// latency (revoke request -> acknowledgement) is
+// ironmesh_revocation_latency_seconds.
 package revocation
 
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -46,12 +50,16 @@ type Options struct {
 	Metrics   *metrics.Metrics
 	Clock     func() time.Time
 	Logger    *slog.Logger
+	// Dispatcher tunes the outbox dispatcher (Publisher, Metrics, Clock and
+	// Logger are taken from the fields above).
+	Dispatcher DispatcherOptions
 }
 
 // Service revokes certificates.
 type Service struct {
-	store store.Store
-	opts  Options
+	store      store.Store
+	opts       Options
+	dispatcher *Dispatcher
 }
 
 // NewService returns a Service. Nil CRL/OCSP/Publisher hooks are skipped.
@@ -71,8 +79,17 @@ func NewService(st store.Store, opts Options) (*Service, error) {
 	if opts.Publisher == nil {
 		opts.Publisher = NoopPublisher{Logger: opts.Logger}
 	}
-	return &Service{store: st, opts: opts}, nil
+	dopts := opts.Dispatcher
+	dopts.Publisher, dopts.Metrics, dopts.Clock, dopts.Logger = opts.Publisher, opts.Metrics, opts.Clock, opts.Logger
+	return &Service{store: st, opts: opts, dispatcher: NewDispatcher(st, dopts)}, nil
 }
+
+// Dispatcher returns the outbox dispatcher; run it with RunDispatcher.
+func (s *Service) Dispatcher() *Dispatcher { return s.dispatcher }
+
+// RunDispatcher delivers pending outbox events (including those left by a
+// previous process) until ctx ends.
+func (s *Service) RunDispatcher(ctx context.Context) { s.dispatcher.Run(ctx) }
 
 // Result describes a completed revocation.
 type Result struct {
@@ -83,30 +100,37 @@ type Result struct {
 	ReasonName     string        `json:"reason"`
 	RevokedAt      time.Time     `json:"revoked_at"`
 	EventID        string        `json:"event_id"`
+	DeviceDeny     bool          `json:"device_deny"`
 	Published      bool          `json:"published"`
 	PublishLatency time.Duration `json:"-"`
 	PublishError   string        `json:"publish_error,omitempty"`
 }
 
 // Revoke revokes one certificate. It returns ErrNotFound, ErrAlreadyRevoked,
-// ErrInvalidSerial or ErrInvalidReason for client errors. A publish failure
-// after retries is reported in the Result (Published=false), not as an error,
-// because the revocation itself is durable and visible via CRL/OCSP.
+// ErrInvalidSerial or ErrInvalidReason for client errors.
+//
+// The revocation and its Policy event are committed together (revocation
+// outbox); Revoke then makes one delivery attempt before returning. A failed
+// attempt is reported in the Result (Published=false), not as an error: the
+// revocation is durable, visible via CRL/OCSP, and the dispatcher keeps
+// retrying the event until every Policy endpoint acknowledged it.
+//
+// The event denies only this serial (device_deny=false), so revoking one
+// certificate (for example the one superseded by a renewal) does not lock
+// the device out of its other, valid certificates.
 func (s *Service) Revoke(ctx context.Context, serial, reason, revokedBy string) (*Result, error) {
-	return s.revoke(ctx, serial, reason, revokedBy, true)
+	return s.revoke(ctx, serial, reason, revokedBy, true, false)
 }
 
 // RevokeUndelivered revokes a certificate that was issued but never handed
 // to the device (enrollment rolled back). It writes the revocation,
 // regenerates the CRL and invalidates OCSP like Revoke, but does not push an
-// event to the Policy service: no session can exist on that certificate, and
-// the push deny-lists the whole device, which would lock out its other,
-// still valid certificates.
+// event to the Policy service: no session can exist on that certificate.
 func (s *Service) RevokeUndelivered(ctx context.Context, serial, reason, revokedBy string) (*Result, error) {
-	return s.revoke(ctx, serial, reason, revokedBy, false)
+	return s.revoke(ctx, serial, reason, revokedBy, false, false)
 }
 
-func (s *Service) revoke(ctx context.Context, serial, reason, revokedBy string, publish bool) (*Result, error) {
+func (s *Service) revoke(ctx context.Context, serial, reason, revokedBy string, publish, deviceDeny bool) (*Result, error) {
 	start := s.opts.Clock()
 	_, canonical, err := ca.ParseSerial(serial)
 	if err != nil {
@@ -129,11 +153,26 @@ func (s *Service) revoke(ctx context.Context, serial, reason, revokedBy string, 
 		Serial: canonical, DeviceID: rec.DeviceID, TenantID: rec.TenantID, IssuerCN: rec.IssuerCN, NotAfter: rec.NotAfter,
 		Reason: reasonCode, RevokedAt: now, RevokedBy: revokedBy,
 	}
-	if err := s.store.AddRevocation(ctx, rev); err != nil {
+	ev := Event{EventID: eventID, Serial: canonical, DeviceID: rec.DeviceID, TenantID: rec.TenantID, Reason: ca.ReasonString(reasonCode), RevokedAt: now, DeviceDeny: deviceDeny}
+	var outbox *store.OutboxEvent
+	if publish {
+		payload, err := json.Marshal(ev)
+		if err != nil {
+			return nil, err
+		}
+		// The writer holds the event for one lease so the background
+		// dispatcher does not race the inline first attempt; after a crash
+		// the event becomes due when the lease ends.
+		outbox = &store.OutboxEvent{EventID: eventID, TenantID: rec.TenantID, Payload: payload, CreatedAt: start.UTC(), NextAttemptAt: now.Add(s.dispatcher.Lease())}
+		err = s.store.AddRevocationWithEvent(ctx, rev, outbox)
+		if err != nil {
+			return nil, err
+		}
+	} else if err := s.store.AddRevocation(ctx, rev); err != nil {
 		return nil, err
 	}
 	s.opts.Metrics.Revocations.WithLabelValues(ca.ReasonString(reasonCode)).Inc()
-	log := s.opts.Logger.With("serial", canonical, "device_id", rec.DeviceID, "tenant_id", rec.TenantID, "reason", ca.ReasonString(reasonCode), "revoked_by", revokedBy, "event_id", eventID)
+	log := s.opts.Logger.With("serial", canonical, "device_id", rec.DeviceID, "tenant_id", rec.TenantID, "reason", ca.ReasonString(reasonCode), "revoked_by", revokedBy, "event_id", eventID, "device_deny", deviceDeny)
 	log.Info("certificate revoked")
 
 	if s.opts.CRL != nil {
@@ -145,30 +184,28 @@ func (s *Service) revoke(ctx context.Context, serial, reason, revokedBy string, 
 		s.opts.OCSP.Invalidate(canonical)
 	}
 
-	res := &Result{Serial: canonical, DeviceID: rec.DeviceID, TenantID: rec.TenantID, Reason: reasonCode, ReasonName: ca.ReasonString(reasonCode), RevokedAt: now, EventID: eventID}
+	res := &Result{Serial: canonical, DeviceID: rec.DeviceID, TenantID: rec.TenantID, Reason: reasonCode, ReasonName: ca.ReasonString(reasonCode), RevokedAt: now, EventID: eventID, DeviceDeny: deviceDeny && publish}
 	if !publish {
 		log.Info("revocation not published: certificate was never delivered")
 		return res, nil
 	}
-	ev := Event{EventID: eventID, Serial: canonical, DeviceID: rec.DeviceID, TenantID: rec.TenantID, Reason: ca.ReasonString(reasonCode), RevokedAt: now}
 	pubStart := s.opts.Clock()
-	pubErr := s.opts.Publisher.Publish(ctx, ev)
+	pubErr := s.dispatcher.Attempt(ctx, outbox)
 	res.PublishLatency = s.opts.Clock().Sub(pubStart)
-	s.opts.Metrics.RevocationPublishLatency.Observe(res.PublishLatency.Seconds())
 	if pubErr != nil {
-		s.opts.Metrics.RevocationPublishFailures.Inc()
 		res.PublishError = pubErr.Error()
-		log.Error("revocation event publish failed", "error", pubErr.Error(), "publish_ms", res.PublishLatency.Milliseconds())
+		log.Error("first revocation event delivery failed; queued in the outbox for retry", "error", pubErr.Error(), "publish_ms", res.PublishLatency.Milliseconds())
+		s.dispatcher.RefreshPending(ctx)
 		return res, nil
 	}
 	res.Published = true
-	total := s.opts.Clock().Sub(start)
-	s.opts.Metrics.RevocationLatency.Observe(total.Seconds())
-	log.Info("revocation event published", "publish_ms", res.PublishLatency.Milliseconds(), "total_ms", total.Milliseconds())
+	s.dispatcher.RefreshPending(ctx)
 	return res, nil
 }
 
-// RevokeDevice revokes every unexpired, unrevoked certificate of a device.
+// RevokeDevice revokes every unexpired, unrevoked certificate of a device
+// (revoke-all: registry quarantine and decommission). Its events carry
+// device_deny=true so the Policy service deny-lists the device id itself.
 func (s *Service) RevokeDevice(ctx context.Context, deviceID, reason, revokedBy string) ([]*Result, error) {
 	if _, err := ca.ParseReason(reason); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidReason, err)
@@ -183,7 +220,7 @@ func (s *Service) RevokeDevice(ctx context.Context, deviceID, reason, revokedBy 
 		if !c.NotAfter.After(now) {
 			continue
 		}
-		res, err := s.Revoke(ctx, c.Serial, reason, revokedBy)
+		res, err := s.revoke(ctx, c.Serial, reason, revokedBy, true, true)
 		if errors.Is(err, ErrAlreadyRevoked) {
 			continue
 		}

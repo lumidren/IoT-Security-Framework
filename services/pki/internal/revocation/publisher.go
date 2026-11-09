@@ -5,14 +5,19 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,41 +26,102 @@ const (
 	PublishPath     = "/internal/v1/revocations"
 	HeaderSignature = "X-IronMesh-Signature"
 	HeaderEventID   = "X-IronMesh-Event-ID"
-	DefaultRetries  = 3
-	DefaultBackoff  = 500 * time.Millisecond
+	// DefaultRetries is the number of in-call retries of HTTPPublisher. It is
+	// zero: retries are owned by the durable outbox Dispatcher, which retries
+	// with exponential backoff until every endpoint acknowledged.
+	DefaultRetries = 0
+	DefaultBackoff = 500 * time.Millisecond
 )
 
 // Event is the JSON revocation event pushed to the Policy service.
+//
+// DeviceDeny tells the Policy service to deny-list the whole device id (every
+// certificate of the device): it is true for revoke-all (registry quarantine
+// and decommission). Single-certificate revocations (supersede on renewal,
+// operator revocation of one serial) carry false and deny only that serial,
+// so a renewed device is not locked out by the revocation of its previous
+// certificate.
 type Event struct {
-	EventID   string    `json:"event_id"`
-	Serial    string    `json:"serial"`
-	DeviceID  string    `json:"device_id"`
-	TenantID  string    `json:"tenant_id"`
-	Reason    string    `json:"reason"`
-	RevokedAt time.Time `json:"revoked_at"`
+	EventID    string    `json:"event_id"`
+	Serial     string    `json:"serial"`
+	DeviceID   string    `json:"device_id"`
+	TenantID   string    `json:"tenant_id"`
+	Reason     string    `json:"reason"`
+	RevokedAt  time.Time `json:"revoked_at"`
+	DeviceDeny bool      `json:"device_deny"`
 }
 
-// Publisher delivers revocation events.
+// Publisher delivers revocation events. Publish returns nil only when the
+// event was acknowledged by every Policy endpoint.
 type Publisher interface {
 	Publish(ctx context.Context, ev Event) error
 }
 
+// Resolver returns the network addresses ("ip:port") of every Policy replica
+// for the host and port of PKI_POLICY_URL.
+type Resolver func(ctx context.Context, host, port string) ([]string, error)
+
+// DNSResolver resolves host to all of its A/AAAA records (a Kubernetes
+// headless Service lists one per ready Policy pod). A nil resolver uses
+// net.DefaultResolver.
+func DNSResolver(r *net.Resolver) Resolver {
+	if r == nil {
+		r = net.DefaultResolver
+	}
+	return func(ctx context.Context, host, port string) ([]string, error) {
+		ips, err := r.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		seen := map[string]bool{}
+		var out []string
+		for _, ip := range ips {
+			addr := net.JoinHostPort(ip.IP.String(), port)
+			if !seen[addr] {
+				seen[addr] = true
+				out = append(out, addr)
+			}
+		}
+		sort.Strings(out)
+		return out, nil
+	}
+}
+
 // HTTPPublisher POSTs events to PKI_POLICY_URL + /internal/v1/revocations with
-// a bearer token and an HMAC-SHA256 signature over the body, retrying on
-// transport errors and 5xx responses.
+// a bearer token and an HMAC-SHA256 signature over the body.
+//
+// Without Resolve it delivers to the single URL. With Resolve (fan-out,
+// PKI_POLICY_FANOUT=dns) it resolves the URL host on every call and delivers
+// to each address, keeping the original host in the Host header and as TLS
+// SNI / verification name; Publish succeeds only when every resolved address
+// acknowledged. Addresses that acknowledged an event are remembered, so a
+// retry only goes to the endpoints that have not (the Policy service is
+// idempotent per event_id anyway).
 type HTTPPublisher struct {
 	URL     string
 	Token   string
 	HMACKey []byte
 	Client  *http.Client
+	// Retries are in-call retries per endpoint (default 0; the outbox
+	// Dispatcher retries).
 	Retries int
 	Backoff time.Duration
 	// Sleep is replaced in tests to avoid real waits.
 	Sleep  func(time.Duration)
 	Logger *slog.Logger
+	// Resolve enables fan-out to every address of the URL host.
+	Resolve Resolver
+	// OnEndpoint, when set, observes the result of every endpoint delivery
+	// ("ok" or "error").
+	OnEndpoint func(result string)
+
+	mu      sync.Mutex
+	clients map[string]*http.Client
+	acked   map[string]map[string]bool // event id -> addresses that acknowledged
 }
 
-// NewHTTPPublisher returns a publisher with 3 retries and 500 ms backoff.
+// NewHTTPPublisher returns a single-attempt publisher (retries are owned by
+// the Dispatcher).
 func NewHTTPPublisher(policyURL, token string, hmacKey []byte, client *http.Client) (*HTTPPublisher, error) {
 	policyURL = strings.TrimRight(strings.TrimSpace(policyURL), "/")
 	if policyURL == "" {
@@ -90,6 +156,132 @@ func (p *HTTPPublisher) Publish(ctx context.Context, ev Event) error {
 		return err
 	}
 	sig := Sign(p.HMACKey, body)
+	if p.Resolve == nil {
+		err := p.deliver(ctx, p.Client, body, sig, ev.EventID)
+		p.observe(err)
+		return err
+	}
+	return p.fanOut(ctx, body, sig, ev.EventID)
+}
+
+func (p *HTTPPublisher) observe(err error) {
+	if p.OnEndpoint == nil {
+		return
+	}
+	if err != nil {
+		p.OnEndpoint("error")
+		return
+	}
+	p.OnEndpoint("ok")
+}
+
+// fanOut delivers to every resolved address that has not acknowledged the
+// event yet.
+func (p *HTTPPublisher) fanOut(ctx context.Context, body []byte, sig, eventID string) error {
+	u, err := url.Parse(p.URL)
+	if err != nil {
+		return fmt.Errorf("revocation: policy URL: %w", err)
+	}
+	host, port := u.Hostname(), u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	addrs, err := p.Resolve(ctx, host, port)
+	if err != nil {
+		return fmt.Errorf("revocation: resolve %s: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("revocation: %s resolved to no policy endpoints", host)
+	}
+	p.mu.Lock()
+	done := p.acked[eventID]
+	var todo []string
+	for _, a := range addrs {
+		if !done[a] {
+			todo = append(todo, a)
+		}
+	}
+	p.mu.Unlock()
+
+	type result struct {
+		addr string
+		err  error
+	}
+	results := make(chan result, len(todo))
+	var wg sync.WaitGroup
+	for _, addr := range todo {
+		wg.Add(1)
+		go func(addr string) {
+			defer wg.Done()
+			err := p.deliver(ctx, p.clientFor(addr, host), body, sig, eventID)
+			p.observe(err)
+			results <- result{addr, err}
+		}(addr)
+	}
+	wg.Wait()
+	close(results)
+
+	var failed []string
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.acked == nil {
+		p.acked = map[string]map[string]bool{}
+	}
+	if p.acked[eventID] == nil {
+		p.acked[eventID] = map[string]bool{}
+	}
+	for r := range results {
+		if r.err != nil {
+			failed = append(failed, r.addr+": "+r.err.Error())
+			continue
+		}
+		p.acked[eventID][r.addr] = true
+	}
+	if len(failed) > 0 {
+		sort.Strings(failed)
+		return fmt.Errorf("revocation: %d of %d policy endpoints did not acknowledge: %s", len(failed), len(addrs), strings.Join(failed, "; "))
+	}
+	delete(p.acked, eventID)
+	return nil
+}
+
+// clientFor returns a client that dials addr while keeping host as the HTTP
+// Host and the TLS server name.
+func (p *HTTPPublisher) clientFor(addr, host string) *http.Client {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c, ok := p.clients[addr]; ok {
+		return c
+	}
+	base, ok := p.Client.Transport.(*http.Transport)
+	if !ok || base == nil {
+		base = http.DefaultTransport.(*http.Transport)
+	}
+	tr := base.Clone()
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	tr.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, addr)
+	}
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if tr.TLSClientConfig != nil {
+		tlsCfg = tr.TLSClientConfig.Clone()
+	}
+	tlsCfg.ServerName = host
+	tr.TLSClientConfig = tlsCfg
+	c := &http.Client{Timeout: p.Client.Timeout, Transport: tr}
+	if p.clients == nil {
+		p.clients = map[string]*http.Client{}
+	}
+	p.clients[addr] = c
+	return c
+}
+
+// deliver POSTs the signed body to p.URL with client, retrying transport
+// errors, 408, 429 and 5xx Retries times.
+func (p *HTTPPublisher) deliver(ctx context.Context, client *http.Client, body []byte, sig, eventID string) error {
 	retries := p.Retries
 	if retries < 0 {
 		retries = 0
@@ -112,11 +304,11 @@ func (p *HTTPPublisher) Publish(ctx context.Context, ev Event) error {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(HeaderSignature, sig)
-		req.Header.Set(HeaderEventID, ev.EventID)
+		req.Header.Set(HeaderEventID, eventID)
 		if p.Token != "" {
 			req.Header.Set("Authorization", "Bearer "+p.Token)
 		}
-		resp, err := p.Client.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("revocation: publish attempt %d: %w", attempt+1, err)
 			continue

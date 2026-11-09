@@ -118,27 +118,30 @@ func TestForceRLSCoversEveryPolicyTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var all strings.Builder
-	var force string
+	var all, force strings.Builder
 	for _, m := range ms {
 		all.WriteString(m.SQL)
 		if strings.Contains(m.SQL, "FORCE ROW LEVEL SECURITY") {
-			force = m.SQL
+			force.WriteString(m.SQL)
 		}
 	}
-	if force == "" {
+	if force.Len() == 0 {
 		t.Fatal("no migration forces row-level security")
 	}
 	policyTables := regexp.MustCompile(`CREATE POLICY \w+ ON (\w+)`).FindAllStringSubmatch(all.String(), -1)
 	if len(policyTables) == 0 {
 		t.Fatal("no policies found")
 	}
-	list := regexp.MustCompile(`FOREACH t IN ARRAY ARRAY\[([^\]]+)\]`).FindStringSubmatch(force)
-	if list == nil {
+	lists := regexp.MustCompile(`FOREACH t IN ARRAY ARRAY\[([^\]]+)\]`).FindAllStringSubmatch(force.String(), -1)
+	if lists == nil {
 		t.Fatal("FORCE table list not found")
 	}
+	var forced strings.Builder
+	for _, l := range lists {
+		forced.WriteString(l[1] + ",")
+	}
 	for _, m := range policyTables {
-		if !strings.Contains(list[1], "'"+m[1]+"'") {
+		if !strings.Contains(forced.String(), "'"+m[1]+"'") {
 			t.Errorf("table %s has a policy but RLS is not forced", m[1])
 		}
 	}
@@ -149,9 +152,14 @@ func TestForceRLSCoversEveryPolicyTable(t *testing.T) {
 		"GRANT SELECT, INSERT, DELETE ON nonces TO pki_app",
 		"GRANT SELECT, INSERT, UPDATE ON tenant_policies TO pki_app",
 		"GRANT SELECT, UPDATE ON crl_counter TO pki_app",
+		"GRANT SELECT, INSERT, UPDATE ON revocation_outbox TO pki_app",
+		"REVOKE DELETE, TRUNCATE ON revocation_outbox FROM pki_app",
 	} {
-		if !strings.Contains(force, want) {
+		if !strings.Contains(force.String(), want) {
 			t.Errorf("migration lacks %q", want)
 		}
+	}
+	if !strings.Contains(all.String(), "CREATE TABLE IF NOT EXISTS revocation_outbox") {
+		t.Error("revocation outbox table missing")
 	}
 }

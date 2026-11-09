@@ -90,6 +90,26 @@ type TenantPolicy struct {
 	UpdatedAt  time.Time
 }
 
+// OutboxEvent is a revocation event queued for delivery to the Policy
+// service (the durable revocation outbox, THREAT_MODEL T-26). It is written
+// in the same transaction as the revocation and stays pending until every
+// Policy endpoint acknowledged it.
+type OutboxEvent struct {
+	EventID  string
+	TenantID string
+	// Payload is the JSON event body that is signed and pushed.
+	Payload   []byte
+	CreatedAt time.Time
+	// Attempts counts failed delivery attempts so far.
+	Attempts int
+	// NextAttemptAt is when the event becomes due (again). Claiming an event
+	// pushes it forward by a lease so replicas do not deliver concurrently.
+	NextAttemptAt time.Time
+	LastError     string
+	// DeliveredAt is zero while the event is pending.
+	DeliveredAt time.Time
+}
+
 // Stats are aggregate certificate counts.
 type Stats struct {
 	Total   int
@@ -117,6 +137,22 @@ type Store interface {
 	GetRevocation(ctx context.Context, serial string) (*Revocation, error)
 	// ListRevocations returns all revocations.
 	ListRevocations(ctx context.Context) ([]*Revocation, error)
+
+	// AddRevocationWithEvent records rev and queues ev in the revocation
+	// outbox atomically (both or neither). ErrAlreadyRevoked on a duplicate
+	// serial, ErrAlreadyExists on a duplicate event id.
+	AddRevocationWithEvent(ctx context.Context, rev *Revocation, ev *OutboxEvent) error
+	// ClaimOutbox returns up to limit pending events with NextAttemptAt <= now,
+	// oldest first, after moving their NextAttemptAt to now+lease so another
+	// dispatcher (replica) does not pick them up while they are in flight.
+	ClaimOutbox(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]*OutboxEvent, error)
+	// RecordOutboxAttempt stores a failed attempt: the attempt count, when to
+	// retry and the last error. ErrNotFound for an unknown event.
+	RecordOutboxAttempt(ctx context.Context, eventID string, attempts int, next time.Time, lastErr string) error
+	// AckOutbox marks the event delivered. ErrNotFound for an unknown event.
+	AckOutbox(ctx context.Context, eventID string, at time.Time) error
+	// CountPendingOutbox counts events that are not delivered yet.
+	CountPendingOutbox(ctx context.Context) (int, error)
 
 	// PutNonce stores a nonce; ErrAlreadyExists on duplicate value.
 	PutNonce(ctx context.Context, n *Nonce) error

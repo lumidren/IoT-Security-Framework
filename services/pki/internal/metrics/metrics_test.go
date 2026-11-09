@@ -28,6 +28,9 @@ func TestMetricsHandler(t *testing.T) {
 		`ironmesh_revocation_latency_seconds_bucket`,
 		`ironmesh_revocation_publish_latency_seconds`,
 		`ironmesh_auth_failures_total`,
+		`ironmesh_revocation_outbox_pending 0`,
+		`ironmesh_revocation_publish_attempts_total{result="error"} 0`,
+		`ironmesh_revocation_publish_endpoint_total{result="ok"} 0`,
 		`go_goroutines`,
 	} {
 		if !strings.Contains(out, want) {

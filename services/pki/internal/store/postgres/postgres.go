@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -250,6 +251,110 @@ func (s *Store) ListRevocations(ctx context.Context) ([]*store.Revocation, error
 	return out, rows.Err()
 }
 
+// AddRevocationWithEvent implements store.Store: the revocation and its
+// outbox row commit in one transaction.
+func (s *Store) AddRevocationWithEvent(ctx context.Context, rev *store.Revocation, ev *store.OutboxEvent) error {
+	if rev.Serial == "" {
+		return errors.New("store: serial is required")
+	}
+	if ev == nil || ev.EventID == "" {
+		return errors.New("store: outbox event id is required")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `INSERT INTO revocations (serial, device_id, tenant_id, issuer_cn, not_after, reason, revoked_at, revoked_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		rev.Serial, rev.DeviceID, rev.TenantID, rev.IssuerCN, rev.NotAfter, rev.Reason, rev.RevokedAt, rev.RevokedBy)
+	if isUniqueViolation(err) {
+		return store.ErrAlreadyRevoked
+	}
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO revocation_outbox (event_id, tenant_id, payload, created_at, attempts, next_attempt_at, last_error)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		ev.EventID, ev.TenantID, ev.Payload, ev.CreatedAt, ev.Attempts, ev.NextAttemptAt, ev.LastError)
+	if isUniqueViolation(err) {
+		return store.ErrAlreadyExists
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ClaimOutbox implements store.Store. FOR UPDATE SKIP LOCKED lets several
+// replicas claim disjoint batches.
+func (s *Store) ClaimOutbox(ctx context.Context, now time.Time, lease time.Duration, limit int) ([]*store.OutboxEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `UPDATE revocation_outbox o SET next_attempt_at = $2
+        FROM (SELECT event_id FROM revocation_outbox
+              WHERE delivered_at IS NULL AND next_attempt_at <= $1
+              ORDER BY created_at, event_id LIMIT $3 FOR UPDATE SKIP LOCKED) due
+        WHERE o.event_id = due.event_id
+        RETURNING o.event_id, o.tenant_id, o.payload, o.created_at, o.attempts, o.next_attempt_at, o.last_error`,
+		now, now.Add(lease), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*store.OutboxEvent{}
+	for rows.Next() {
+		var ev store.OutboxEvent
+		if err := rows.Scan(&ev.EventID, &ev.TenantID, &ev.Payload, &ev.CreatedAt, &ev.Attempts, &ev.NextAttemptAt, &ev.LastError); err != nil {
+			return nil, err
+		}
+		out = append(out, &ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].EventID < out[j].EventID
+	})
+	return out, nil
+}
+
+// RecordOutboxAttempt implements store.Store.
+func (s *Store) RecordOutboxAttempt(ctx context.Context, eventID string, attempts int, next time.Time, lastErr string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE revocation_outbox SET attempts = $2, next_attempt_at = $3, last_error = $4 WHERE event_id = $1`,
+		eventID, attempts, next, lastErr)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// AckOutbox implements store.Store.
+func (s *Store) AckOutbox(ctx context.Context, eventID string, at time.Time) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE revocation_outbox SET delivered_at = COALESCE(delivered_at, $2) WHERE event_id = $1`, eventID, at)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+	return nil
+}
+
+// CountPendingOutbox implements store.Store.
+func (s *Store) CountPendingOutbox(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM revocation_outbox WHERE delivered_at IS NULL`).Scan(&n)
+	return n, err
+}
+
 // PutNonce implements store.Store.
 func (s *Store) PutNonce(ctx context.Context, n *store.Nonce) error {
 	if n.Value == "" {
@@ -338,7 +443,7 @@ func (s *Store) PutTenantPolicy(ctx context.Context, p *store.TenantPolicy) erro
 
 // Truncate removes all rows; used by integration tests.
 func (s *Store) Truncate(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `TRUNCATE certificates, revocations, nonces, tenant_policies; UPDATE crl_counter SET number = 0 WHERE id = 1`)
+	_, err := s.pool.Exec(ctx, `TRUNCATE certificates, revocations, nonces, tenant_policies, revocation_outbox; UPDATE crl_counter SET number = 0 WHERE id = 1`)
 	return err
 }
 

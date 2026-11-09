@@ -16,6 +16,7 @@ type Memory struct {
 	revocations map[string]*Revocation
 	nonces      map[string]*Nonce
 	policies    map[string]*TenantPolicy
+	outbox      map[string]*OutboxEvent
 	crlNumber   int64
 	closed      bool
 }
@@ -27,6 +28,7 @@ func NewMemory() *Memory {
 		revocations: map[string]*Revocation{},
 		nonces:      map[string]*Nonce{},
 		policies:    map[string]*TenantPolicy{},
+		outbox:      map[string]*OutboxEvent{},
 	}
 }
 
@@ -177,6 +179,119 @@ func (m *Memory) ListRevocations(_ context.Context) ([]*Revocation, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Serial < out[j].Serial })
 	return out, nil
+}
+
+// AddRevocationWithEvent implements Store.
+func (m *Memory) AddRevocationWithEvent(_ context.Context, rev *Revocation, ev *OutboxEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.checkOpen(); err != nil {
+		return err
+	}
+	if rev.Serial == "" {
+		return errors.New("store: serial is required")
+	}
+	if ev == nil || ev.EventID == "" {
+		return errors.New("store: outbox event id is required")
+	}
+	if _, ok := m.revocations[rev.Serial]; ok {
+		return ErrAlreadyRevoked
+	}
+	if _, ok := m.outbox[ev.EventID]; ok {
+		return ErrAlreadyExists
+	}
+	r := *rev
+	m.revocations[rev.Serial] = &r
+	m.outbox[ev.EventID] = copyOutbox(ev)
+	return nil
+}
+
+// ClaimOutbox implements Store.
+func (m *Memory) ClaimOutbox(_ context.Context, now time.Time, lease time.Duration, limit int) ([]*OutboxEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.checkOpen(); err != nil {
+		return nil, err
+	}
+	var due []*OutboxEvent
+	for _, ev := range m.outbox {
+		if ev.DeliveredAt.IsZero() && !ev.NextAttemptAt.After(now) {
+			due = append(due, ev)
+		}
+	}
+	sortOutbox(due)
+	if limit > 0 && len(due) > limit {
+		due = due[:limit]
+	}
+	out := make([]*OutboxEvent, 0, len(due))
+	for _, ev := range due {
+		ev.NextAttemptAt = now.Add(lease)
+		out = append(out, copyOutbox(ev))
+	}
+	return out, nil
+}
+
+// RecordOutboxAttempt implements Store.
+func (m *Memory) RecordOutboxAttempt(_ context.Context, eventID string, attempts int, next time.Time, lastErr string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.checkOpen(); err != nil {
+		return err
+	}
+	ev, ok := m.outbox[eventID]
+	if !ok {
+		return ErrNotFound
+	}
+	ev.Attempts, ev.NextAttemptAt, ev.LastError = attempts, next, lastErr
+	return nil
+}
+
+// AckOutbox implements Store.
+func (m *Memory) AckOutbox(_ context.Context, eventID string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.checkOpen(); err != nil {
+		return err
+	}
+	ev, ok := m.outbox[eventID]
+	if !ok {
+		return ErrNotFound
+	}
+	if ev.DeliveredAt.IsZero() {
+		ev.DeliveredAt = at
+	}
+	return nil
+}
+
+// CountPendingOutbox implements Store.
+func (m *Memory) CountPendingOutbox(context.Context) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if err := m.checkOpen(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, ev := range m.outbox {
+		if ev.DeliveredAt.IsZero() {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func sortOutbox(list []*OutboxEvent) {
+	sort.Slice(list, func(i, j int) bool {
+		if !list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].CreatedAt.Before(list[j].CreatedAt)
+		}
+		return list[i].EventID < list[j].EventID
+	})
+}
+
+func copyOutbox(ev *OutboxEvent) *OutboxEvent {
+	c := *ev
+	c.Payload = append([]byte(nil), ev.Payload...)
+	return &c
 }
 
 // PutNonce implements Store.

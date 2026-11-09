@@ -23,6 +23,7 @@ const tenantA = "7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11"
 func Run(t *testing.T, newStore Factory) {
 	t.Run("Certificates", func(t *testing.T) { testCertificates(t, newStore(t)) })
 	t.Run("Revocations", func(t *testing.T) { testRevocations(t, newStore(t)) })
+	t.Run("Outbox", func(t *testing.T) { testOutbox(t, newStore(t)) })
 	t.Run("Nonces", func(t *testing.T) { testNonces(t, newStore(t)) })
 	t.Run("CRLNumber", func(t *testing.T) { testCRLNumber(t, newStore(t)) })
 	t.Run("TenantPolicy", func(t *testing.T) { testTenantPolicy(t, newStore(t)) })
@@ -177,6 +178,108 @@ func testRevocations(t *testing.T, s store.Store) {
 	list, err := s.ListRevocations(ctx)
 	if err != nil || len(list) != 2 {
 		t.Fatalf("ListRevocations = %d, %v", len(list), err)
+	}
+}
+
+func testOutbox(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	rev := func(serial string) *store.Revocation {
+		return &store.Revocation{Serial: serial, DeviceID: "dev-8f3a1c2b9d4e5f60", TenantID: tenantA, IssuerCN: "IronMesh Device CA",
+			NotAfter: now.Add(time.Hour), Reason: 4, RevokedAt: now, RevokedBy: "test"}
+	}
+	ev := func(id string, created time.Time) *store.OutboxEvent {
+		return &store.OutboxEvent{EventID: id, TenantID: tenantA, Payload: []byte(`{"event_id":"` + id + `"}`), CreatedAt: created, NextAttemptAt: created}
+	}
+	if n, err := s.CountPendingOutbox(ctx); err != nil || n != 0 {
+		t.Fatalf("empty outbox count = %d, %v", n, err)
+	}
+	e1 := ev("e1", now.Add(-2*time.Second))
+	if err := s.AddRevocationWithEvent(ctx, rev("00000000000000000000000000000c01"), e1); err != nil {
+		t.Fatalf("AddRevocationWithEvent: %v", err)
+	}
+	if _, err := s.GetRevocation(ctx, "00000000000000000000000000000c01"); err != nil {
+		t.Fatalf("revocation not stored with its event: %v", err)
+	}
+	// Duplicate serial: nothing is written (the event id stays unused).
+	if err := s.AddRevocationWithEvent(ctx, rev("00000000000000000000000000000c01"), ev("e-dup", now)); !errors.Is(err, store.ErrAlreadyRevoked) {
+		t.Fatalf("duplicate serial: got %v want ErrAlreadyRevoked", err)
+	}
+	// Duplicate event id: the revocation is rolled back too.
+	if err := s.AddRevocationWithEvent(ctx, rev("00000000000000000000000000000c02"), ev("e1", now)); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("duplicate event: got %v want ErrAlreadyExists", err)
+	}
+	if _, err := s.GetRevocation(ctx, "00000000000000000000000000000c02"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("revocation committed without its event: %v", err)
+	}
+	if err := s.AddRevocationWithEvent(ctx, &store.Revocation{}, ev("e9", now)); err == nil {
+		t.Fatal("empty serial must be rejected")
+	}
+	if err := s.AddRevocationWithEvent(ctx, rev("00000000000000000000000000000c09"), &store.OutboxEvent{}); err == nil {
+		t.Fatal("empty event id must be rejected")
+	}
+	e2 := ev("e2", now.Add(-time.Second))
+	if err := s.AddRevocationWithEvent(ctx, rev("00000000000000000000000000000c03"), e2); err != nil {
+		t.Fatal(err)
+	}
+	future := ev("e3", now)
+	future.NextAttemptAt = now.Add(time.Hour)
+	if err := s.AddRevocationWithEvent(ctx, rev("00000000000000000000000000000c04"), future); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.CountPendingOutbox(ctx); n != 3 {
+		t.Fatalf("pending = %d want 3", n)
+	}
+
+	// Claim: due rows only, oldest first, limit honoured, leased.
+	got, err := s.ClaimOutbox(ctx, now, 30*time.Second, 1)
+	if err != nil || len(got) != 1 || got[0].EventID != "e1" || string(got[0].Payload) != string(e1.Payload) || got[0].TenantID != tenantA {
+		t.Fatalf("ClaimOutbox(limit 1) = %+v, %v", got, err)
+	}
+	got, err = s.ClaimOutbox(ctx, now, 30*time.Second, 10)
+	if err != nil || len(got) != 1 || got[0].EventID != "e2" || !got[0].NextAttemptAt.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("second claim must skip the leased row: %+v, %v", got, err)
+	}
+	if got, _ := s.ClaimOutbox(ctx, now.Add(10*time.Second), time.Second, 10); len(got) != 0 {
+		t.Fatalf("leased rows claimed again before the lease ended: %d", len(got))
+	}
+	// Lease expiry makes them due again (crash recovery).
+	got, err = s.ClaimOutbox(ctx, now.Add(31*time.Second), time.Second, 0)
+	if err != nil || len(got) != 2 || got[0].EventID != "e1" || got[1].EventID != "e2" {
+		t.Fatalf("claim after lease = %+v, %v", got, err)
+	}
+
+	// Failed attempt is recorded; ack removes the row from the pending set.
+	if err := s.RecordOutboxAttempt(ctx, "e1", 2, now.Add(time.Minute), "policy-0: 503"); err != nil {
+		t.Fatalf("RecordOutboxAttempt: %v", err)
+	}
+	got, _ = s.ClaimOutbox(ctx, now.Add(2*time.Minute), time.Second, 10)
+	var e1Again *store.OutboxEvent
+	for _, g := range got {
+		if g.EventID == "e1" {
+			e1Again = g
+		}
+	}
+	if e1Again == nil || e1Again.Attempts != 2 || e1Again.LastError != "policy-0: 503" {
+		t.Fatalf("attempt not recorded: %+v", got)
+	}
+	if err := s.AckOutbox(ctx, "e1", now); err != nil {
+		t.Fatalf("AckOutbox: %v", err)
+	}
+	if err := s.AckOutbox(ctx, "e1", now.Add(time.Hour)); err != nil {
+		t.Fatalf("second ack must be idempotent: %v", err)
+	}
+	if n, _ := s.CountPendingOutbox(ctx); n != 2 {
+		t.Fatalf("pending after ack = %d want 2", n)
+	}
+	if got, _ := s.ClaimOutbox(ctx, now.Add(24*time.Hour), time.Second, 10); len(got) != 2 {
+		t.Fatalf("delivered row claimed: %+v", got)
+	}
+	if err := s.RecordOutboxAttempt(ctx, "nope", 1, now, ""); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown attempt: %v", err)
+	}
+	if err := s.AckOutbox(ctx, "nope", now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown ack: %v", err)
 	}
 }
 

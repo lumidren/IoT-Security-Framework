@@ -73,7 +73,7 @@ func TestRevokeFlow(t *testing.T) {
 	if !ev.SignatureValid || !ev.AuthValid {
 		t.Fatalf("event auth: sig=%v auth=%v", ev.SignatureValid, ev.AuthValid)
 	}
-	if ev.Event.Serial != serial || ev.Event.DeviceID != dev.ID || ev.Event.TenantID != testutil.Tenant || ev.Event.Reason != "keyCompromise" || ev.Event.RevokedAt.IsZero() {
+	if ev.Event.Serial != serial || ev.Event.DeviceID != dev.ID || ev.Event.TenantID != testutil.Tenant || ev.Event.Reason != "keyCompromise" || ev.Event.RevokedAt.IsZero() || ev.Event.DeviceDeny || res.DeviceDeny {
 		t.Fatalf("event %+v", ev.Event)
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(ev.Event.EventID) || ev.Event.EventID != res.EventID {
@@ -81,6 +81,12 @@ func TestRevokeFlow(t *testing.T) {
 	}
 	if promtest.CollectAndCount(p.Metrics.RevocationLatency) != 1 || promtest.ToFloat64(p.Metrics.Revocations.WithLabelValues("keyCompromise")) != 1 {
 		t.Fatal("metrics not recorded")
+	}
+	if promtest.ToFloat64(p.Metrics.RevocationPublishAttempts.WithLabelValues("ok")) != 1 || promtest.ToFloat64(p.Metrics.RevocationOutboxPending) != 0 {
+		t.Fatal("outbox metrics not recorded")
+	}
+	if n, _ := p.Store.CountPendingOutbox(context.Background()); n != 0 {
+		t.Fatalf("delivered event still pending: %d", n)
 	}
 
 	// Client errors.
@@ -113,11 +119,14 @@ func TestRevokePublishFailureAndHooks(t *testing.T) {
 	if res.Published || res.PublishError == "" || res.ReasonName != "unspecified" {
 		t.Fatalf("result %+v", res)
 	}
-	if policy.Requests() != 4 {
-		t.Fatalf("requests %d want 4 (1 + 3 retries)", policy.Requests())
+	if policy.Requests() != 1 {
+		t.Fatalf("requests %d want 1 (retries belong to the outbox dispatcher)", policy.Requests())
 	}
-	if promtest.ToFloat64(p.Metrics.RevocationPublishFailures) != 1 {
+	if promtest.ToFloat64(p.Metrics.RevocationPublishFailures) != 1 || promtest.ToFloat64(p.Metrics.RevocationPublishAttempts.WithLabelValues("error")) != 1 {
 		t.Fatal("publish failure metric")
+	}
+	if n, _ := p.Store.CountPendingOutbox(context.Background()); n != 1 || promtest.ToFloat64(p.Metrics.RevocationOutboxPending) != 1 {
+		t.Fatalf("undelivered event must stay pending in the outbox: %d", n)
 	}
 	// The revocation itself is durable even though publishing failed.
 	if _, err := p.Store.GetRevocation(context.Background(), ca.FormatSerial(dev.Cert.SerialNumber)); err != nil {
@@ -162,6 +171,11 @@ func TestRevokeDevice(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("revoked %d want 2 (current certs only)", len(results))
 	}
+	for _, r := range results {
+		if !r.DeviceDeny || !r.Published {
+			t.Fatalf("revoke-all must publish device_deny events: %+v", r)
+		}
+	}
 	if _, err := p.Store.GetRevocation(ctx, expired.Serial); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("expired certificate should not be revoked")
 	}
@@ -181,9 +195,20 @@ func TestHTTPPublisher(t *testing.T) {
 	t.Parallel()
 	ev := revocation.Event{EventID: "e1", Serial: "01", DeviceID: "dev-8f3a1c2b9d4e5f60", TenantID: testutil.Tenant, Reason: "keyCompromise", RevokedAt: time.Now()}
 
+	t.Run("single attempt by default", func(t *testing.T) {
+		policy := testutil.NewFakePolicy(t, 1)
+		pub, _ := revocation.NewHTTPPublisher(policy.URL, policy.Token, policy.HMACKey, nil)
+		if pub.Retries != revocation.DefaultRetries || revocation.DefaultRetries != 0 {
+			t.Fatalf("default retries %d", pub.Retries)
+		}
+		if err := pub.Publish(context.Background(), ev); err == nil || policy.Requests() != 1 {
+			t.Fatalf("err=%v requests=%d", err, policy.Requests())
+		}
+	})
 	t.Run("retries on 500 then succeeds", func(t *testing.T) {
 		policy := testutil.NewFakePolicy(t, 2)
 		pub, _ := revocation.NewHTTPPublisher(policy.URL+"/", policy.Token, policy.HMACKey, nil)
+		pub.Retries = 2
 		var slept []time.Duration
 		pub.Sleep = func(d time.Duration) { slept = append(slept, d) }
 		if err := pub.Publish(context.Background(), ev); err != nil {
@@ -221,6 +246,7 @@ func TestHTTPPublisher(t *testing.T) {
 		defer srv.Close()
 		pub, _ := revocation.NewHTTPPublisher(srv.URL, "", []byte("k"), nil)
 		pub.Sleep = func(time.Duration) {}
+		pub.Retries = 1
 		if err := pub.Publish(context.Background(), ev); err != nil || hits.Load() != 2 {
 			t.Fatalf("err=%v hits=%d", err, hits.Load())
 		}
@@ -238,6 +264,7 @@ func TestHTTPPublisher(t *testing.T) {
 	t.Run("context cancelled", func(t *testing.T) {
 		policy := testutil.NewFakePolicy(t, 5)
 		pub, _ := revocation.NewHTTPPublisher(policy.URL, "", []byte("k"), nil)
+		pub.Retries = 3
 		ctx, cancel := context.WithCancel(context.Background())
 		pub.Sleep = func(time.Duration) { cancel() }
 		if err := pub.Publish(ctx, ev); !errors.Is(err, context.Canceled) {

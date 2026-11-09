@@ -1,5 +1,5 @@
 // Package metrics defines the Prometheus metrics of the PKI service (names per
-// DESIGN_CONTRACT §9, prefix ironmesh_). Metrics are registered on a private
+// DESIGN_CONTRACT آ§9, prefix ironmesh_). Metrics are registered on a private
 // registry so tests can create many instances without collisions.
 package metrics
 
@@ -23,8 +23,21 @@ type Metrics struct {
 	// RevocationPublishLatency is ironmesh_revocation_publish_latency_seconds:
 	// the HTTP publish call alone (including retries).
 	RevocationPublishLatency prometheus.Histogram
-	// RevocationPublishFailures counts events that could not be delivered.
+	// RevocationPublishFailures counts failed delivery attempts of revocation
+	// events (each attempt is retried from the outbox until acknowledged).
 	RevocationPublishFailures prometheus.Counter
+	// RevocationOutboxPending is ironmesh_revocation_outbox_pending: revocation
+	// events written to the outbox but not yet acknowledged by every Policy
+	// endpoint.
+	RevocationOutboxPending prometheus.Gauge
+	// RevocationPublishAttempts is
+	// ironmesh_revocation_publish_attempts_total{result="ok|error"}: delivery
+	// attempts of outbox events (one attempt covers every fan-out endpoint).
+	RevocationPublishAttempts *prometheus.CounterVec
+	// RevocationPublishEndpoints is
+	// ironmesh_revocation_publish_endpoint_total{result="ok|error"}: deliveries
+	// to individual Policy endpoints (one per resolved address with fan-out).
+	RevocationPublishEndpoints *prometheus.CounterVec
 	// Revocations counts revocations by reason.
 	Revocations *prometheus.CounterVec
 	// ESTRequests is ironmesh_est_requests_total{op,code}.
@@ -55,7 +68,7 @@ func New() *Metrics {
 		}, []string{"window"}),
 		RevocationLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "ironmesh_revocation_latency_seconds",
-			Help:    "Seconds from revoke request to Policy service acknowledgement.",
+			Help:    "Seconds from revoke request to the Policy service acknowledging the event (every endpoint, retries included).",
 			Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10},
 		}),
 		RevocationPublishLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -65,8 +78,20 @@ func New() *Metrics {
 		}),
 		RevocationPublishFailures: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "ironmesh_revocation_publish_failures_total",
-			Help: "Revocation events that could not be delivered to the Policy service.",
+			Help: "Failed attempts to deliver a revocation event to the Policy service.",
 		}),
+		RevocationOutboxPending: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "ironmesh_revocation_outbox_pending",
+			Help: "Revocation events in the outbox that are not acknowledged by every Policy endpoint yet.",
+		}),
+		RevocationPublishAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ironmesh_revocation_publish_attempts_total",
+			Help: "Delivery attempts of revocation outbox events, by result.",
+		}, []string{"result"}),
+		RevocationPublishEndpoints: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ironmesh_revocation_publish_endpoint_total",
+			Help: "Revocation event deliveries to individual Policy endpoints, by result.",
+		}, []string{"result"}),
 		Revocations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ironmesh_revocations_total",
 			Help: "Certificates revoked, by reason.",
@@ -98,11 +123,16 @@ func New() *Metrics {
 	}
 	reg.MustRegister(
 		m.CertExpiring, m.RevocationLatency, m.RevocationPublishLatency, m.RevocationPublishFailures, m.Revocations,
+		m.RevocationOutboxPending, m.RevocationPublishAttempts, m.RevocationPublishEndpoints,
 		m.ESTRequests, m.CertsIssued, m.AuthFailures, m.OCSPRequests, m.CRLGenerations, m.AttestationFailures,
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	for _, w := range Windows {
 		m.CertExpiring.WithLabelValues(w).Set(0)
+	}
+	for _, r := range []string{"ok", "error"} {
+		m.RevocationPublishAttempts.WithLabelValues(r)
+		m.RevocationPublishEndpoints.WithLabelValues(r)
 	}
 	return m
 }
