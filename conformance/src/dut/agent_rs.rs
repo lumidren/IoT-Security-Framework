@@ -98,17 +98,23 @@ impl AgentRsLauncher {
             "telemetry",
             vec![("interval_s", V::Integer(0)), ("auth_log", V::String(p("auth.log"))), ("fw_image", V::String(p("factory-image.bin")))],
         );
-        t(
-            "ota",
-            vec![
-                ("slots_dir", V::String(p("slots"))),
-                ("boot_control", V::String("file".into())),
-                ("product", V::String(PRODUCT.into())),
-                ("health_timeout_s", V::Integer(HEALTH_TIMEOUT_S as i64)),
-                ("max_boot_attempts", V::Integer(3)),
-                ("reboot_command", V::Array(Vec::new())),
-            ],
-        );
+        // T-60 download allowlist: artifacts only from the cloud's artifact host (`ota.base_url` and
+        // an explicit `ota.allowed_hosts`; an empty list would mean "the EST and base_url hosts").
+        let mut ota = vec![
+            ("slots_dir", V::String(p("slots"))),
+            ("boot_control", V::String("file".into())),
+            ("product", V::String(PRODUCT.into())),
+            ("health_timeout_s", V::Integer(HEALTH_TIMEOUT_S as i64)),
+            ("max_boot_attempts", V::Integer(3)),
+            ("reboot_command", V::Array(Vec::new())),
+        ];
+        if let Some(base) = cloud.artifact_base_url() {
+            ota.push(("base_url", V::String(base)));
+        }
+        if let Some(host) = cloud.artifact_host() {
+            ota.push(("allowed_hosts", V::Array(vec![V::String(host)])));
+        }
+        t("ota", ota);
         t(
             "agent",
             vec![

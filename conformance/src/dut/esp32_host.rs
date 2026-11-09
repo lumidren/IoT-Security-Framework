@@ -79,11 +79,16 @@ impl Esp32HostLauncher {
             .arg(dir.join("bootstrap.pem"))
             .arg("--bootstrap-key")
             .arg(dir.join("bootstrap.key.hex"))
-            .args(["--device-id", &device_id, "--tenant-id", &cloud.tenant_id, "--bundle-pubkey", &ep.bundle_pubkey_hex])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(log))
-            .kill_on_drop(true);
+            .args(["--device-id", &device_id, "--tenant-id", &cloud.tenant_id, "--bundle-pubkey", &ep.bundle_pubkey_hex]);
+        // T-29: the factory EST pins (Services CA SPKI) explicitly, as the factory writes them to NVS.
+        for pin in &ep.est_pins_hex {
+            c.arg("--est-pin").arg(pin);
+        }
+        // T-60: artifacts only from the bundle's broker host or the cloud's artifact host.
+        if let Some(host) = cloud.artifact_host() {
+            c.arg("--ota-host").arg(host);
+        }
+        c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::from(log)).kill_on_drop(true);
         let mut child = c.spawn().context("spawn im-dut-shim")?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
