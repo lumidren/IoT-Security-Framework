@@ -3,7 +3,7 @@ module github.com/lumidren/IoT-Security-Framework/services/policy
 go 1.27
 
 require (
-	github.com/open-policy-agent/opa v1.22.0
+	github.com/open-policy-agent/opa v1.22.2
 	github.com/prometheus/client_golang v1.25.0
 )
 
