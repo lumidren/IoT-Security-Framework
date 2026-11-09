@@ -190,3 +190,14 @@ TENANT_TABLES: Final = (
     "idempotency_keys",
     "device_seq",
 )
+
+pki_key_sync = Table(  # migrations/versions/0002_pki_key_sync.py
+    "pki_key_sync",
+    metadata,
+    Column("tenant_id", UUID(as_uuid=True), primary_key=True),
+    Column("digest", Text),
+    Column("attempts", Integer, nullable=False),
+    Column("next_attempt_at", TZ, nullable=False),
+    Column("last_error", Text),
+    Column("synced_at", TZ),
+)

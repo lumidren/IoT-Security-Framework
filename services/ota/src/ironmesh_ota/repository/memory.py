@@ -42,6 +42,15 @@ class _Partition:
     seqs: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass
+class KeySyncRow:
+    next_attempt_at: datetime
+    digest: str | None = None
+    attempts: int = 0
+    last_error: str | None = None
+    synced_at: datetime | None = None
+
+
 class MemoryTenantRepository:
     def __init__(self, db: MemoryDatabase, tenant_id: UUID, part: _Partition) -> None:
         self.tenant_id = tenant_id
@@ -62,6 +71,9 @@ class MemoryTenantRepository:
                 raise RepositoryConflict("firmware version or version_code already exists")
         self._p.firmware[firmware.id] = copy.deepcopy(firmware)
         self._db.hash_index.add((firmware.product, firmware.sha256.hex()))
+        self._db.key_sync.setdefault(
+            self.tenant_id, KeySyncRow(next_attempt_at=firmware.created_at)
+        )
 
     async def get_firmware(self, firmware_id: UUID) -> Firmware | None:
         fw = self._p.firmware.get(firmware_id)
@@ -200,7 +212,7 @@ class MemoryTenantRepository:
         stage_index: int | None = None,
         states: Collection[DeviceState] | None = None,
         notified_before: datetime | None = None,
-        refresh_before: datetime | None = None,
+        undelivered_before: datetime | None = None,
     ) -> list[CampaignDevice]:
         out: list[CampaignDevice] = []
         for dev in self._p.devices.get(campaign_id, {}).values():
@@ -212,13 +224,22 @@ class MemoryTenantRepository:
                 dev.notified_at is None or dev.notified_at >= notified_before
             ):
                 continue
-            if refresh_before is not None and (
-                dev.last_notified_at is not None and dev.last_notified_at >= refresh_before
+            if undelivered_before is not None and (
+                dev.last_notified_at is not None or dev.updated_at >= undelivered_before
             ):
                 continue
             out.append(replace(dev))
         out.sort(key=lambda d: d.rank)
         return out
+
+    async def mark_notified(
+        self, campaign_id: UUID, device_ids: Sequence[str], at: datetime
+    ) -> None:
+        devices = self._p.devices.get(campaign_id, {})
+        for device_id in device_ids:
+            dev = devices.get(device_id)
+            if dev is not None:
+                devices[device_id] = replace(dev, last_notified_at=at)
 
     async def state_histogram(self, campaign_id: UUID) -> dict[int, dict[DeviceState, int]]:
         hist: dict[int, dict[DeviceState, int]] = {}
@@ -269,6 +290,7 @@ class MemoryDatabase:
         self.partitions: dict[UUID, _Partition] = {}
         self.schedule: dict[UUID, UUID] = {}
         self.hash_index: set[tuple[str, str]] = set()
+        self.key_sync: dict[UUID, KeySyncRow] = {}
         self._lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -278,12 +300,14 @@ class MemoryDatabase:
             snapshot = copy.deepcopy(part)
             schedule = dict(self.schedule)
             hashes = set(self.hash_index)
+            key_sync = copy.deepcopy(self.key_sync)
             try:
                 yield MemoryTenantRepository(self, tenant_id, part)
             except BaseException:
                 self.partitions[tenant_id] = snapshot
                 self.schedule = schedule
                 self.hash_index = hashes
+                self.key_sync = key_sync
                 raise
 
     async def due_campaigns(self) -> list[ScheduledCampaign]:
@@ -291,6 +315,36 @@ class MemoryDatabase:
 
     async def known_hashes(self, product: str | None) -> list[str]:
         return sorted({h for p, h in self.hash_index if product is None or p == product})
+
+    async def request_key_sync_all(self, now: datetime) -> int:
+        for row in self.key_sync.values():
+            row.digest, row.attempts, row.next_attempt_at = None, 0, now
+        return len(self.key_sync)
+
+    async def due_key_syncs(self, digest: str, now: datetime, limit: int) -> list[UUID]:
+        due = [
+            (row.next_attempt_at, tenant)
+            for tenant, row in self.key_sync.items()
+            if row.digest != digest and row.next_attempt_at <= now
+        ]
+        return [tenant for _, tenant in sorted(due, key=lambda x: (x[0], str(x[1])))[:limit]]
+
+    async def finish_key_sync(
+        self,
+        tenant_id: UUID,
+        *,
+        digest: str,
+        now: datetime,
+        error: str | None = None,
+        retry_at: datetime | None = None,
+    ) -> None:
+        row = self.key_sync.setdefault(tenant_id, KeySyncRow(next_attempt_at=now))
+        if error is None:
+            row.digest, row.attempts, row.last_error, row.synced_at = digest, 0, None, now
+        else:
+            row.attempts += 1
+            row.last_error = error
+            row.next_attempt_at = retry_at or now
 
     async def ping(self) -> bool:
         return True

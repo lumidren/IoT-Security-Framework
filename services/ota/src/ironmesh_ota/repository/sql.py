@@ -16,7 +16,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, bindparam, delete, func, or_, select, text, tuple_, update
+from sqlalchemy import Text, and_, any_, bindparam, delete, func, select, text, tuple_, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
@@ -248,6 +249,11 @@ class SqlTenantRepository:
         await self._c.execute(
             pg_insert(t.firmware_hash_index)
             .values(product=firmware.product, sha256_hex=firmware.sha256.hex())
+            .on_conflict_do_nothing()
+        )
+        await self._c.execute(
+            pg_insert(t.pki_key_sync)
+            .values(tenant_id=self.tenant_id, attempts=0, next_attempt_at=firmware.created_at)
             .on_conflict_do_nothing()
         )
 
@@ -511,7 +517,7 @@ class SqlTenantRepository:
         stage_index: int | None = None,
         states: Collection[DeviceState] | None = None,
         notified_before: datetime | None = None,
-        refresh_before: datetime | None = None,
+        undelivered_before: datetime | None = None,
     ) -> list[CampaignDevice]:
         cd = t.campaign_devices
         conds = [cd.c.campaign_id == campaign_id]
@@ -521,12 +527,26 @@ class SqlTenantRepository:
             conds.append(cd.c.state.in_([s.value for s in states]))
         if notified_before is not None:
             conds.append(cd.c.notified_at < notified_before)
-        if refresh_before is not None:
-            conds.append(
-                or_(cd.c.last_notified_at.is_(None), cd.c.last_notified_at < refresh_before)
-            )
+        if undelivered_before is not None:
+            conds.append(cd.c.last_notified_at.is_(None))
+            conds.append(cd.c.updated_at < undelivered_before)
         q = select(cd).where(and_(*conds)).order_by(cd.c.rank)
         return [_device(r) for r in (await self._c.execute(q)).mappings()]
+
+    async def mark_notified(
+        self, campaign_id: UUID, device_ids: Sequence[str], at: datetime
+    ) -> None:
+        if not device_ids:
+            return
+        cd = t.campaign_devices
+        await self._c.execute(
+            update(cd)
+            .where(
+                cd.c.campaign_id == campaign_id,
+                cd.c.device_id == any_(bindparam("ids", list(device_ids), ARRAY(Text))),
+            )
+            .values(last_notified_at=at)
+        )
 
     async def state_histogram(self, campaign_id: UUID) -> dict[int, dict[DeviceState, int]]:
         cd = t.campaign_devices
@@ -652,6 +672,51 @@ class SqlDatabase:
             q = q.where(t.firmware_hash_index.c.product == product)
         async with self.engine.connect() as conn:
             return sorted(r[0] for r in await conn.execute(q))
+
+    async def request_key_sync_all(self, now: datetime) -> int:
+        k = t.pki_key_sync
+        async with self.engine.begin() as conn:
+            result = await conn.execute(
+                update(k).values(digest=None, attempts=0, next_attempt_at=now)
+            )
+            return int(result.rowcount)
+
+    async def due_key_syncs(self, digest: str, now: datetime, limit: int) -> list[UUID]:
+        k = t.pki_key_sync
+        q = (
+            select(k.c.tenant_id)
+            .where(k.c.digest.is_distinct_from(digest), k.c.next_attempt_at <= now)
+            .order_by(k.c.next_attempt_at, k.c.tenant_id)
+            .limit(limit)
+        )
+        async with self.engine.connect() as conn:
+            return [r[0] for r in await conn.execute(q)]
+
+    async def finish_key_sync(
+        self,
+        tenant_id: UUID,
+        *,
+        digest: str,
+        now: datetime,
+        error: str | None = None,
+        retry_at: datetime | None = None,
+    ) -> None:
+        k = t.pki_key_sync
+        if error is None:
+            values: dict[str, Any] = {
+                "digest": digest,
+                "attempts": 0,
+                "last_error": None,
+                "synced_at": now,
+            }
+        else:
+            values = {
+                "attempts": k.c.attempts + 1,
+                "last_error": error[:1000],
+                "next_attempt_at": retry_at or now,
+            }
+        async with self.engine.begin() as conn:
+            await conn.execute(update(k).where(k.c.tenant_id == tenant_id).values(**values))
 
     async def ping(self) -> bool:
         try:

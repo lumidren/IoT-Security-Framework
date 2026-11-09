@@ -5,9 +5,10 @@ All tenant data is accessed through a :class:`TenantRepository` obtained from
 implementation enforces the scope with row-level security (``SET LOCAL ironmesh.tenant_id``);
 the in-memory fake enforces it by partitioning its storage per tenant.
 
-The only cross-tenant reads are :meth:`Database.due_campaigns` (campaign ids the rollout
-controller must drive) and :meth:`Database.known_hashes` (signed image hashes for the anomaly
-engine); both read tables that carry identifiers only, never tenant business data.
+The only cross-tenant operations are :meth:`Database.due_campaigns` (campaign ids the rollout
+controller must drive), :meth:`Database.known_hashes` (signed image hashes for the anomaly
+engine) and the firmware-key sync outbox (tenant ids whose PKI firmware keys must be pushed);
+all of them use tables that carry identifiers only, never tenant business data.
 """
 
 from __future__ import annotations
@@ -103,9 +104,15 @@ class TenantRepository(Protocol):
         stage_index: int | None = None,
         states: Collection[DeviceState] | None = None,
         notified_before: datetime | None = None,
-        refresh_before: datetime | None = None,
+        undelivered_before: datetime | None = None,
     ) -> list[CampaignDevice]:
-        """Filter devices; ``refresh_before`` matches ``last_notified_at`` null or older."""
+        """Filter devices; ``undelivered_before`` matches notifies the registry has not accepted
+        (``last_notified_at`` null) that were queued (``updated_at``) before that time."""
+
+    async def mark_notified(
+        self, campaign_id: UUID, device_ids: Sequence[str], at: datetime
+    ) -> None:
+        """Record that the registry accepted the OtaNotify of ``device_ids``."""
 
     async def state_histogram(self, campaign_id: UUID) -> dict[int, dict[DeviceState, int]]:
         """``{stage_index: {state: count}}``."""
@@ -133,6 +140,25 @@ class Database(Protocol):
     async def due_campaigns(self) -> list[ScheduledCampaign]: ...
 
     async def known_hashes(self, product: str | None) -> list[str]: ...
+
+    # --- firmware-key sync outbox (API_CONTRACT §5 ``PUT /v1/tenants/{t}/firmware-keys``) -----
+    # ``add_firmware`` registers the tenant (same transaction). A tenant is due while the key
+    # set digest it last received differs from the current one and its back-off has elapsed.
+    async def request_key_sync_all(self, now: datetime) -> int:
+        """Mark every registered tenant for a fresh push (startup); returns the count."""
+
+    async def due_key_syncs(self, digest: str, now: datetime, limit: int) -> list[UUID]: ...
+
+    async def finish_key_sync(
+        self,
+        tenant_id: UUID,
+        *,
+        digest: str,
+        now: datetime,
+        error: str | None = None,
+        retry_at: datetime | None = None,
+    ) -> None:
+        """Success (``error`` None): store ``digest``. Failure: count it, retry at ``retry_at``."""
 
     async def ping(self) -> bool: ...
 
