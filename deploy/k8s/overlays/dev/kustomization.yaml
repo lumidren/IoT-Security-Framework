@@ -44,10 +44,11 @@ secretGenerator:
       - IRONMESH_DEV_DB_PASSWORD=ironmesh-dev
   - name: pki-secret
     literals:
-      - PKI_DB_PASSWORD=ironmesh-dev
+      # The pki service migrates its own schema, so it connects as pki_owner.
+      - PKI_DATABASE_URL=postgres://pki_owner:ironmesh-dev@postgres:5432/pki?sslmode=verify-ca&sslrootcert=/etc/ironmesh/tls/ca.crt
       - PKI_POLICY_TOKEN=dev-pki-policy-token
-      - PKI_POLICY_HMAC_SECRET=dev-pki-policy-hmac
-      - PKI_REGISTRY_TOKEN=dev-registry-internal-token
+      - PKI_POLICY_HMAC_KEY=dev-pki-policy-hmac
+      - PKI_REGISTRY_TOKEN=dev-registry-token-pki
       - PKI_FILE_KMS_PASSPHRASE=dev-file-kms-passphrase
   - name: policy-secret
     literals:
@@ -55,27 +56,31 @@ secretGenerator:
       - POLICY_EMQX_API_SECRET=dev-emqx-policy-secret
       - POLICY_PKI_HMAC_SECRET=dev-pki-policy-hmac
       - POLICY_PKI_TOKEN=dev-pki-policy-token
-      - POLICY_REGISTRY_TOKEN=dev-registry-internal-token
+      - POLICY_REGISTRY_TOKEN=dev-registry-token-policy
       - POLICY_HOOK_TOKEN=dev-emqx-hook-token
   - name: bridge-secret
     literals:
-      - BRIDGE_HOOK_TOKEN=dev-emqx-hook-token
+      - BRIDGE_EVENTS_TOKEN=dev-bridge-events-token
   - name: registry-secret
     literals:
       - REGISTRY_DB_PASSWORD=ironmesh-dev
-      - REGISTRY_INTERNAL_TOKEN=dev-registry-internal-token
+      # One distinct token per caller (pki, policy, anomaly); must equal PKI_REGISTRY_TOKEN,
+      # POLICY_REGISTRY_TOKEN and ANOMALY_INTERNAL_TOKEN.
+      - 'REGISTRY_INTERNAL_TOKENS={"pki": "dev-registry-token-pki", "policy": "dev-registry-token-policy", "anomaly": "dev-registry-token-anomaly"}'
       - REGISTRY_EMQX_API_KEY=registry
       - REGISTRY_EMQX_API_SECRET=dev-emqx-registry-secret
   - name: ota-secret
     literals:
       - OTA_DB_PASSWORD=ironmesh-dev
-      - OTA_INTERNAL_TOKEN=dev-registry-internal-token
+      - OTA_INTERNAL_TOKEN=dev-ota-internal-token
       - OTA_EMQX_API_KEY=ota
       - OTA_EMQX_API_SECRET=dev-emqx-ota-secret
   - name: anomaly-secret
     literals:
       - ANOMALY_DB_PASSWORD=ironmesh-dev
-      - ANOMALY_INTERNAL_TOKEN=dev-registry-internal-token
+      - ANOMALY_INTERNAL_TOKEN=dev-registry-token-anomaly
+      - ANOMALY_SIEM_WEBHOOK_SECRET=dev-siem-webhook-secret
+      - ANOMALY_DATABASE_MIGRATE_URL=postgresql://anomaly_owner:ironmesh-dev@postgres:5432/anomaly?sslmode=require
   - name: console-secret
     literals:
       - AUTH_SECRET=dev-console-auth-secret

@@ -6,6 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: anomaly
 data:
+  # Names and defaults from services/anomaly/src/ironmesh_anomaly/config.py.
+  ANOMALY_ENVIRONMENT: dev
   ANOMALY_LISTEN_PORT: "8002"
   ANOMALY_DB_HOST: postgres
   ANOMALY_DB_PORT: "5432"

@@ -6,6 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: ota
 data:
+  # Names and defaults from services/ota/src/ironmesh_ota/settings.py.
+  OTA_ENV: dev
   OTA_LISTEN_PORT: "8001"
   OTA_DB_HOST: postgres
   OTA_DB_PORT: "5432"
@@ -17,6 +19,7 @@ data:
   OTA_KAFKA_TOPIC_INGEST: im.ingest
   OTA_KAFKA_TOPIC_COMMANDS: im.commands
   OTA_KAFKA_TOPIC_AUDIT: im.audit
+  OTA_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
   OTA_KAFKA_CONSUMER_GROUP: ota-status
   OTA_KAFKA_SASL_MECHANISM: none
   OTA_KAFKA_TLS_ENABLED: "false"

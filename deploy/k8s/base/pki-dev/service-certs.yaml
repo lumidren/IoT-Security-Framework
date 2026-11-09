@@ -9,6 +9,11 @@ metadata:
 spec:
   secretName: emqx-tls
   commonName: svc-emqx
+  subject:
+    organizations:
+      - IronMesh
+    organizationalUnits:
+      - services
   duration: 2160h
   renewBefore: 720h
   privateKey:
@@ -40,6 +45,11 @@ metadata:
 spec:
   secretName: pki-tls
   commonName: svc-pki
+  subject:
+    organizations:
+      - IronMesh
+    organizationalUnits:
+      - services
   duration: 2160h
   renewBefore: 720h
   privateKey:
@@ -73,6 +83,11 @@ metadata:
 spec:
   secretName: policy-tls
   commonName: svc-policy
+  subject:
+    organizations:
+      - IronMesh
+    organizationalUnits:
+      - services
   duration: 2160h
   renewBefore: 720h
   privateKey:
@@ -104,6 +119,11 @@ metadata:
 spec:
   secretName: bridge-tls
   commonName: svc-bridge
+  subject:
+    organizations:
+      - IronMesh
+    organizationalUnits:
+      - services
   duration: 2160h
   renewBefore: 720h
   privateKey:
@@ -133,6 +153,11 @@ metadata:
 spec:
   secretName: registry-tls
   commonName: svc-registry
+  subject:
+    organizations:
+      - IronMesh
+    organizationalUnits:
+      - services
   duration: 2160h
   renewBefore: 720h
   privateKey:
@@ -163,6 +188,11 @@ metadata:
 spec:
   secretName: ota-tls
   commonName: svc-ota
+  subject:
+    organizations:
+      - IronMesh
+    organizationalUnits:
+      - services
   duration: 2160h
   renewBefore: 720h
   privateKey:
@@ -193,6 +223,11 @@ metadata:
 spec:
   secretName: anomaly-tls
   commonName: svc-anomaly
+  subject:
+    organizations:
+      - IronMesh
+    organizationalUnits:
+      - services
   duration: 2160h
   renewBefore: 720h
   privateKey:

@@ -1,30 +1,23 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: bridge-config
-  namespace: ironmesh
-  labels:
-    app.kubernetes.io/name: bridge
-data:
+  # Names and defaults from services/bridge/internal/config/config.go.
   BRIDGE_LISTEN: ":8082"
   BRIDGE_MQTT_URL: ssl://emqx:8883
   BRIDGE_MQTT_CLIENT_ID: svc-bridge
-  BRIDGE_SHARED_SUBSCRIPTION: $share/bridge/im/v1/#
+  BRIDGE_MQTT_TOPIC: $share/bridge/im/v1/#
   BRIDGE_MQTT_KEEPALIVE: 60s
-  BRIDGE_KAFKA_BROKERS: redpanda:9092
-  BRIDGE_KAFKA_TOPIC_INGEST: im.ingest
-  BRIDGE_KAFKA_TOPIC_AUTH: im.auth
-  BRIDGE_KAFKA_TOPIC_AUDIT: im.audit
-  BRIDGE_KAFKA_TOPICS_CREATE: im.ingest,im.auth,im.alerts,im.audit,im.commands
-  BRIDGE_KAFKA_TOPIC_PARTITIONS: "3"
-  BRIDGE_KAFKA_TOPIC_REPLICATION: "1"
-  BRIDGE_KAFKA_SASL_MECHANISM: none
-  BRIDGE_KAFKA_TLS_ENABLED: "false"
+  BRIDGE_MQTT_SESSION_EXPIRY: 168h
   BRIDGE_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
   BRIDGE_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
   BRIDGE_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+  BRIDGE_TLS_SERVER_NAME: emqx
+  BRIDGE_KAFKA_BROKERS: redpanda:9092
+  BRIDGE_KAFKA_INGEST_TOPIC: im.ingest
+  BRIDGE_KAFKA_AUTH_TOPIC: im.auth
+  BRIDGE_KAFKA_TLS: "false"
+  BRIDGE_MAX_INFLIGHT: "1024"
   BRIDGE_LOG_LEVEL: debug
-  BRIDGE_LOG_FORMAT: json
   OTEL_SERVICE_NAME: ironmesh-bridge
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
   OTEL_EXPORTER_OTLP_PROTOCOL: grpc

@@ -10,6 +10,7 @@ data:
   HOSTNAME: 0.0.0.0
   NODE_ENV: production
   NEXT_TELEMETRY_DISABLED: "1"
+  AUTH_TRUST_HOST: "true"
   CONSOLE_REGISTRY_URL: http://registry:8000
   CONSOLE_OTA_URL: http://ota:8001
   CONSOLE_ANOMALY_URL: http://anomaly:8002
@@ -19,7 +20,6 @@ data:
   NEXT_PUBLIC_APP_URL: http://localhost:30300
   NEXT_PUBLIC_OIDC_ISSUER: ""
   NEXT_PUBLIC_OIDC_CLIENT_ID: ironmesh-console
-  NEXT_PUBLIC_OIDC_AUDIENCE: ironmesh-api
   NEXT_PUBLIC_ENVIRONMENT: dev
   OTEL_SERVICE_NAME: ironmesh-console
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
@@ -72,18 +72,18 @@ spec:
               protocol: TCP
           startupProbe:
             httpGet:
-              path: /readyz
+              path: /api/health
               port: http
             periodSeconds: 2
             failureThreshold: 60
           readinessProbe:
             httpGet:
-              path: /readyz
+              path: /api/health
               port: http
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /api/health
               port: http
             periodSeconds: 10
           resources:

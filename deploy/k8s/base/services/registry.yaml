@@ -6,6 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: registry
 data:
+  # Names and defaults from services/registry/app/settings.py.
+  REGISTRY_ENVIRONMENT: dev
   REGISTRY_LISTEN_PORT: "8000"
   REGISTRY_DB_HOST: postgres
   REGISTRY_DB_PORT: "5432"
@@ -19,6 +21,7 @@ data:
   REGISTRY_KAFKA_TOPIC_ALERTS: im.alerts
   REGISTRY_KAFKA_TOPIC_AUDIT: im.audit
   REGISTRY_KAFKA_TOPIC_COMMANDS: im.commands
+  REGISTRY_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
   REGISTRY_KAFKA_CONSUMER_GROUP: registry-ingest
   REGISTRY_KAFKA_SASL_MECHANISM: none
   REGISTRY_KAFKA_TLS_ENABLED: "false"
@@ -33,6 +36,14 @@ data:
   REGISTRY_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt
   REGISTRY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
   REGISTRY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
+  REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE: /etc/ironmesh/tls/tls.key
+  # Downlink publisher (MQTT 5, mTLS with the registry-tls identity).
+  REGISTRY_MQTT_HOST: emqx
+  REGISTRY_MQTT_PORT: "8883"
+  REGISTRY_MQTT_CLIENT_ID: svc-registry
+  # Dev only: the KEK lives on the pod's emptyDir and is lost with it.
+  REGISTRY_KMS_BACKEND: local
+  REGISTRY_KMS_LOCAL_KEK_FILE: /tmp/registry-kek.bin
   REGISTRY_LOG_LEVEL: debug
   REGISTRY_LOG_FORMAT: json
   OTEL_SERVICE_NAME: ironmesh-registry
