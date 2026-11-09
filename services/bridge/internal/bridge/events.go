@@ -59,7 +59,8 @@ type EventsConfig struct {
 	Producer Producer
 	// Topic defaults to im.auth.
 	Topic string
-	// Token, when set, must be presented as a bearer token by EMQX.
+	// Token, when set, must be presented by EMQX either in the X-IronMesh-Hook-Token header (the
+	// header the policy hooks use; deploy/emqx/emqx.conf sends it) or as a bearer token.
 	Token        string
 	Metrics      *Metrics
 	Logger       *slog.Logger
@@ -109,7 +110,7 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if len(h.token) > 0 && !h.authorized(r.Header.Get("Authorization")) {
+	if len(h.token) > 0 && !h.authorized(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -146,7 +147,14 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]int{"accepted": accepted, "ignored": ignored})
 }
 
-func (h *EventsHandler) authorized(header string) bool {
+// HeaderHookToken carries the shared webhook secret (same header as the policy hooks).
+const HeaderHookToken = "X-IronMesh-Hook-Token"
+
+func (h *EventsHandler) authorized(r *http.Request) bool {
+	if v := strings.TrimSpace(r.Header.Get(HeaderHookToken)); v != "" {
+		return subtle.ConstantTimeCompare([]byte(v), h.token) == 1
+	}
+	header := r.Header.Get("Authorization")
 	const prefix = "bearer "
 	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
 		return false

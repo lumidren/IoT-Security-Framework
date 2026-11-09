@@ -187,3 +187,64 @@ func TestEventsBodyErrorsAndProducerFailure(t *testing.T) {
 		t.Errorf("producer failure = %d", rec.Code)
 	}
 }
+
+func TestEventsHookTokenHeader(t *testing.T) {
+	h, _ := newEventsHandler(t, &fakeProducer{}, "secret")
+	post := func(headers map[string]string) int {
+		req := httptest.NewRequest(http.MethodPost, "/emqx/events", strings.NewReader(`{"event":"client.connected","clientid":"`+dev+`"}`))
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := post(map[string]string{HeaderHookToken: "secret"}); c != http.StatusOK {
+		t.Errorf("hook token header = %d", c)
+	}
+	if c := post(map[string]string{HeaderHookToken: "wrong"}); c != http.StatusUnauthorized {
+		t.Errorf("wrong hook token = %d", c)
+	}
+	// A wrong hook token is not rescued by a valid bearer token.
+	if c := post(map[string]string{HeaderHookToken: "wrong", "Authorization": "Bearer secret"}); c != http.StatusUnauthorized {
+		t.Errorf("wrong hook token + bearer = %d", c)
+	}
+}
+
+// TestEventsEMQXRuleEnginePayloads feeds the bodies the EMQX 5.8 HTTP action produces for the
+// rule in deploy/emqx/emqx.conf (SELECT * from the four $events topics, empty body template, so
+// the whole event map is posted).
+func TestEventsEMQXRuleEnginePayloads(t *testing.T) {
+	p := &fakeProducer{}
+	h, _ := newEventsHandler(t, p, "secret")
+	bodies := []string{
+		`{"event":"client.connected","id":"0006","clientid":"` + dev + `","username":"` + dev + `","mountpoint":"undefined","peername":"10.1.2.3:51234","sockname":"0.0.0.0:8883","proto_name":"MQTT","proto_ver":5,"keepalive":60,"clean_start":false,"expiry_interval":604800,"is_bridge":false,"connected_at":1762171200000,"conn_props":{"Session-Expiry-Interval":604800,"User-Property":{}},"receive_maximum":32,"client_attrs":{"tenant_id":"` + tenant + `","device_id":"` + dev + `","kind":"device"},"timestamp":1762171200001,"node":"emqx@127.0.0.1"}`,
+		`{"event":"client.disconnected","clientid":"` + dev + `","username":"` + dev + `","reason":"normal","peername":"10.1.2.3:51234","sockname":"0.0.0.0:8883","proto_name":"MQTT","proto_ver":5,"disconnect_props":{},"disconnected_at":1762171260000,"client_attrs":{"tenant_id":"` + tenant + `"},"timestamp":1762171260001,"node":"emqx@127.0.0.1"}`,
+		`{"event":"client.check_authn_complete","clientid":"` + otherDev + `","username":"` + otherDev + `","peername":"10.1.2.9:4000","reason_code":"not_authorized","is_anonymous":false,"is_superuser":false,"timestamp":1762171300000,"node":"emqx@127.0.0.1"}`,
+		`{"event":"client.check_authz_complete","clientid":"` + dev + `","username":"` + dev + `","peerhost":"10.1.2.3","topic":"im/v1/` + tenant + `/` + otherDev + `/telemetry","action":"publish","authz_source":"http","result":"deny","client_attrs":{"tenant_id":"` + tenant + `"},"timestamp":1762171400000,"node":"emqx@127.0.0.1"}`,
+	}
+	for _, b := range bodies {
+		req := httptest.NewRequest(http.MethodPost, "/emqx/events", strings.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(HeaderHookToken, "secret")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"accepted":1`) {
+			t.Fatalf("body %s -> %d %s", b[:40], rec.Code, rec.Body.String())
+		}
+	}
+	recs := p.Records()
+	if len(recs) != 4 {
+		t.Fatalf("records = %d", len(recs))
+	}
+	want := []string{EventConnected, EventDisconnected, EventAuthnFailed, EventAuthzDenied}
+	for i, r := range recs {
+		var ev AuthEvent
+		if err := json.Unmarshal(r.Value, &ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev.Event != want[i] {
+			t.Errorf("record %d event = %s want %s", i, ev.Event, want[i])
+		}
+	}
+}
