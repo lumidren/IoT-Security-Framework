@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -66,10 +67,10 @@ def signer() -> tuple[ServiceTokenSigner, ec.EllipticCurvePrivateKey]:
 def test_service_token_signer(tmp_path: Path) -> None:
     s, key = signer()
     tok = s.token("pki")
-    assert tok is not None and s.token("pki") == tok  # cached
+    assert tok is not None
     claims = jwt.decode(tok, key.public_key(), algorithms=["ES256"], audience="pki")
     # the registry and OTA identify the caller by iss/sub and allow-list "anomaly"
-    assert claims["iss"] == claims["sub"] == "anomaly" and claims["exp"] - claims["iat"] == 300
+    assert claims["iss"] == claims["sub"] == "anomaly" and claims["exp"] - claims["iat"] == 60
     assert jwt.get_unverified_header(tok)["kid"] == "svc-anomaly"
     assert s.headers("registry") == {"Authorization": "Bearer shared-token"}
     assert ServiceTokenSigner(None).headers("pki") == {}
@@ -92,6 +93,45 @@ def test_service_token_signer(tmp_path: Path) -> None:
     )
     assert ServiceTokenSigner.from_file(str(ed), "kid").token("ota") is None
     assert ServiceTokenSigner.from_file(None, "kid").token("ota") is None
+
+
+def test_service_token_is_fresh_per_call() -> None:
+    """The PKI, policy, registry and OTA accept each jti once: no token is ever reused."""
+    s, key = signer()
+    first, second = s.headers("pki"), s.headers("pki")
+    assert first != second
+    c1, c2 = (
+        jwt.decode(
+            h["Authorization"].removeprefix("Bearer "),
+            key.public_key(),
+            algorithms=["ES256"],
+            audience="pki",
+        )
+        for h in (first, second)
+    )
+    assert c1["jti"] != c2["jti"]
+    for c in (c1, c2):
+        assert c["aud"] == "pki" and c["iss"] == c["sub"] == "anomaly"
+        assert 0 < c["exp"] - c["iat"] <= 300 and abs(c["iat"] - time.time()) < 5
+
+
+async def test_clients_send_a_new_token_on_every_request() -> None:
+    s, key = signer()
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["authorization"].removeprefix("Bearer "))
+        return httpx.Response(200, json=[])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ota = HttpKnownHashesProvider(client, "http://ota", s)
+    await ota.known_hashes("gw")
+    await ota.known_hashes("gw-2")
+    jtis = {
+        jwt.decode(t, key.public_key(), algorithms=["ES256"], audience="ota")["jti"] for t in seen
+    }
+    assert len(seen) == 2 and len(jtis) == 2
+    await client.aclose()
 
 
 def test_parse_cert_view() -> None:

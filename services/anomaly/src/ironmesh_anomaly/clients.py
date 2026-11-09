@@ -1,7 +1,8 @@
 """Clients for the upstream services (PKI, OTA, Registry) with caching and retries.
 
 Internal calls use mTLS with a Services CA certificate plus a short-lived ES256 service JWT
-(``aud=<service>``, 5 minutes; DESIGN_CONTRACT section 7). Every client is defined by a Protocol
+(``aud=<service>``; DESIGN_CONTRACT section 7), minted fresh for every request because the PKI,
+policy, registry and OTA accept each ``jti`` only once. Every client is defined by a Protocol
 so the engine and the tests can substitute fakes.
 """
 
@@ -31,7 +32,7 @@ from .models import SERVICE_ACTOR_ID, DeviceInfo
 
 log = structlog.get_logger(__name__)
 
-SERVICE_JWT_TTL_S: Final = 300
+SERVICE_JWT_TTL_S: Final = 60
 
 
 # --------------------------------------------------------------------------------------------
@@ -49,9 +50,10 @@ class ServiceTokenSigner:
     """Service credentials per audience.
 
     A static bearer configured for an audience wins (``ANOMALY_INTERNAL_TOKEN`` for the registry:
-    the ``anomaly`` entry of ``REGISTRY_INTERNAL_TOKENS``); otherwise an ES256 service JWT
-    (``iss = sub = anomaly``, ``kid = svc-anomaly``, ``aud = <service>``, 5 min) is minted with
-    the Services CA key.
+    the ``anomaly`` entry of ``REGISTRY_INTERNAL_TOKENS``); otherwise a fresh ES256 service JWT
+    (``iss = sub = anomaly``, ``kid = svc-anomaly``, ``aud = <service>``, new random ``jti``,
+    ``iat`` = now, ``exp`` = now + 60 s) is minted with the Services CA key for every call. Tokens
+    are never cached: the receivers reject a reused ``jti`` with 401.
     """
 
     def __init__(
@@ -63,7 +65,6 @@ class ServiceTokenSigner:
         self._key = key
         self._kid = kid
         self._static = dict(static_tokens or {})
-        self._cache: dict[str, tuple[str, float]] = {}
 
     @classmethod
     def from_file(
@@ -84,27 +85,21 @@ class ServiceTokenSigner:
             return static
         if self._key is None:
             return None
-        now = time.time()
-        cached = self._cache.get(audience)
-        if cached and cached[1] - now > 60:
-            return cached[0]
-        exp = now + SERVICE_JWT_TTL_S
-        token = jwt.encode(
+        now = int(time.time())
+        return jwt.encode(
             {
                 "iss": SERVICE_NAME,
                 "sub": SERVICE_NAME,
                 "aud": audience,
-                "iat": int(now),
-                "nbf": int(now) - 5,
-                "exp": int(exp),
+                "iat": now,
+                "nbf": now - 5,
+                "exp": now + SERVICE_JWT_TTL_S,
                 "jti": str(uuid.uuid4()),
             },
             self._key,
             algorithm="ES256",
             headers={"kid": self._kid},
         )
-        self._cache[audience] = (token, exp)
-        return token
 
     def headers(self, audience: str) -> dict[str, str]:
         token = self.token(audience)

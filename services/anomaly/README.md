@@ -38,7 +38,7 @@ Environment variables follow the Helm chart table (`deploy/helm/ironmesh/README.
 | `ANOMALY_KAFKA_{BROKERS,CONSUMER_GROUP,TLS_ENABLED,SASL_MECHANISM,SASL_USERNAME,SASL_PASSWORD}` | `redpanda:9092`, `anomaly-engine` | bus (`none`/`PLAIN`/`SCRAM-*`/`AWS_MSK_IAM`) |
 | `ANOMALY_KAFKA_TOPIC_{INGEST,AUTH,ALERTS,AUDIT}` | `im.*` | topics |
 | `ANOMALY_{REGISTRY,POLICY,OTA,PKI}_URL` | cluster DNS | upstream services |
-| `ANOMALY_TLS_{CERT,KEY,CA}_FILE` | – | Services CA identity for outbound mTLS; the key also signs ES256 service JWTs (`iss = sub = anomaly`, `kid = svc-anomaly`) |
+| `ANOMALY_TLS_{CERT,KEY,CA}_FILE` | – | Services CA identity for outbound mTLS; the key also signs ES256 service JWTs (`iss = sub = anomaly`, `kid = svc-anomaly`), minted fresh for every request (random `jti`, `iat` = now, `exp` = now + 60 s, never cached) because the PKI, registry and OTA accept each `jti` only once |
 | `ANOMALY_INTERNAL_TOKEN` (secret) | – | bearer for the registry's internal endpoints (`lifecycle`, `quarantine`): the `anomaly` entry of the registry's `REGISTRY_INTERNAL_TOKENS` map; without it a service JWT is sent |
 | `ANOMALY_AUTO_QUARANTINE`, `ANOMALY_QUARANTINE_MIN_SEVERITY` | `false`, `high` | defaults for tenants without stored settings |
 | `ANOMALY_QUARANTINE_MAX_PER_HOUR`, `ANOMALY_QUARANTINE_BREAKER_COOLDOWN_S` | `10`, `3600` | circuit breaker |
