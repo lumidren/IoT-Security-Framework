@@ -1,0 +1,82 @@
+# CodeQL: Go (pki, policy, bridge via go.work), Python (services + wire library),
+# JavaScript/TypeScript (console), C/C++ (ESP32 protocol core, traced through the host build)
+# and Rust (agent-rs, esp32 host crates; build-mode none).
+name: codeql
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "45 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Rust analysis needs a CodeQL bundle with Rust support (codeql-action >= v3.29); until
+    # Dependabot moves the pin there, a failing Rust leg does not fail the workflow.
+    continue-on-error: ${{ matrix.experimental }}
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: autobuild
+            experimental: false
+          - language: python
+            build-mode: none
+            experimental: false
+          - language: javascript-typescript
+            build-mode: none
+            experimental: false
+          - language: c-cpp
+            build-mode: manual
+            experimental: false
+          - language: rust
+            build-mode: none
+            experimental: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        if: matrix.language == 'go'
+        with:
+          go-version-file: go.work
+          cache: false
+      - uses: github/codeql-action/init@df409f7d9260372bd5f19e5b04e83cb3c43714ae # v3.27.9
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+          config: |
+            paths-ignore:
+              - '**/node_modules/**'
+              - '**/target/**'
+              - 'console/.next-mock/**'
+              - '**/tests/**'
+              - 'device/esp32/host/fuzz/**'
+              - 'device/agent-rs/fuzz/**'
+      - name: build the ESP32 C core (host build)
+        if: matrix.language == 'c-cpp'
+        working-directory: device/esp32/host
+        run: |
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal
+          cargo build --locked --workspace --all-targets
+      - uses: github/codeql-action/analyze@df409f7d9260372bd5f19e5b04e83cb3c43714ae # v3.27.9
+        with:
+          category: /language:${{ matrix.language }}

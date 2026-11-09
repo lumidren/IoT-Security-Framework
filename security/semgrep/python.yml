@@ -1,0 +1,155 @@
+# IronMesh Semgrep rules for the Python services and the wire library.
+# Severity ERROR gates CI (.github/workflows/security.yml); WARNING is reported only.
+rules:
+  - id: ironmesh-py-tls-verify-disabled
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Certificate verification disabled. Service-to-service calls are mTLS against the Services
+      CA (*_TLS_CA_FILE); pass the CA bundle instead of verify=False.
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: requests.$FUNC(..., verify=False, ...)
+      - pattern: httpx.$FUNC(..., verify=False, ...)
+      - pattern: aiohttp.TCPConnector(..., ssl=False, ...)
+      - pattern: ssl._create_unverified_context(...)
+      - pattern: $CTX.verify_mode = ssl.CERT_NONE
+      - pattern: $CTX.check_hostname = False
+    paths:
+      exclude: ["**/tests/**", "**/test_*.py"]
+
+  - id: ironmesh-py-pickle-load
+    languages: [python]
+    severity: ERROR
+    message: >-
+      pickle deserialisation executes arbitrary code. Use JSON/CBOR (ironmesh_wire.cbor) for
+      data; model blobs go through ironmesh_anomaly.ml with a SHA-256 check before loading.
+    metadata:
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+      - pattern: cPickle.load(...)
+      - pattern: cPickle.loads(...)
+      - pattern: dill.load(...)
+      - pattern: dill.loads(...)
+    paths:
+      exclude: ["**/tests/**"]
+
+  - id: ironmesh-py-joblib-load
+    languages: [python]
+    severity: WARNING
+    message: >-
+      joblib.load unpickles. Only load blobs whose SHA-256 was verified against the record kept
+      in Postgres (separate trust domain), as ironmesh_anomaly/ml.py does.
+    metadata:
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+      category: security
+      confidence: MEDIUM
+    pattern: joblib.load(...)
+
+  - id: ironmesh-py-yaml-unsafe-load
+    languages: [python]
+    severity: ERROR
+    message: yaml.load without SafeLoader can construct arbitrary objects; use yaml.safe_load.
+    metadata:
+      cwe: ["CWE-502: Deserialization of Untrusted Data"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - patterns:
+          - pattern: yaml.load($DATA, ...)
+          - pattern-not: yaml.load($DATA, Loader=yaml.SafeLoader, ...)
+          - pattern-not: yaml.load($DATA, Loader=yaml.CSafeLoader, ...)
+          - pattern-not: yaml.load($DATA, Loader=SafeLoader, ...)
+          - pattern-not: yaml.load($DATA, Loader=CSafeLoader, ...)
+      - pattern: yaml.load_all($DATA, Loader=yaml.Loader, ...)
+      - pattern: yaml.load_all($DATA, Loader=yaml.UnsafeLoader, ...)
+      - pattern: yaml.unsafe_load(...)
+      - pattern: yaml.full_load(...)
+
+  - id: ironmesh-py-weak-hash
+    languages: [python]
+    severity: ERROR
+    message: >-
+      MD5/SHA-1 for a security purpose. Use hashlib.sha256 (or pass usedforsecurity=False for a
+      non-security checksum).
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: security
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5(...)
+          - pattern: hashlib.sha1(...)
+          - pattern: hashlib.new("md5", ...)
+          - pattern: hashlib.new("sha1", ...)
+          - pattern: hashes.MD5()
+          - pattern: hashes.SHA1()
+      - pattern-not: hashlib.$H(..., usedforsecurity=False, ...)
+    paths:
+      exclude: ["**/tests/**"]
+
+  - id: ironmesh-py-jwt-alg-none
+    languages: [python]
+    severity: ERROR
+    message: >-
+      JWT verification must pin asymmetric algorithms and verify the signature (API_CONTRACT.md
+      section 0); "none" or verify_signature=False accept forged tokens.
+    metadata:
+      cwe: ["CWE-347: Improper Verification of Cryptographic Signature"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: jwt.decode(..., algorithms=[..., "none", ...], ...)
+      - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: jwt.encode(..., algorithm="none", ...)
+    paths:
+      exclude: ["**/tests/**"]
+
+  - id: ironmesh-py-log-secret-kwarg
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Key material or credentials passed to a logger. Log key ids, serials or fingerprints;
+      settings carry secrets as pydantic SecretStr.
+    metadata:
+      cwe: ["CWE-532: Insertion of Sensitive Information into Log File"]
+      category: security
+      confidence: MEDIUM
+    patterns:
+      - pattern: $LOG.$METHOD(..., $KW=$VALUE, ...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(debug|info|warning|warn|error|exception|critical|msg)$
+      - metavariable-regex:
+          metavariable: $KW
+          regex: (?i)^(private_?key|priv_?key|secret|passphrase|password|seed|kek)$
+    paths:
+      exclude: ["**/tests/**"]
+
+  - id: ironmesh-py-log-secret-value
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A private key or an unwrapped secret reaches a log call. Log key ids, serials or
+      fingerprints instead.
+    metadata:
+      cwe: ["CWE-532: Insertion of Sensitive Information into Log File"]
+      category: security
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: $LOG.$METHOD(..., <... $X.private_key ...>, ...)
+          - pattern: $LOG.$METHOD(..., <... $X.private_bytes(...) ...>, ...)
+          - pattern: $LOG.$METHOD(..., <... $X.get_secret_value() ...>, ...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(debug|info|warning|warn|error|exception|critical|msg)$
+    paths:
+      exclude: ["**/tests/**"]

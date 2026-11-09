@@ -1,0 +1,9 @@
+# Trivy ignore list (used by .github/workflows/security.yml and release.yml image gates).
+#
+# Keep this empty. If a finding must be accepted temporarily, add ONE line per vulnerability id
+# with a justification comment above it, an owner and an expiry date, e.g.
+#
+#   # CVE-2099-0001: not reachable (feature X disabled in our build); owner @lumidren; expires 2099-01-31
+#   CVE-2099-0001 exp:2099-01-31
+#
+# Trivy drops expired entries automatically, so accepted risks resurface for review.

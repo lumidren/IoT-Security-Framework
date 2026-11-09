@@ -1,0 +1,28 @@
+# gitleaks configuration (.github/workflows/security.yml, job gitleaks).
+#
+# The default rule set applies everywhere. The only allowlisted locations are committed,
+# intentionally public test material:
+#
+#   libs/python/ironmesh-wire/tests/keys/   fixed test keys derived from public labels
+#                                           (see its README.md); never used outside tests/vectors
+#   device/common/vectors/                  cross-language test vectors built from those keys
+#   **/testdata/, **/tests/fixtures/,       test fixtures
+#   console/src/mocks/fixtures/             console demo-mode fixtures (no real credentials)
+#
+# Anything else that matches a rule fails the job. Add new public fixtures under one of these
+# directories rather than widening the allowlist.
+
+title = "IronMesh gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Committed public test keys and test fixtures only"
+paths = [
+  '''^libs/python/ironmesh-wire/tests/keys/''',
+  '''^device/common/vectors/[^/]+\.json$''',
+  '''(^|/)testdata/''',
+  '''(^|/)tests/fixtures/''',
+  '''^console/src/mocks/fixtures/''',
+]

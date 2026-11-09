@@ -1,0 +1,121 @@
+# IronMesh Semgrep rules for Go services (services/pki, services/policy, services/bridge).
+# Severity ERROR gates CI (.github/workflows/security.yml); WARNING is reported only.
+rules:
+  - id: ironmesh-go-tls-insecure-skip-verify
+    languages: [go]
+    severity: ERROR
+    message: >-
+      InsecureSkipVerify disables certificate verification. IronMesh connections are mTLS with
+      Services CA pinning (DESIGN_CONTRACT.md section 7); configure RootCAs instead.
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      category: security
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: |
+              tls.Config{..., InsecureSkipVerify: true, ...}
+          - pattern: |
+              $CFG.InsecureSkipVerify = true
+    paths:
+      exclude: ["*_test.go", "**/testutil/**"]
+
+  - id: ironmesh-go-tls-legacy-min-version
+    languages: [go]
+    severity: ERROR
+    message: >-
+      TLS 1.0/1.1 (or SSLv3) must never be accepted. MQTT and service listeners are TLS 1.3 only
+      (DESIGN_CONTRACT.md section 4); outbound clients need at least TLS 1.2.
+    metadata:
+      cwe: ["CWE-327: Use of a Broken or Risky Cryptographic Algorithm"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: tls.VersionTLS10
+      - pattern: tls.VersionTLS11
+      - pattern: tls.VersionSSL30
+    paths:
+      exclude: ["*_test.go"]
+
+  - id: ironmesh-go-tls12-minimum
+    languages: [go]
+    severity: WARNING
+    message: >-
+      MinVersion TLS 1.2. The contract requires TLS 1.3 for MQTT and every IronMesh listener;
+      TLS 1.2 is acceptable only for outbound connections to third parties (Kafka/MSK, RDS).
+      Confirm this endpoint is one of those.
+    metadata:
+      category: security
+      confidence: MEDIUM
+    pattern: |
+      tls.Config{..., MinVersion: tls.VersionTLS12, ...}
+    paths:
+      exclude: ["*_test.go"]
+
+  - id: ironmesh-go-weak-hash-md5
+    languages: [go]
+    severity: ERROR
+    message: MD5 is broken; use SHA-256 (crypto/sha256) for every security purpose.
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: md5.New()
+      - pattern: md5.Sum(...)
+    paths:
+      exclude: ["*_test.go"]
+
+  - id: ironmesh-go-weak-hash-sha1
+    languages: [go]
+    severity: WARNING
+    message: >-
+      SHA-1 is not collision resistant. It is only acceptable where a standard mandates it
+      (RFC 6960 OCSP CertID / ResponderID byKey, RFC 5280 key identifiers); never for
+      signatures, integrity checks or new identifiers.
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: security
+      confidence: MEDIUM
+    pattern-either:
+      - pattern: sha1.New()
+      - pattern: sha1.Sum(...)
+    paths:
+      exclude: ["*_test.go"]
+
+  - id: ironmesh-go-jwt-alg-none
+    languages: [go]
+    severity: ERROR
+    message: Unsigned JWTs ("alg":"none") must never be accepted; service JWTs are ES256 only.
+    metadata:
+      cwe: ["CWE-347: Improper Verification of Cryptographic Signature"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: jwt.SigningMethodNone
+      - pattern: jwt.UnsafeAllowNoneSignatureType
+    paths:
+      exclude: ["*_test.go"]
+
+  - id: ironmesh-go-log-secret-material
+    languages: [go]
+    severity: ERROR
+    message: >-
+      Key material or credentials passed to a logger. Logs are shipped to the SIEM; log key ids,
+      serials or fingerprints instead.
+    metadata:
+      cwe: ["CWE-532: Insertion of Sensitive Information into Log File"]
+      category: security
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: $LOG.$METHOD(..., "$KEY", $VALUE, ...)
+          - pattern: slog.$METHOD(..., "$KEY", $VALUE, ...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(Debug|Info|Warn|Error|DebugContext|InfoContext|WarnContext|ErrorContext|Log)$
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)^"?(private_?key|priv_?key|secret|passphrase|password|pin|seed|kek)"?$
+    paths:
+      exclude: ["*_test.go"]

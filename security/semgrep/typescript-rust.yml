@@ -1,0 +1,110 @@
+# IronMesh Semgrep rules for the console (TypeScript) and the Rust device code.
+# Severity ERROR gates CI (.github/workflows/security.yml); WARNING is reported only.
+rules:
+  - id: ironmesh-ts-tls-reject-unauthorized
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      TLS verification disabled for the console's upstream calls. Trust the Services CA through
+      NODE_EXTRA_CA_CERTS instead.
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: |
+          { ..., rejectUnauthorized: false, ... }
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+
+  - id: ironmesh-ts-weak-hash
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: MD5/SHA-1 is not acceptable for security purposes; use SHA-256.
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: security
+      confidence: HIGH
+    patterns:
+      - pattern: $CRYPTO.createHash($ALG)
+      - metavariable-regex:
+          metavariable: $ALG
+          regex: (?i)^['"](md5|sha1|md4)['"]$
+
+  - id: ironmesh-ts-jwt-alg-none
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Unsigned JWTs ("alg":"none") must never be accepted.
+    metadata:
+      cwe: ["CWE-347: Improper Verification of Cryptographic Signature"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: |
+          { ..., algorithms: [..., "none", ...], ... }
+      - pattern: |
+          { ..., algorithms: [..., 'none', ...], ... }
+      - pattern: |
+          { ..., alg: "none", ... }
+      - pattern: |
+          { ..., alg: 'none', ... }
+    paths:
+      exclude: ["**/*.test.ts", "**/*.spec.ts", "**/e2e/**", "**/mocks/**"]
+
+  - id: ironmesh-ts-log-secret-material
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Access tokens, secrets or key material must not be logged (console server and browser).
+    metadata:
+      cwe: ["CWE-532: Insertion of Sensitive Information into Log File"]
+      category: security
+      confidence: MEDIUM
+    patterns:
+      - pattern: console.$METHOD(..., <... $X.$FIELD ...>, ...)
+      - metavariable-regex:
+          metavariable: $FIELD
+          regex: (?i)^(accessToken|access_token|privateKey|private_key|secret|clientSecret|password)$
+
+  - id: ironmesh-rust-danger-accept-invalid-certs
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      Certificate validation disabled. The agent pins the Services CA SPKI and checks the broker
+      SAN (DESIGN_CONTRACT.md section 4).
+    metadata:
+      cwe: ["CWE-295: Improper Certificate Validation"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: $B.danger_accept_invalid_certs(true)
+      - pattern: $B.danger_accept_invalid_hostnames(true)
+
+  - id: ironmesh-rust-weak-hash
+    languages: [rust]
+    severity: ERROR
+    message: MD5/SHA-1 is not acceptable for security purposes; use sha2::Sha256.
+    metadata:
+      cwe: ["CWE-328: Use of Weak Hash"]
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: md5::compute(...)
+      - pattern: md5::Md5::new()
+      - pattern: sha1::Sha1::new()
+      - pattern: Sha1::new()
+      - pattern: Md5::new()
+    paths:
+      exclude: ["**/tests/**", "**/fuzz/**"]
+
+  - id: ironmesh-rust-log-secret-material
+    languages: [rust]
+    severity: ERROR
+    message: Key material must not reach tracing/log macros; log key ids or serials.
+    metadata:
+      cwe: ["CWE-532: Insertion of Sensitive Information into Log File"]
+      category: security
+      confidence: MEDIUM
+    # Macro arguments are token trees for Semgrep's Rust parser, so this rule matches text.
+    pattern-regex: '\b(?:trace|debug|info|warn|error|event)!\([^;]*?\b(?:private_key|secret_key|signing_key|seed|kek)\s*='
+    paths:
+      exclude: ["**/tests/**", "**/fuzz/**"]

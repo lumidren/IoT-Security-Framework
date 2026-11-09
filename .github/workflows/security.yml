@@ -1,0 +1,263 @@
+# Security scanning: SAST (Semgrep + repo rules, gosec, bandit), dependency audits (cargo-audit,
+# cargo-deny, npm audit, OSV-Scanner), Trivy filesystem + IaC config, gitleaks.
+# SARIF goes to GitHub code scanning; each gate fails the job on HIGH/CRITICAL findings.
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SEMGREP_IMAGE: semgrep/semgrep:1.99.0
+  GITLEAKS_IMAGE: zricethezav/gitleaks:v8.21.2
+  OSV_IMAGE: ghcr.io/google/osv-scanner:v1.9.2
+  GOSEC_VERSION: v2.21.4
+
+jobs:
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: scan (registry packs + security/semgrep)
+        run: |
+          docker run --rm -v "${PWD}:/src" -w /src "${SEMGREP_IMAGE}" semgrep scan \
+            --config p/ci --config p/golang --config p/python --config p/rust \
+            --config p/typescript --config p/secrets --config security/semgrep \
+            --metrics off --sarif --output semgrep.sarif || true
+          test -s semgrep.sarif
+      - uses: github/codeql-action/upload-sarif@df409f7d9260372bd5f19e5b04e83cb3c43714ae # v3.27.9
+        if: always() && hashFiles('semgrep.sarif') != ''
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+      - name: gate (ERROR severity = high)
+        run: |
+          docker run --rm -v "${PWD}:/src" -w /src "${SEMGREP_IMAGE}" semgrep scan \
+            --config p/ci --config p/golang --config p/python --config p/rust \
+            --config p/typescript --config p/secrets --config security/semgrep \
+            --metrics off --severity ERROR --error
+
+  gosec:
+    name: gosec (${{ matrix.service }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [pki, policy, bridge]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version-file: services/${{ matrix.service }}/go.mod
+          cache-dependency-path: services/${{ matrix.service }}/go.sum
+      - name: install gosec
+        run: go install "github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}"
+      - name: scan
+        run: "$(go env GOPATH)/bin/gosec -no-fail -fmt sarif -out gosec.sarif ./..."
+      - uses: github/codeql-action/upload-sarif@df409f7d9260372bd5f19e5b04e83cb3c43714ae # v3.27.9
+        if: always() && hashFiles(format('services/{0}/gosec.sarif', matrix.service)) != ''
+        with:
+          sarif_file: services/${{ matrix.service }}/gosec.sarif
+          category: gosec-${{ matrix.service }}
+      - name: gate (high severity, medium+ confidence)
+        run: "$(go env GOPATH)/bin/gosec -quiet -severity high -confidence medium ./..."
+
+  bandit:
+    name: bandit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install "bandit[sarif,toml]"
+      - name: scan
+        run: |
+          python -m bandit -q -r services/registry/app services/ota/src services/anomaly/src \
+            libs/python/ironmesh-wire/src scripts -f sarif -o bandit.sarif --exit-zero
+      - uses: github/codeql-action/upload-sarif@df409f7d9260372bd5f19e5b04e83cb3c43714ae # v3.27.9
+        if: always() && hashFiles('bandit.sarif') != ''
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+      - name: gate (high severity)
+        run: |
+          for target in services/registry:app services/ota:src services/anomaly:src libs/python/ironmesh-wire:src; do
+            dir="${target%%:*}"; src="${target##*:}"
+            (cd "${dir}" && python -m bandit -q -c pyproject.toml -r "${src}" --severity-level high --confidence-level medium)
+          done
+
+  rust-deps:
+    name: cargo audit + deny (${{ matrix.crate }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [device/agent-rs, device/esp32/host]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: cargo audit
+        working-directory: ${{ matrix.crate }}
+        run: cargo audit --deny warnings
+      - name: cargo deny (licenses, bans, advisories, sources)
+        working-directory: ${{ matrix.crate }}
+        run: |
+          config=deny.toml
+          [ -f "${config}" ] || config="${GITHUB_WORKSPACE}/device/agent-rs/deny.toml"
+          cargo deny --all-features check --config "${config}" advisories bans licenses sources
+
+  npm-audit:
+    name: npm audit (console)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "24"
+      - run: npm audit --audit-level=high --omit=dev
+      - run: npm audit --audit-level=critical
+
+  trivy:
+    name: trivy (fs + config)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: filesystem (vulnerabilities, secrets, licenses) -> SARIF
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-fs.sarif
+          exit-code: "0"
+          trivyignores: .trivyignore
+          skip-dirs: node_modules,target,.venv,.venv-infra,console/.next-mock
+      - uses: github/codeql-action/upload-sarif@df409f7d9260372bd5f19e5b04e83cb3c43714ae # v3.27.9
+        if: always() && hashFiles('trivy-fs.sarif') != ''
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+      - name: filesystem gate (HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore
+          skip-dirs: node_modules,target,.venv,.venv-infra,console/.next-mock
+      - name: IaC config gate (Terraform, Helm, Kubernetes, Dockerfiles; HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore
+          skip-dirs: node_modules,target,.venv,.venv-infra,deploy/k8s
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: scan history
+        run: |
+          docker run --rm -v "${PWD}:/repo" -w /repo \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+            "${GITLEAKS_IMAGE}" detect --source /repo --config /repo/.gitleaks.toml --redact \
+            --report-format sarif --report-path /repo/gitleaks.sarif --exit-code 1
+      - uses: github/codeql-action/upload-sarif@df409f7d9260372bd5f19e5b04e83cb3c43714ae # v3.27.9
+        if: always() && hashFiles('gitleaks.sarif') != ''
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+  osv:
+    name: osv-scanner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      # Report-only: OSV-Scanner v1 cannot filter by severity, so the HIGH/CRITICAL gates for
+      # the same lockfiles are Trivy, cargo-audit/deny and npm audit.
+      - name: scan lockfiles
+        run: |
+          docker run --rm -v "${PWD}:/src" "${OSV_IMAGE}" --recursive --skip-git \
+            --format sarif --output /src/osv.sarif /src || true
+          test -s osv.sarif
+      - uses: github/codeql-action/upload-sarif@df409f7d9260372bd5f19e5b04e83cb3c43714ae # v3.27.9
+        if: always() && hashFiles('osv.sarif') != ''
+        with:
+          sarif_file: osv.sarif
+          category: osv-scanner
