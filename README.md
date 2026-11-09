@@ -375,7 +375,7 @@ conformance harness doubles.
 |---|---|---|---|---|---|
 | ETSI EN 303 645 v2.1.1 | 67 | 45 | 11 | 11 | **0** |
 | NIST IR 8259A | 18 | 16 | 2 | 0 | **0** |
-| IEC 62443-4-2 (selected CRs) | 42 | 30 | 10 | 2 | **0** |
+| IEC 62443-4-2 (selected CRs) | 42 | 32 | 8 | 2 | **0** |
 | EU Cyber Resilience Act, Annex I | 22 | 17 | 5 | 0 | **0** |
 
 Each row maps a clause to the control that satisfies it, with evidence at `file:line`, in
