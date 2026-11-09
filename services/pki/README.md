@@ -90,6 +90,7 @@ mTLS listener (`PKI_LISTEN_MTLS`):
 | `GET /v1/certificates/{serial}` | same | record + status (`valid`, `revoked`, `expired`) + PEM |
 | `GET /v1/devices/{device_id}/certificates` | same | all certificates of a device |
 | `POST /v1/devices/{device_id}/revoke-all` | same | revoke every current certificate |
+| `POST /v1/devices/{device_id}/release` | **registry only**: Services CA cert CN `svc-registry` or JWT `sub` `registry`/`svc-registry` (independent of `PKI_MGMT_ALLOWED_CNS`) | `{"tenant_id", "note"?}` → `202 {event_id, event: "device_release", device_id, tenant_id, released_at, published, publish_error?}`; queues a `device_release` Policy event (see *Revocation flow*); `409` when the device's certificates belong to another tenant, `422` validation, `400` malformed JSON / unknown fields |
 | `GET /v1/ca/chain` | same | PEM bundle |
 | `GET /v1/stats` | same | totals and expiring counts (24h/72h/7d) |
 | `PUT /v1/tenants/{tenant}/command-key` | owner **registry**: Services CA cert CN `svc-registry` or JWT `sub` `registry`/`svc-registry` | `{"public_key_b64"}` 32-byte Ed25519 (std or URL base64) → `204` |
@@ -188,6 +189,18 @@ decommission): the Policy service then deny-lists the device id. Single-certific
 hook checks against the certificate presented at CONNECT. Enrollment rollbacks
 (`RevokeUndelivered`) are not pushed.
 
+**Device release.** A quarantine's `device_deny` would otherwise outlive the quarantine. When an
+admin releases the device, the registry calls `POST /v1/devices/{device_id}/release`, which writes
+a `device_release` row into the same outbox (`event_kind = 'device_release'`, migration
+`0004_outbox_event_kind.sql`; existing rows default to `revocation`) and delivers
+`{"event_id","event":"device_release","device_id","tenant_id","released_at"}` with the same bearer,
+HMAC signature, inline first attempt, backoff retries and `PKI_POLICY_FANOUT=dns` fan-out. The
+Policy service lifts the device-level deny for denies revoked at or before `released_at`;
+serial-level denies stay, so every certificate revoked by the quarantine remains revoked and the
+device must re-enroll. Revocation bodies are unchanged (no `event` member). Each call is a new
+event (a registry retry produces a second, harmless release); releases are audit-logged
+(`action=pki.device.release`) and do not feed `ironmesh_revocation_latency_seconds`.
+
 `ironmesh_revocation_latency_seconds` measures revoke request → acknowledgement by every endpoint
 (retries included); `ironmesh_revocation_publish_latency_seconds` one delivery attempt.
 
@@ -253,7 +266,8 @@ sensitive and non-extractable.
 
 ## Store
 
-`internal/store.Store` (certificates, revocations, revocation outbox, nonces, CRL number, tenant
+`internal/store.Store` (certificates, revocations, revocation outbox with revocation and
+device-release events, nonces, CRL number, tenant
 policies) has an
 in-memory implementation and a Postgres implementation (`internal/store/postgres`, pgx v5) whose
 migrations are embedded and applied at start under an advisory lock. Tables carry `tenant_id` and
@@ -270,7 +284,9 @@ the append-only `certificates` and `revocations`, `SELECT, INSERT, DELETE` on `n
 (`deploy/docker/postgres/10-ironmesh.sh` creates it); `rds_iam` is granted to it when that role
 exists. Migration `0003_revocation_outbox.sql` adds `revocation_outbox` with the same
 `tenant_isolation` policy, forced RLS and `SELECT, INSERT, UPDATE` (no `DELETE`/`TRUNCATE`) for
-`pki_app`. Production layout: `PKI_MIGRATION_DATABASE_URL=postgres://pki_owner…` and
+`pki_app`. Migration `0004_outbox_event_kind.sql` adds `revocation_outbox.event_kind`
+(`revocation` | `device_release`, default `revocation`, CHECK constraint) and re-applies the
+forced RLS and grants of 0003. Production layout: `PKI_MIGRATION_DATABASE_URL=postgres://pki_owner…` and
 `PKI_DATABASE_URL=postgres://pki_app…` (optionally with `PKI_DB_IAM_AUTH=true`). The memory
 store is unaffected.
 

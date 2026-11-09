@@ -6,6 +6,7 @@
 //	POST /v1/devices/{device_id}/revoke-all    {"reason": "..."}
 //	GET  /v1/ca/chain                          PEM bundle
 //	GET  /v1/stats                             expiring counts (24h/72h/7d)
+//	POST /v1/devices/{device_id}/release       (registry) {"tenant_id": "..."}
 //	PUT  /v1/tenants/{tenant}/command-key      (registry) tenant command key
 //	PUT  /v1/tenants/{tenant}/firmware-keys    (ota) firmware signing keys
 //	PUT  /v1/tenants/{tenant}/enrollment       (registry) allow_software_keys
@@ -39,11 +40,19 @@ type Revoker interface {
 	RevokeDevice(ctx context.Context, deviceID, reason, revokedBy string) ([]*revocation.Result, error)
 }
 
+// Releaser is satisfied by *revocation.Service.
+type Releaser interface {
+	Release(ctx context.Context, deviceID, tenantID, releasedBy string) (*revocation.ReleaseResult, error)
+}
+
 // Config wires the handler.
 type Config struct {
 	Auth    *Authenticator
 	Revoker Revoker
-	Store   store.Store
+	// Releaser serves POST /v1/devices/{device_id}/release; when nil the
+	// Revoker is used if it implements Releaser (otherwise 501).
+	Releaser Releaser
+	Store    store.Store
 	// Chain is returned by /v1/ca/chain (root, factory, device, services).
 	Chain   []*x509.Certificate
 	Metrics *metrics.Metrics
@@ -74,6 +83,11 @@ func NewHandler(cfg Config) (*Handler, error) {
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now
 	}
+	if cfg.Releaser == nil {
+		if r, ok := cfg.Revoker.(Releaser); ok {
+			cfg.Releaser = r
+		}
+	}
 	return &Handler{cfg: cfg}, nil
 }
 
@@ -85,6 +99,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /v1/devices/{device_id}/revoke-all", h.auth(h.revokeDevice))
 	mux.Handle("GET /v1/ca/chain", h.auth(h.chain))
 	mux.Handle("GET /v1/stats", h.auth(h.stats))
+	mux.Handle("POST /v1/devices/{device_id}/release", h.ownerAuth(OwnerRelease, h.releaseDevice))
 	h.registerTenantRoutes(mux)
 }
 
