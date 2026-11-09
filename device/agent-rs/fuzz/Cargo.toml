@@ -1,0 +1,90 @@
+[package]
+name = "ironmesh-agent-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ironmesh-agent = { path = ".." }
+p256 = "0.13"
+ed25519-dalek = "2.2"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "cbor_decode"
+path = "fuzz_targets/cbor_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cose_sign1_decode"
+path = "fuzz_targets/cose_sign1_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cose_sign_decode"
+path = "fuzz_targets/cose_sign_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cose_encrypt0_decode"
+path = "fuzz_targets/cose_encrypt0_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "envelope_decode"
+path = "fuzz_targets/envelope_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "manifest_decode"
+path = "fuzz_targets/manifest_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "delta_apply"
+path = "fuzz_targets/delta_apply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mqtt_decode"
+path = "fuzz_targets/mqtt_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pkcs7_decode"
+path = "fuzz_targets/pkcs7_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_decode"
+path = "fuzz_targets/bundle_decode.rs"
+test = false
+doc = false
+bench = false
