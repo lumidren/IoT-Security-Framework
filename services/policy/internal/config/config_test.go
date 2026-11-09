@@ -48,6 +48,23 @@ func TestLoadDefaults(t *testing.T) {
 	if len(cfg.ServiceCIDRs) != 4 || cfg.ServiceCIDRs[0] != "10.0.0.0/8" || cfg.ServiceCIDRs[3] != "127.0.0.0/8" {
 		t.Errorf("ServiceCIDRs = %v", cfg.ServiceCIDRs)
 	}
+	if cfg.OIDCIssuer != "" || cfg.OIDCAudience != "ironmesh-api" || cfg.OIDCRoleClaim != "role" {
+		t.Errorf("OIDC defaults = %q %q %q", cfg.OIDCIssuer, cfg.OIDCAudience, cfg.OIDCRoleClaim)
+	}
+}
+
+func TestLoadOIDC(t *testing.T) {
+	env := minimalEnv()
+	env["POLICY_OIDC_ISSUER"] = "https://idp.ironmesh.local/realms/ironmesh"
+	env["POLICY_OIDC_AUDIENCE"] = "console"
+	env["POLICY_OIDC_ROLE_CLAIM"] = "realm_access.roles"
+	cfg, err := Load(MapGetenv(env))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.OIDCIssuer != "https://idp.ironmesh.local/realms/ironmesh" || cfg.OIDCAudience != "console" || cfg.OIDCRoleClaim != "realm_access.roles" {
+		t.Errorf("OIDC = %q %q %q", cfg.OIDCIssuer, cfg.OIDCAudience, cfg.OIDCRoleClaim)
+	}
 }
 
 func TestLoadServiceCIDRs(t *testing.T) {
@@ -107,6 +124,7 @@ func TestLoadValidation(t *testing.T) {
 		{"bad url", func(m map[string]string) { m["POLICY_EMQX_API_URL"] = "emqx:18083" }, "invalid URL"},
 		{"bad scheme", func(m map[string]string) { m["POLICY_REGISTRY_URL"] = "ftp://registry" }, "invalid URL"},
 		{"bad level", func(m map[string]string) { m["POLICY_LOG_LEVEL"] = "loud" }, "unknown level"},
+		{"bad oidc issuer", func(m map[string]string) { m["POLICY_OIDC_ISSUER"] = "idp.example/realms/x" }, "POLICY_OIDC_ISSUER"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

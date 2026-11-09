@@ -1,16 +1,21 @@
 // Command policy is the IronMesh policy service: EMQX authn/authz backend, revocation cache with
 // live-session kick, CRL fallback poller and the policy management API.
+//
+// "policy healthcheck [--url URL] [--timeout D]" GETs /healthz (default derived from
+// POLICY_LISTEN) and exits 0 or 1, for container health checks in the distroless image.
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +27,7 @@ import (
 	"github.com/lumidren/IoT-Security-Framework/services/policy/internal/config"
 	"github.com/lumidren/IoT-Security-Framework/services/policy/internal/emqx"
 	"github.com/lumidren/IoT-Security-Framework/services/policy/internal/engine"
+	"github.com/lumidren/IoT-Security-Framework/services/policy/internal/healthcheck"
 	"github.com/lumidren/IoT-Security-Framework/services/policy/internal/hooks"
 	"github.com/lumidren/IoT-Security-Framework/services/policy/internal/logging"
 	"github.com/lumidren/IoT-Security-Framework/services/policy/internal/metrics"
@@ -32,10 +38,49 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheckMain(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "policy:", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheckMain implements "policy healthcheck".
+func healthcheckMain(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	listen := strings.TrimSpace(getenv("POLICY_LISTEN"))
+	if listen == "" {
+		listen = ":8081"
+	}
+	return healthcheck.Run(context.Background(), "policy", args, healthcheck.DefaultURL(listen, "/healthz"), stdout, stderr)
+}
+
+// buildGuard returns the management API guard: ES256 service JWTs (POLICY_JWT_PUBLIC_KEY_PEM,
+// aud=policy) and/or console OIDC access tokens (POLICY_OIDC_ISSUER). With neither configured
+// the API fails closed with 503.
+func buildGuard(cfg config.Config, servicePEM, serviceIssuer string, log *slog.Logger) (auth.Guard, error) {
+	var verifiers []auth.TokenVerifier
+	if servicePEM != "" {
+		v, err := auth.NewVerifier(servicePEM, "policy", auth.WithIssuer(serviceIssuer))
+		if err != nil {
+			return nil, fmt.Errorf("POLICY_JWT_PUBLIC_KEY_PEM: %w", err)
+		}
+		verifiers = append(verifiers, v)
+	}
+	if cfg.OIDCIssuer != "" {
+		v, err := auth.NewOIDCVerifier(auth.OIDCConfig{Issuer: cfg.OIDCIssuer, Audience: cfg.OIDCAudience, RoleClaim: cfg.OIDCRoleClaim})
+		if err != nil {
+			return nil, fmt.Errorf("POLICY_OIDC_ISSUER: %w", err)
+		}
+		verifiers = append(verifiers, v)
+		log.Info("management API accepts console OIDC tokens", "issuer", cfg.OIDCIssuer, "audience", cfg.OIDCAudience, "role_claim", cfg.OIDCRoleClaim)
+	}
+	if len(verifiers) == 0 {
+		log.Warn("neither POLICY_JWT_PUBLIC_KEY_PEM nor POLICY_OIDC_ISSUER is set: the management API (/v1/*) answers 503")
+		return auth.DisabledGuard("management API disabled: configure POLICY_JWT_PUBLIC_KEY_PEM and/or POLICY_OIDC_ISSUER"), nil
+	}
+	return auth.NewGuard(verifiers...), nil
 }
 
 func run() error {
@@ -154,16 +199,9 @@ func run() error {
 	eng.OnSwap(authz.FlushCache)
 
 	// Management API guard.
-	var guard auth.Guard
-	if pemKey := os.Getenv("POLICY_JWT_PUBLIC_KEY_PEM"); pemKey != "" {
-		verifier, err := auth.NewVerifier(pemKey, "policy", auth.WithIssuer(os.Getenv("POLICY_JWT_ISSUER")))
-		if err != nil {
-			return fmt.Errorf("POLICY_JWT_PUBLIC_KEY_PEM: %w", err)
-		}
-		guard = verifier.Guard()
-	} else {
-		log.Warn("POLICY_JWT_PUBLIC_KEY_PEM is not set: the management API (/v1/*) answers 503")
-		guard = auth.DisabledGuard("management API disabled: POLICY_JWT_PUBLIC_KEY_PEM is not configured")
+	guard, err := buildGuard(cfg, os.Getenv("POLICY_JWT_PUBLIC_KEY_PEM"), os.Getenv("POLICY_JWT_ISSUER"), log)
+	if err != nil {
+		return err
 	}
 	api, err := mgmt.New(mgmt.Config{Engine: eng, Revocations: cache, Guard: guard, Logger: log})
 	if err != nil {

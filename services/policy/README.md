@@ -51,8 +51,11 @@ retained device publishes, and cross-device/cross-tenant topics.
 | `POLICY_STATE_DIR` | — | Snapshot dir for `revocations.json` and `policy_history.json` |
 | `POLICY_HOOK_TOKEN` | — | If set, EMQX must send it in `X-IronMesh-Hook-Token` |
 | `POLICY_AUTHZ_CACHE_TTL` | `10s` | Decision cache lifetime |
-| `POLICY_JWT_PUBLIC_KEY_PEM` | — | P-256 public key(s) (PEM) verifying management-API JWTs (`aud=policy`); unset → `/v1/*` answers 503 |
-| `POLICY_JWT_ISSUER` | — | Optional required `iss` |
+| `POLICY_JWT_PUBLIC_KEY_PEM` | — | P-256 public key(s) (PEM) verifying ES256 service JWTs (`aud=policy`) on the management API |
+| `POLICY_JWT_ISSUER` | — | Optional required `iss` of service JWTs |
+| `POLICY_OIDC_ISSUER` | — | IdP issuer URL; enables console OIDC access tokens on the management API. The JWKS is discovered from `<issuer>/.well-known/openid-configuration` on first use, cached (1 h) and refreshed when a token names an unknown `kid` (at most every 30 s); tokens must carry exactly this `iss` |
+| `POLICY_OIDC_AUDIENCE` | `ironmesh-api` | Value `aud` must contain for OIDC tokens |
+| `POLICY_OIDC_ROLE_CLAIM` | `role` | Claim holding the role; dotted paths (`realm_access.roles`) and arrays are accepted (highest known role wins). Tenant comes from `tenant_id` |
 | `POLICY_LOG_LEVEL` | `info` | debug/info/warn/error (JSON logs: `ts, level, service, msg, tenant_id, device_id`) |
 
 ## Endpoints
@@ -61,11 +64,23 @@ retained device publishes, and cross-device/cross-tenant topics.
 |---|---|---|
 | `POST /emqx/authn`, `POST /emqx/authz` | optional hook token | EMQX backends |
 | `POST /internal/v1/revocations` | bearer + HMAC | PKI revocation event → cache, snapshot, kick (202) |
-| `GET /v1/policy` | JWT admin | active Rego, version, sha256, updated_at/by |
-| `PUT /v1/policy` | JWT owner | compile + embedded invariant tests → 422 diagnostics, else persisted version + atomic hot swap |
-| `POST /v1/policy/evaluate` | JWT operator | dry run with OPA trace, `matched_rules`, never cached |
-| `GET /v1/policy/history`, `GET /v1/revocations` | JWT viewer | cursor pagination (`?cursor=&limit=`) |
+| `GET /v1/policy` | bearer admin | active Rego, version, sha256, updated_at/by |
+| `PUT /v1/policy` | bearer owner | compile + embedded invariant tests → 422 diagnostics, else persisted version + atomic hot swap |
+| `POST /v1/policy/evaluate` | bearer operator | dry run with OPA trace, `matched_rules`, never cached |
+| `GET /v1/policy/history`, `GET /v1/revocations` | bearer viewer | cursor pagination (`?cursor=&limit=`); tokens with `tenant_id` only see that tenant's revocations |
 | `GET /metrics`, `GET /healthz`, `GET /readyz`, `GET /openapi.json` | none | ops |
+
+"bearer" is either a console OIDC access token (RS256, PS256 or ES256, verified against the
+`POLICY_OIDC_ISSUER` JWKS, `aud` ⊇ `POLICY_OIDC_AUDIENCE`, role from `POLICY_OIDC_ROLE_CLAIM`)
+or an ES256 service JWT verified with `POLICY_JWT_PUBLIC_KEY_PEM` (`aud=policy`, role from
+`role`); the first verifier that accepts the token wins. With neither configured `/v1/*` answers
+503. `alg` values other than those three (e.g. `none`, `HS256`) and keys of the wrong type for
+the header `alg` are rejected before signature verification.
+
+Health check for the distroless image: `policy healthcheck [--url URL] [--timeout 3s]` GETs
+`http://127.0.0.1:<port of POLICY_LISTEN>/healthz` and exits `0` on 2xx, `1` otherwise (TLS
+verification is skipped only for an `https` URL on a loopback host). Example:
+`test: ["CMD", "/policy", "healthcheck"]` (path as installed by the Dockerfile).
 
 Metrics: `ironmesh_auth_failures_total{reason}`, `ironmesh_authz_decisions_total{result,action}`,
 `ironmesh_revocation_apply_latency_seconds` and the contract alias
@@ -77,7 +92,13 @@ Metrics: `ironmesh_auth_failures_total{reason}`, `ironmesh_authz_decisions_total
 `deploy/emqx/emqx.conf` configures the mTLS-only listener (8883, TLS 1.3, `verify_peer`,
 `fail_if_no_peer_cert`, `peer_cert_as_username = cn`), HTTP authn/authz pointing at this service,
 `authorization.no_match = deny`, `deny_action = disconnect`, cache 10 s, and `deploy/emqx/acl.conf`
-as deny-all fallback. Keys marked `VERIFY` in the file (ALPN option, `cert_pem` placeholder) must be
+as deny-all fallback. It also configures the auth-event webhook to the bridge: HTTP connector
+`ironmesh_bridge` (`http://bridge:8082`), HTTP action `ironmesh_auth_events`
+(`POST /emqx/events`, header `x-ironmesh-hook-token` = `BRIDGE_EVENTS_TOKEN`, no body template so
+the selected event map is posted as JSON) and rule `ironmesh_auth_events` selecting
+`client.connected`, `client.disconnected`, failed `client.check_authn_complete` and denied
+`client.check_authz_complete` events. Override the token placeholder at deploy time
+(`EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__HEADERS__X-IRONMESH-HOOK-TOKEN`). Keys marked `VERIFY` in the file (ALPN option, `cert_pem` placeholder) must be
 checked against the deployed EMQX release because the broker was not available locally.
 
 ## Development

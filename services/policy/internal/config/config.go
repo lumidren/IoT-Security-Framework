@@ -54,6 +54,13 @@ type Config struct {
 	HookToken string
 	// AuthzCacheTTL is the authorization decision cache lifetime (default 10s).
 	AuthzCacheTTL time.Duration
+	// OIDCIssuer enables console OIDC access tokens on the management API (POLICY_OIDC_ISSUER);
+	// the JWKS is discovered from <issuer>/.well-known/openid-configuration.
+	OIDCIssuer string
+	// OIDCAudience must be contained in aud (POLICY_OIDC_AUDIENCE, default ironmesh-api).
+	OIDCAudience string
+	// OIDCRoleClaim names the role claim (POLICY_OIDC_ROLE_CLAIM, default role; dotted paths allowed).
+	OIDCRoleClaim string
 	// LogLevel is debug|info|warn|error.
 	LogLevel string
 	// ShutdownTimeout bounds graceful shutdown.
@@ -114,6 +121,9 @@ func Load(getenv func(string) string) (Config, error) {
 		StateDir:          get("POLICY_STATE_DIR", ""),
 		HookToken:         get("POLICY_HOOK_TOKEN", ""),
 		AuthzCacheTTL:     dur("POLICY_AUTHZ_CACHE_TTL", "10s"),
+		OIDCIssuer:        get("POLICY_OIDC_ISSUER", ""),
+		OIDCAudience:      get("POLICY_OIDC_AUDIENCE", "ironmesh-api"),
+		OIDCRoleClaim:     get("POLICY_OIDC_ROLE_CLAIM", "role"),
 		LogLevel:          get("POLICY_LOG_LEVEL", "info"),
 		ShutdownTimeout:   dur("POLICY_SHUTDOWN_TIMEOUT", "10s"),
 	}
@@ -134,6 +144,7 @@ func Load(getenv func(string) string) (Config, error) {
 		"POLICY_EMQX_API_URL": cfg.EMQXAPIURL,
 		"POLICY_PKI_CRL_URL":  cfg.PKICRLURL,
 		"POLICY_REGISTRY_URL": cfg.RegistryURL,
+		"POLICY_OIDC_ISSUER":  cfg.OIDCIssuer,
 	} {
 		if raw == "" {
 			continue
