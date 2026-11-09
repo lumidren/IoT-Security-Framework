@@ -8,7 +8,7 @@ Services
 {{- end }}
 {{- end }}
 {{- if .Values.emqx.enabled }}
-  emqx      {{ .Release.Name }}-emqx (mqttssl=8883 dashboard=18083) replicas={{ .Values.emqx.replicaCount }}
+  emqx      {{ .Release.Name }}-emqx (mqttssl=8883 api=18083, policy/registry/ota only) {{ .Release.Name }}-emqx-internal (8884, bridge/registry) replicas={{ .Values.emqx.replicaCount }}
 {{- end }}
 {{- if .Values.redpanda.enabled }}
   redpanda  {{ .Release.Name }}-redpanda (kafka={{ .Values.redpanda.listeners.kafka.port }}) replicas={{ .Values.redpanda.statefulset.replicas }}
@@ -54,6 +54,9 @@ Verify
   helm -n {{ .Release.Namespace }} test {{ .Release.Name }}
 {{- if .Values.monitoring.enabled }}
   Prometheus: ServiceMonitors + PrometheusRule "{{ include "ironmesh.fullname" . }}-rules" are installed.
+{{- end }}
+{{- if .Values.admission.imageVerification.enabled }}
+  Admission: Kyverno ClusterPolicy "{{ include "ironmesh.fullname" . }}-verify-images" admits only signed + SBOM-attested ironmesh images.
 {{- end }}
 {{- if not .Values.networkPolicy.enabled }}
 

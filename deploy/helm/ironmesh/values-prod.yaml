@@ -63,14 +63,38 @@ dbInit:
 
 networkPolicy:
   enabled: true
+  # ALB targets and the NLB TCP health check on 8883 (never 18083).
   loadBalancerCidrs:
     - 10.50.0.0/16
-  externalHttpsEgress:
-    enabled: true
-    # VPC endpoints for STS/KMS/S3/Secrets Manager live in the VPC; OIDC issuer is external.
-    cidrs:
-      - 0.0.0.0/0
+  httpsEgress:
+    # STS / KMS / Secrets Manager only through the VPC interface endpoints (Terraform module
+    # network, var.vpc_interface_endpoints): nothing in AWS is reached over the Internet.
+    awsApis:
+      cidrs:
+        - 10.50.0.0/16
+      services: [pki, ota, registry, anomaly, bridge]
+    # S3 gateway endpoint prefix-list CIDRs: set by values-prod.generated.yaml (terraform output
+    # helm_values, networkPolicy.httpsEgress.s3.cidrs).
+    s3:
+      cidrs: []
+      services: [ota]
+    # TODO(operator): narrow to the egress range of auth.ironmesh.dev. Until then these services
+    # can also reach public AWS endpoints on 443 (NetworkPolicy cannot match FQDNs).
+    oidcIssuer:
+      cidrs:
+        - 0.0.0.0/0
+      services: [policy, registry, ota, anomaly, console]
+    siemWebhook:
+      cidrs:
+        - 0.0.0.0/0
+      services: [anomaly]
   allowHelmTest: false
+
+# T-67: only images signed (and SBOM-attested) by this repository's release workflow run here.
+admission:
+  imageVerification:
+    enabled: true
+    failureAction: Enforce
 
 services:
   pki:
@@ -244,9 +268,11 @@ emqx:
       labelSelector:
         matchLabels:
           app.kubernetes.io/name: emqx
+  # Helm merges this map into values.yaml's emqxConfig (per-client limits stay as documented there).
   emqxConfig:
     EMQX_LOG__CONSOLE__LEVEL: warning
     EMQX_LISTENERS__SSL__DEFAULT__MAX_CONNECTIONS: "500000"
+    # Per node: 3 nodes admit ~6000 handshakes/s, a 100k-device reconnect storm in ~20 s.
     EMQX_LISTENERS__SSL__DEFAULT__MAX_CONN_RATE: "2000/s"
 
 redpanda:

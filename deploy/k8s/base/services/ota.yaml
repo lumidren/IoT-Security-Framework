@@ -21,7 +21,11 @@ data:
   OTA_KAFKA_TOPIC_AUDIT: im.audit
   OTA_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
   OTA_KAFKA_CONSUMER_GROUP: ota-status
-  OTA_KAFKA_SASL_MECHANISM: none
+  # SCRAM user `ota` (redpanda-init Job); password OTA_KAFKA_SASL_PASSWORD in ota-secret.
+  # CODE GAP: the OTA Kafka clients do not pass these settings to aiokafka yet, so OTA's Kafka
+  # publish/consume fails against the SASL-only broker until services/ota is fixed.
+  OTA_KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  OTA_KAFKA_SASL_USERNAME: ota
   OTA_KAFKA_TLS_ENABLED: "false"
   # Dev: artifacts on a local volume, signing key generated on first start under OTA_SIGNING_KEY_FILE.
   OTA_ARTIFACT_STORE: filesystem
@@ -36,7 +40,7 @@ data:
   OTA_PKI_URL: https://pki:8443
   # Target resolution + OtaNotify downlink requests (bearer OTA_REGISTRY_TOKEN in ota-secret).
   OTA_REGISTRY_URL: http://registry:8000
-  OTA_EMQX_API_URL: http://emqx:18083
+  OTA_EMQX_API_URL: http://emqx-api:18083
   OTA_OIDC_ISSUER: ""
   OTA_OIDC_AUDIENCE: ironmesh-api
   OTA_TLS_CERT_FILE: /etc/ironmesh/tls/tls.crt

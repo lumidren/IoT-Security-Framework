@@ -30,6 +30,9 @@ spec:
     - emqx.ironmesh
     - emqx.ironmesh.svc
     - emqx.ironmesh.svc.cluster.local
+    # Internal service listener 8884 (BRIDGE_MQTT_URL, REGISTRY_MQTT_HOST).
+    - emqx-internal
+    - emqx-internal.ironmesh.svc
     - localhost
     - mqtt.ironmesh.local
   issuerRef:

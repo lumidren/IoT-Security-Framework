@@ -7,9 +7,9 @@
 {{- $checks = append $checks (printf "%s://%s:%d%s" $scheme (include "ironmesh.svcName" (dict "root" $ "name" $name)) (int $port) $svc.health.readinessPath) }}
 {{- end }}
 {{- end }}
-{{- if .Values.emqx.enabled }}
-{{- $checks = append $checks (printf "http://%s-emqx:18083/status" .Release.Name) }}
-{{- end }}
+{{- /* No EMQX check: 18083 admits only policy, registry, ota and Prometheus (T-76), and 8883/8884
+need a client certificate; broker health is covered by the EMQX readiness probe and the smoke
+enrollment. */}}
 ---
 apiVersion: v1
 kind: Pod

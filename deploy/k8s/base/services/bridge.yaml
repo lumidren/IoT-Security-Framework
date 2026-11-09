@@ -8,7 +8,8 @@ metadata:
 data:
   # Names and defaults from services/bridge/internal/config/config.go.
   BRIDGE_LISTEN: ":8082"
-  BRIDGE_MQTT_URL: ssl://emqx:8883
+  # EMQX internal service listener (Services CA only, no per-client device rate limit).
+  BRIDGE_MQTT_URL: ssl://emqx-internal:8884
   BRIDGE_MQTT_CLIENT_ID: svc-bridge
   BRIDGE_MQTT_TOPIC: $share/bridge/im/v1/#
   BRIDGE_MQTT_KEEPALIVE: 60s
@@ -21,7 +22,9 @@ data:
   BRIDGE_KAFKA_INGEST_TOPIC: im.ingest
   BRIDGE_KAFKA_AUTH_TOPIC: im.auth
   BRIDGE_KAFKA_TLS_ENABLED: "false"
-  BRIDGE_KAFKA_SASL_MECHANISM: none
+  # SCRAM user `bridge` (redpanda-init Job); password BRIDGE_KAFKA_SASL_PASSWORD in bridge-secret.
+  BRIDGE_KAFKA_SASL_MECHANISM: scram-sha-512
+  BRIDGE_KAFKA_SASL_USERNAME: bridge
   # The bridge creates im.ingest, im.auth, im.alerts, im.audit, im.commands and im.campaigns on
   # boot (single Redpanda node: replication 1).
   BRIDGE_KAFKA_TOPICS_CREATE: "true"

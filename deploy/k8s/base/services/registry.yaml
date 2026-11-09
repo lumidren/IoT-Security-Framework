@@ -23,14 +23,17 @@ data:
   REGISTRY_KAFKA_TOPIC_COMMANDS: im.commands
   REGISTRY_KAFKA_TOPIC_CAMPAIGNS: im.campaigns
   REGISTRY_KAFKA_CONSUMER_GROUP: registry-ingest
-  REGISTRY_KAFKA_SASL_MECHANISM: none
+  # SCRAM user `registry` (redpanda-init Job); password REGISTRY_KAFKA_SASL_PASSWORD in
+  # registry-secret. The registry matches the mechanism case-sensitively.
+  REGISTRY_KAFKA_SASL_MECHANISM: SCRAM-SHA-512
+  REGISTRY_KAFKA_SASL_USERNAME: registry
   REGISTRY_KAFKA_TLS_ENABLED: "false"
   # PKI management API over mTLS (registry-tls, CN svc-registry): the registry is the only
   # holder of tenant command keys and pushes the public key + enrollment flag to the PKI.
   REGISTRY_PKI_URL: https://pki:8443
   REGISTRY_POLICY_URL: http://policy:8081
   REGISTRY_OTA_URL: http://ota:8001
-  REGISTRY_EMQX_API_URL: http://emqx:18083
+  REGISTRY_EMQX_API_URL: http://emqx-api:18083
   # No IdP in the dev stack: point this at your Dex/Keycloak before enabling OIDC-protected routes.
   REGISTRY_OIDC_ISSUER: ""
   REGISTRY_OIDC_AUDIENCE: ironmesh-api
@@ -39,9 +42,10 @@ data:
   REGISTRY_TLS_KEY_FILE: /etc/ironmesh/tls/tls.key
   REGISTRY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
   REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE: /etc/ironmesh/tls/tls.key
-  # Downlink publisher (MQTT 5, mTLS with the registry-tls identity).
-  REGISTRY_MQTT_HOST: emqx
-  REGISTRY_MQTT_PORT: "8883"
+  # Downlink publisher (MQTT 5, mTLS with the registry-tls identity) on the EMQX internal service
+  # listener (the device listener's per-client rate limit would throttle fleet-wide downlinks).
+  REGISTRY_MQTT_HOST: emqx-internal
+  REGISTRY_MQTT_PORT: "8884"
   REGISTRY_MQTT_CLIENT_ID: svc-registry
   # Dev only: the KEK lives on the pod's emptyDir and is lost with it.
   REGISTRY_KMS_BACKEND: local

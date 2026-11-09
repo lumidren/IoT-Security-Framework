@@ -19,8 +19,12 @@ kubectl -n ironmesh get pods -w
 ```
 
 Host ports (kind): console `http://localhost:3000`, registry `http://localhost:8000`, EMQX
-`mqtts://localhost:8883` (dashboard `http://localhost:18083`), PKI EST/OCSP `https://localhost:8443`,
-CRL `http://localhost:8444/crl/device-ca.crl`.
+`mqtts://localhost:8883` (devices only), PKI EST/OCSP `https://localhost:8443`,
+CRL `http://localhost:8444/crl/device-ca.crl`. The EMQX dashboard / management API is not mapped
+(THREAT_MODEL T-76): `kubectl -n ironmesh port-forward svc/emqx-api 18083:18083` when debugging.
+EMQX has three Services: `emqx` (8883, devices, NodePort in dev), `emqx-internal` (8884, the
+internal service listener for `svc-bridge` / `svc-registry`) and `emqx-api` (18083, reachable from
+policy, registry, ota and Prometheus only).
 
 ## What the dev overlay changes
 
@@ -28,7 +32,8 @@ CRL `http://localhost:8444/crl/device-ca.crl`.
 * NodePort services for console, emqx, pki, registry (`overlays/dev/patches/nodeports.yaml`)
 * development credentials via `secretGenerator` (stable names, no hash suffix): `pki-secret`,
   `policy-secret`, `bridge-secret`, `registry-secret`, `ota-secret`, `anomaly-secret`,
-  `console-secret`, `emqx-env`, `emqx-api-keys`, `postgres-admin`, `dev-db`. Shared pairs are
+  `console-secret`, `emqx-env`, `emqx-api-keys`, `redpanda-users`, `postgres-admin`, `dev-db`.
+  Shared pairs are
   consistent (policy hook token, bridge webhook token = the EMQX `ironmesh_auth_events` action
   header, PKI<->policy token/HMAC, EMQX API key/secret) and `REGISTRY_INTERNAL_TOKENS` holds one
   distinct token per caller (`pki` = `PKI_REGISTRY_TOKEN`, `policy` = `POLICY_REGISTRY_TOKEN`,
@@ -87,9 +92,18 @@ annotations and the `allow-prometheus-scrape` NetworkPolicy admits any namespace
 * OTA: `OTA_ARTIFACT_STORE=filesystem` on a 10 Gi PVC and `OTA_SIGNING_PROVIDER=file` with
   `OTA_SIGNING_KEY_GENERATE_IF_MISSING=true` (a dev Ed25519 key is created on first start;
   test vectors live in `libs/python/ironmesh-wire/tests/keys`).
-* Kafka: Redpanda runs in `dev-container` mode. The bridge creates the topics (`im.ingest`,
-  `im.auth`, `im.alerts`, `im.audit`, `im.commands`, `im.campaigns`) on boot
-  (`BRIDGE_KAFKA_TOPICS_CREATE=true`, 3 partitions, replication 1, `BRIDGE_KAFKA_SASL_MECHANISM=none`).
+* Kafka: Redpanda runs in `dev-container` mode with SASL/SCRAM-SHA-512 enforced (THREAT_MODEL
+  T-72). The `redpanda-init` Job (`base/redpanda/init-job.yaml`) creates the users `admin`
+  (superuser, ACL writes only), `bridge`, `registry`, `ota`, `anomaly` from `redpanda-users`, sets
+  `enable_sasl=true` and writes per-service topic ACLs plus `<svc>-*` consumer-group ACLs (the MSK
+  IAM grants of `deploy/terraform/aws/modules/iam`). Services authenticate with
+  `<SVC>_KAFKA_SASL_{MECHANISM,USERNAME}` (ConfigMap) and `<SVC>_KAFKA_SASL_PASSWORD` (secret). The
+  bridge creates the topics (`im.ingest`, `im.auth`, `im.alerts`, `im.audit`, `im.commands`,
+  `im.campaigns`) on boot (`BRIDGE_KAFKA_TOPICS_CREATE=true`, 3 partitions, replication 1).
+  Known gap: the OTA service declares `OTA_KAFKA_SASL_*` but its Kafka clients do not use them
+  yet, so its Kafka publish/consume fails until that code change lands.
+* Revocation fan-out: `pki` pushes revocations to `policy-headless` (`PKI_POLICY_FANOUT=dns`), a
+  headless Service resolving to every ready policy pod.
 * EMQX forwards client lifecycle / authn-failure / authz-deny events to the bridge
   (`POST bridge:8082/emqx/events` -> `im.auth`) through the connector, action and rule set in
   `base/emqx/configmap.yaml`; the action's token header lives in `emqx-env`.

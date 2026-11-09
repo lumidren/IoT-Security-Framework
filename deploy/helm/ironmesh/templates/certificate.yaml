@@ -123,6 +123,9 @@ spec:
     - {{ .Release.Name }}-emqx
     - {{ .Release.Name }}-emqx.{{ .Release.Namespace }}.svc
     - {{ .Release.Name }}-emqx-headless.{{ .Release.Namespace }}.svc
+    # Internal service listener 8884 (BRIDGE_MQTT_URL, REGISTRY_MQTT_HOST).
+    - {{ .Release.Name }}-emqx-internal
+    - {{ .Release.Name }}-emqx-internal.{{ .Release.Namespace }}.svc
     {{- range .Values.emqxTls.extraDnsNames }}
     - {{ . }}
     {{- end }}

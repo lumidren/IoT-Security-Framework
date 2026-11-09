@@ -8,7 +8,7 @@ metadata:
 data:
   # Names and defaults from services/policy/internal/config/config.go.
   POLICY_LISTEN: ":8081"
-  POLICY_EMQX_API_URL: http://emqx:18083
+  POLICY_EMQX_API_URL: http://emqx-api:18083
   POLICY_PKI_CRL_URL: http://pki:8444/crl/device-ca.crl
   POLICY_CRL_POLL_INTERVAL: 5s
   POLICY_CRL_ISSUER_CERT_FILE: /etc/ironmesh/device-ca/tls.crt
@@ -140,6 +140,27 @@ metadata:
     app.kubernetes.io/name: policy
 spec:
   type: ClusterIP
+  selector:
+    app.kubernetes.io/name: policy
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+      protocol: TCP
+---
+# Headless twin for the PKI's revocation fan-out (PKI_POLICY_URL=http://policy-headless:8081,
+# PKI_POLICY_FANOUT=dns): DNS returns every ready policy pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: policy-headless
+  namespace: ironmesh
+  labels:
+    app.kubernetes.io/name: policy
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: false
   selector:
     app.kubernetes.io/name: policy
   ports:

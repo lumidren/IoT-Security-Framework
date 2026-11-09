@@ -64,13 +64,19 @@ dbInit:
 
 networkPolicy:
   enabled: true
-  # ALB/NLB (ip targets) reach pods from the VPC.
+  # ALB (ip targets) and the NLB TCP health check on 8883 reach pods from the VPC.
   loadBalancerCidrs:
     - 10.40.0.0/16
-  externalHttpsEgress:
-    enabled: true
-    cidrs:
-      - 0.0.0.0/0
+  httpsEgress:
+    # AWS APIs through the VPC interface endpoints only.
+    awsApis:
+      cidrs:
+        - 10.40.0.0/16
+      services: [pki, ota, registry, anomaly, bridge]
+    # S3 gateway endpoint prefix-list CIDRs from values-staging.generated.yaml.
+    s3:
+      cidrs: []
+      services: [ota]
 
 services:
   pki:

@@ -108,10 +108,15 @@ and `im.campaigns` on boot (`BRIDGE_KAFKA_TOPICS_CREATE=true`, `kafka.partitions
 
 ## Broker
 
-EMQX is configured through `emqx.emqxConfig` environment overrides: a single listener `ssl:default`
-on 8883, TLS 1.3 only, `verify_peer` + `fail_if_no_peer_cert`, `partial_chain` against the Device
-CA bundle, `verify_peer_ext_key_usage = clientAuth`, `mqtt.peer_cert_as_username = cn`,
-`enable_authn = quick_deny_anonymous`; HTTP authn/authz to `ironmesh-policy:8081/emqx/{authn,authz}`
+EMQX is configured through `emqx.emqxConfig` environment overrides: the device listener
+`ssl:default` on 8883, TLS 1.3 only, `verify_peer` + `fail_if_no_peer_cert`, `partial_chain`
+against the Device CA bundle, `verify_peer_ext_key_usage = clientAuth`,
+`mqtt.peer_cert_as_username = cn`, `enable_authn = quick_deny_anonymous`, per-client limits
+(`messages_rate` 10/s, `bytes_rate` 64KB/s, `max_conn_rate` 500/s, `mqtt.max_inflight` 32,
+`max_awaiting_rel` 16, `max_qos_allowed` 1; sizing in `values.yaml`, THREAT_MODEL T-40); the
+internal service listener `ssl:internal` on 8884 (Service `<release>-emqx-internal`, Services CA
+only, zone `internal`) for `svc-bridge` and the registry's downlink publisher, so fleet-wide
+service traffic is not throttled by the device limits; HTTP authn/authz to `ironmesh-policy:8081/emqx/{authn,authz}`
 with the hook token header, `authorization.no_match = deny`, `deny_action = disconnect`, 10 s
 authz cache (revocations are enforced by the policy kick, not the cache TTL). The policy service
 kicks sessions through `DELETE /api/v5/clients/{clientid}` using the bootstrap API key. Client
@@ -120,16 +125,38 @@ the `ironmesh_auth_events` action (header `X-IronMesh-Hook-Token` = `BRIDGE_EVEN
 rule of the same name to `ironmesh-bridge:8082/emqx/events` (`im.auth`), mirroring
 `services/policy/deploy/emqx/emqx.conf`.
 
+The management API shares the dashboard listener (18083) in EMQX 5, so it cannot be switched off
+or bound to loopback: it stays ClusterIP-only, Swagger is disabled, and NetworkPolicy admits only
+policy, registry, ota and the Prometheus scraper (THREAT_MODEL T-76). The NLB health-checks the
+broker with TCP on 8883 (Terraform module `alb`), so `networkPolicy.loadBalancerCidrs` never opens
+18083.
+
+## Supply chain
+
+`services.<name>.image.digest` (set by `scripts/ci/deploy_helm.sh upgrade` from the digests the
+deploy workflow resolved and cosign-verified) makes every Deployment run
+`<imageRegistry>/<repository>@<digest>`; the tag only labels the release.
+`admission.imageVerification.enabled` (on in `values-prod.yaml`) installs a Kyverno
+`ClusterPolicy` (`templates/kyverno-verifyimages.yaml`, Kyverno >= 1.11 required) that admits
+`ghcr.io/lumidren/ironmesh-*` only with a cosign keyless signature and a CycloneDX attestation
+from `admission.imageVerification.repository`'s `release.yml` on `main` or a `v*` tag, and pins
+the Pod to the verified digest (THREAT_MODEL T-67).
+
 ## Networking
 
-`networkPolicy.enabled` renders default-deny for the namespace plus: DNS, OTLP egress to the
-collector, HTTPS egress (STS/KMS/S3/Secrets Manager/OIDC/SIEM), devices -> emqx 8883 and pki
-8443/8444, emqx -> policy 8081, policy -> emqx 18083 / pki 8444 / registry 8000, pki -> policy /
-postgres, bridge -> emqx 8883 / kafka, registry/ota/anomaly -> postgres / kafka / pki 8443,
-console -> registry/ota/anomaly, Prometheus -> metrics ports. `additionalAllows` toggles the
-extra calls required by the API contract (pki -> registry enrolment callback, registry ->
-policy/ota/EMQX API, anomaly -> registry/policy/ota, console -> policy, policy -> kafka, EMQX ->
-bridge webhook).
+`networkPolicy.enabled` renders default-deny for the namespace plus: DNS, OTLP/gRPC (4317)
+egress to the collector, per-service HTTPS egress from `networkPolicy.httpsEgress` (classes
+`awsApis` = STS/KMS/Secrets Manager for pki/ota/registry/anomaly/bridge, `s3` for ota,
+`oidcIssuer` for policy/registry/ota/anomaly/console, `siemWebhook` for anomaly; staging/prod
+send AWS traffic only to the VPC interface endpoints), devices -> emqx 8883 and pki 8443/8444,
+load balancer CIDRs -> emqx 8883 (NLB health check), emqx -> policy 8081, policy -> emqx 18083 /
+pki 8444 / registry 8000, pki -> policy (every pod, headless Service) / postgres, bridge -> emqx
+8884 / kafka, registry/ota/anomaly -> postgres / kafka / pki 8443, console ->
+registry/ota/anomaly, Prometheus -> metrics ports (and emqx 18083). 18083 is admitted only from
+policy, registry, ota and Prometheus. `additionalAllows` toggles the extra calls required by the
+API contract (pki -> registry enrolment callback, registry -> policy/ota/EMQX API/EMQX internal
+listener, anomaly -> registry/policy/ota, console -> policy, EMQX -> bridge webhook;
+`policyToKafka` is off because the policy service has no Kafka client).
 
 ## Exposure
 

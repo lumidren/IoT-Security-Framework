@@ -16,7 +16,10 @@ data:
   PKI_CA_DIR: /etc/ironmesh/ca
   PKI_BUNDLE_KEY_FILE: /etc/ironmesh/ca/bundle.key.json
   PKI_PUBLIC_BASE_URL: https://pki.ironmesh.local
-  PKI_POLICY_URL: http://policy:8081
+  # Headless Service policy-headless: the durable revocation outbox resolves every policy pod
+  # and delivers each revocation to all of them (PKI_POLICY_FANOUT=dns).
+  PKI_POLICY_URL: http://policy-headless:8081
+  PKI_POLICY_FANOUT: dns
   # Lifecycle checks + synchronous enrolled callback (bearer PKI_REGISTRY_TOKEN in pki-secret).
   PKI_REGISTRY_URL: http://registry:8000
   PKI_NONCE_TTL: 120s

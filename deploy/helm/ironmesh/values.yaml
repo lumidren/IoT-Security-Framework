@@ -16,9 +16,13 @@ global:
   # Public DNS suffix. Hosts default to console.<domain>, registry.<domain>, ota.<domain>,
   # pki.<domain>, mqtt.<domain>; override individual names under `hosts`.
   domain: ironmesh.local
-  # Every IronMesh image is <imageRegistry>/ironmesh-<service>:<imageTag>.
+  # Every IronMesh image is <imageRegistry>/ironmesh-<service>:<imageTag>, or
+  # <imageRegistry>/ironmesh-<service>@<services.<name>.image.digest> when a digest is set (the
+  # digest always wins over the tag). The deploy workflow resolves every released tag to its
+  # digest, cosign-verifies that digest and passes it in (scripts/ci/deploy_helm.sh); a mutable
+  # tag is never deployed in staging or production.
   imageRegistry: ghcr.io/lumidren
-  # Empty = Chart.appVersion. Pin a release tag in every real environment.
+  # Empty = Chart.appVersion. Still used for labels / service.version when digests are set.
   imageTag: ""
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
@@ -42,6 +46,32 @@ serviceAccount:
   # Services never talk to the Kubernetes API; IRSA injects its own projected token.
   automountToken: false
   annotations: {}
+
+# Admission control (THREAT_MODEL T-67). With imageVerification.enabled the chart installs a
+# Kyverno ClusterPolicy (templates/kyverno-verifyimages.yaml; Kyverno >= 1.11 must already run in
+# the cluster) that admits a Pod running ghcr.io/lumidren/ironmesh-* only if the image carries a
+# cosign keyless signature AND a CycloneDX attestation issued to this repository's release
+# workflow (GitHub Actions OIDC) on main or a v* tag, and rewrites the image reference to its
+# verified digest. Off by default (needs Kyverno); on in values-prod.yaml.
+admission:
+  imageVerification:
+    enabled: false
+    # Enforce | Audit
+    failureAction: Enforce
+    webhookTimeoutSeconds: 30
+    imageReferences:
+      - ghcr.io/lumidren/ironmesh-*
+    # Certificate identity: https://github.com/<repository>/<workflow>@<ref>, ref matching refsRegex.
+    # release.yml runs on push to main and on v* tags; a workflow_dispatch run from any other
+    # branch is not trusted.
+    repository: lumidren/IronMesh-IoT-security-framework
+    workflow: .github/workflows/release.yml
+    refsRegex: "refs/(heads/main|tags/v[0-9]+\\.[0-9]+\\.[0-9]+.*)"
+    issuer: https://token.actions.githubusercontent.com
+    rekorUrl: https://rekor.sigstore.dev
+    # `cosign attest --type cyclonedx` in release.yml.
+    requireSbomAttestation: true
+    sbomPredicateType: https://cyclonedx.org/bom
 
 # ------------------------------------------------------------------------------------------
 # Platform integrations
@@ -250,19 +280,41 @@ networkPolicy:
   ingressControllerNamespace: ingress-nginx
   ingressControllerPodSelector:
     app.kubernetes.io/name: ingress-nginx
-  # CIDRs from which the cloud load balancers (ALB/NLB, ip targets) reach the pods. Usually
-  # the VPC CIDR; empty when ingress.className=nginx.
+  # CIDRs from which the cloud load balancers (ALB/NLB, ip targets) reach the pods: ALB targets
+  # console/registry/ota and the NLB TCP health check of the broker on 8883. Usually the VPC CIDR;
+  # empty when ingress.className=nginx. Never grants the EMQX management port 18083 (T-76).
   loadBalancerCidrs: []
   # Source ranges of devices reaching the broker (8883) and the PKI (EST/OCSP 8443, CRL 8444)
   # through the NLB (client IP preserved). Narrow to known fleet egress ranges when possible.
   deviceCidrs:
     - 0.0.0.0/0
-  # HTTPS egress for every IronMesh pod: STS (IRSA), KMS, S3, Secrets Manager, OIDC issuers,
-  # SIEM webhooks. With VPC endpoints this can be narrowed to the VPC CIDR.
-  externalHttpsEgress:
-    enabled: true
-    cidrs:
-      - 0.0.0.0/0
+  # HTTPS (443) egress, per destination class and per service (IEC 62443 CR 5.1, T-30). A service
+  # gets an egress rule only for the classes that list it; a class with no CIDRs renders nothing.
+  # NetworkPolicy is L3/L4: a 0.0.0.0/0 class also reaches public AWS endpoints, so narrow every
+  # class in real environments (or add an FQDN-aware egress gateway).
+  httpsEgress:
+    # AWS APIs: STS (IRSA web identity; also needed by anomaly for RDS IAM tokens and by the bridge
+    # for MSK IAM), KMS, Secrets Manager. With VPC interface endpoints (Terraform module network)
+    # set this to the VPC CIDR so the traffic never leaves the VPC.
+    awsApis:
+      cidrs:
+        - 0.0.0.0/0
+      services: [pki, ota, registry, anomaly, bridge]
+    # S3 through the gateway endpoint: traffic goes to the regional S3 prefix list, not to the
+    # VPC CIDR (Terraform output helm_values sets the prefix-list CIDRs).
+    s3:
+      cidrs: []
+      services: [ota]
+    # Console users' IdP (OIDC discovery + JWKS). pki and the bridge never need it.
+    oidcIssuer:
+      cidrs:
+        - 0.0.0.0/0
+      services: [policy, registry, ota, anomaly, console]
+    # ANOMALY_SIEM_WEBHOOK_URL.
+    siemWebhook:
+      cidrs:
+        - 0.0.0.0/0
+      services: [anomaly]
   # Let the `helm test` pod reach the service ports.
   allowHelmTest: true
   # Additional east-west allows that the API contract requires on top of the baseline.
@@ -270,14 +322,17 @@ networkPolicy:
     pkiToRegistry: true # POST /internal/v1/devices/{id}/enrolled
     registryToPolicy: true # quarantine -> policy cache deny
     registryToOta: true # POST /internal/v1/ota/status, campaign device state
-    registryToEmqxApi: true # publish shadow/desired, cmd/req, config
+    registryToEmqxApi: true # kick (DELETE /api/v5/clients) on 18083
+    registryToEmqxMqtt: true # downlink publisher (MQTT 5, svc-registry) on the internal listener
     otaToRegistry: true # campaign target resolution
-    otaToEmqxApi: true # publish ota/notify
+    otaToEmqxApi: true # publish ota/notify (POST /api/v5/publish/bulk)
     anomalyToRegistry: true # POST /internal/v1/devices/{id}/quarantine
     anomalyToPolicy: true # kick after quarantine
     anomalyToOta: true # GET /internal/v1/firmware/known-hashes
     consoleToPolicy: true # /v1/policy management API through the console proxy
-    policyToKafka: true # im.auth / im.audit producer
+    # The policy service has no Kafka client (services/policy has no KAFKA setting); enable only
+    # if one is added.
+    policyToKafka: false
     emqxToBridgeWebhook: true # client lifecycle events -> im.auth
 
 # ------------------------------------------------------------------------------------------
@@ -293,6 +348,8 @@ services:
     image:
       repository: ironmesh-pki
       tag: ""
+      # sha256:<64 hex>. When set the Deployment runs <imageRegistry>/<repository>@<digest>; the
+      # deploy workflow sets it for every service after `cosign verify` (never edit by hand).
       digest: ""
     replicas: 2
     # Named container ports. `health.port` / `metrics.port` reference these names.
@@ -368,7 +425,13 @@ services:
       PKI_KEY_SERVICES_CA: ""
       # Base URL embedded in CRL DP / AIA extensions (empty = https://pki.<domain>).
       PKI_PUBLIC_BASE_URL: ""
-      PKI_POLICY_URL: http://ironmesh-policy:8081
+      # Revocation push target. The headless Service (services.policy.service.headless) resolves to
+      # every ready policy pod; PKI_POLICY_FANOUT=dns makes the durable revocation outbox deliver
+      # each revocation to all of them (each replica keeps its own deny cache), not to one pod
+      # picked by the ClusterIP.
+      PKI_POLICY_URL: http://ironmesh-policy-headless:8081
+      # off | dns
+      PKI_POLICY_FANOUT: dns
       # Lifecycle checks and the synchronous enrolled callback (POST /internal/v1/devices/{id}/enrolled).
       PKI_REGISTRY_URL: http://ironmesh-registry:8000
       PKI_NONCE_TTL: 120s
@@ -441,6 +504,9 @@ services:
     service:
       type: ClusterIP
       annotations: {}
+      # Also render <fullname>-policy-headless (clusterIP: None, ready pods only) for the PKI's DNS
+      # revocation fan-out (services.pki.config.PKI_POLICY_URL / PKI_POLICY_FANOUT).
+      headless: true
     serviceAccount:
       roleArn: ""
     tls:
@@ -557,7 +623,9 @@ services:
     config:
       # Names and defaults mirror services/bridge/internal/config/config.go.
       BRIDGE_LISTEN: ":8082"
-      BRIDGE_MQTT_URL: ssl://ironmesh-emqx:8883
+      # EMQX internal service listener (emqx.emqxConfig EMQX_LISTENERS__SSL__INTERNAL__*): Services
+      # CA clients only, zone `internal` (wide inflight window), no per-client device rate limits.
+      BRIDGE_MQTT_URL: ssl://ironmesh-emqx-internal:8884
       BRIDGE_MQTT_CLIENT_ID: svc-bridge
       BRIDGE_MQTT_TOPIC: "$share/bridge/im/v1/#"
       BRIDGE_MQTT_KEEPALIVE: 60s
@@ -695,9 +763,11 @@ services:
       REGISTRY_TLS_CA_FILE: /etc/ironmesh/tls/ca.crt
       # ES256 key for the registry's own service JWTs (aud=pki / aud=ota): the Services CA key.
       REGISTRY_SERVICE_JWT_PRIVATE_KEY_FILE: /etc/ironmesh/tls/tls.key
-      # Downlink publisher (MQTT 5 over mTLS with the REGISTRY_TLS_* identity, CN svc-registry).
-      REGISTRY_MQTT_HOST: ironmesh-emqx
-      REGISTRY_MQTT_PORT: "8883"
+      # Downlink publisher (MQTT 5 over mTLS with the REGISTRY_TLS_* identity, CN svc-registry) on
+      # the EMQX internal service listener: the device listener's per-client messages_rate would
+      # throttle fleet-wide downlinks published by this single client.
+      REGISTRY_MQTT_HOST: ironmesh-emqx-internal
+      REGISTRY_MQTT_PORT: "8884"
       REGISTRY_MQTT_CLIENT_ID: svc-registry
       # Tenant key wrapping (data keys and the tenant command keys, which only the registry holds
       # and uses to sign every downlink): aws (KMS) in every real environment; local = KEK file
@@ -1061,10 +1131,32 @@ services:
 # ------------------------------------------------------------------------------------------
 # EMQX 5 (dependency: https://repos.emqx.io/charts, chart emqx)
 # ------------------------------------------------------------------------------------------
-# Configuration is passed as environment overrides (EMQX_<PATH>__<KEY>). Listener 8883 is the
-# only MQTT listener: TLS 1.3 only, client certificate required (Device CA bundle, partial
-# chain), EKU clientAuth enforced, username = certificate CN. Authentication and authorization
-# are delegated to the policy service over HTTP with a shared hook token.
+# Configuration is passed as environment overrides (EMQX_<PATH>__<KEY>). Two MQTT listeners,
+# both TLS 1.3 only with a client certificate required, EKU clientAuth enforced and
+# username = certificate CN; authentication and authorization are delegated to the policy
+# service over HTTP with a shared hook token:
+#   ssl:default  8883  devices (NLB). Device CA bundle, per-client rate limits (T-40).
+#   ssl:internal 8884  svc-bridge / svc-registry only (ClusterIP <release>-emqx-internal,
+#                      NetworkPolicy). Services CA only, zone `internal`, no message-rate limit.
+#
+# Per-client limits on the device listener (T-40), sized for telemetry every 10 s
+# (DESIGN_CONTRACT.md section 4; minimum agent interval 5 s): a healthy device publishes about
+# 0.1-0.2 msg/s (telemetry + shadow/OTA/command replies) of < 2 KB each.
+#   messages_rate 10/s   ~50x the steady rate, so a reconnecting agent drains its offline buffer
+#                        quickly; a compromised device is capped at 10 msg/s. EMQX throttles (pauses
+#                        the socket), it does not drop.
+#   bytes_rate   64KB/s  = mqtt.max_packet_size (one maximum-size packet per second).
+#   max_conn_rate 500/s  per listener and node (values-prod.yaml: 2000/s), bounds reconnect storms
+#                        and TLS handshake floods.
+#   mqtt.max_inflight 32 = the contract's receive maximum; mqtt.max_awaiting_rel 16 (QoS 2 is
+#                        refused anyway, max_qos_allowed = 1).
+#
+# Management API / dashboard (18083, T-76): EMQX 5 serves the dashboard UI and the REST API that
+# policy (kick), registry (kick) and ota (publish/bulk) call from the same HTTP listener, so it
+# cannot be disabled or bound to 127.0.0.1 here. It is reachable only through the ClusterIP and
+# the NetworkPolicy admits only the policy, registry and ota pods plus the Prometheus scraper
+# (/api/v5/prometheus/stats lives on the same port; NetworkPolicy cannot filter by path). Swagger
+# is off and the dashboard admin password comes from envFromSecret.
 emqx:
   enabled: true
   replicaCount: 3
@@ -1082,11 +1174,16 @@ emqx:
   emqxConfig:
     EMQX_CLUSTER__DISCOVERY_STRATEGY: dns
     EMQX_DASHBOARD__DEFAULT_USERNAME: admin
+    EMQX_DASHBOARD__SWAGGER_SUPPORT: "false"
     EMQX_LISTENERS__TCP__DEFAULT__ENABLE: "false"
     EMQX_LISTENERS__WS__DEFAULT__ENABLE: "false"
     EMQX_LISTENERS__WSS__DEFAULT__ENABLE: "false"
+    # Device listener (NLB target group, 8883).
     EMQX_LISTENERS__SSL__DEFAULT__BIND: "0.0.0.0:8883"
     EMQX_LISTENERS__SSL__DEFAULT__ENABLE_AUTHN: quick_deny_anonymous
+    EMQX_LISTENERS__SSL__DEFAULT__MESSAGES_RATE: 10/s
+    EMQX_LISTENERS__SSL__DEFAULT__BYTES_RATE: 64KB/s
+    EMQX_LISTENERS__SSL__DEFAULT__MAX_CONN_RATE: 500/s
     EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERSIONS: "[tlsv1.3]"
     EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__VERIFY: verify_peer
     EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "true"
@@ -1095,12 +1192,39 @@ emqx:
     EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CERTFILE: /etc/ironmesh/tls/tls.crt
     EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__KEYFILE: /etc/ironmesh/tls/tls.key
     EMQX_LISTENERS__SSL__DEFAULT__SSL_OPTIONS__CACERTFILE: /etc/ironmesh/device-ca/ca.crt
+    # Internal service listener (8884, ClusterIP <release>-emqx-internal, never on the NLB):
+    # svc-bridge (shared subscription) and svc-registry (downlink publisher). Only the Services CA
+    # (ca.crt of the cert-manager broker certificate) is trusted, so device certificates fail
+    # the handshake here.
+    EMQX_LISTENERS__SSL__INTERNAL__ENABLE: "true"
+    EMQX_LISTENERS__SSL__INTERNAL__BIND: "0.0.0.0:8884"
+    EMQX_LISTENERS__SSL__INTERNAL__ZONE: internal
+    EMQX_LISTENERS__SSL__INTERNAL__ENABLE_AUTHN: quick_deny_anonymous
+    EMQX_LISTENERS__SSL__INTERNAL__MAX_CONNECTIONS: "1024"
+    EMQX_LISTENERS__SSL__INTERNAL__MAX_CONN_RATE: 100/s
+    EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__VERSIONS: "[tlsv1.3]"
+    EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__VERIFY: verify_peer
+    EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__FAIL_IF_NO_PEER_CERT: "true"
+    EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__PARTIAL_CHAIN: "true"
+    EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__VERIFY_PEER_EXT_KEY_USAGE: clientAuth
+    EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__CERTFILE: /etc/ironmesh/tls/tls.crt
+    EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__KEYFILE: /etc/ironmesh/tls/tls.key
+    EMQX_LISTENERS__SSL__INTERNAL__SSL_OPTIONS__CACERTFILE: /etc/ironmesh/tls/ca.crt
+    # Default zone = device sessions (see the sizing notes above).
     EMQX_MQTT__PEER_CERT_AS_USERNAME: cn
     EMQX_MQTT__SESSION_EXPIRY_INTERVAL: 7d
-    EMQX_MQTT__MAX_PACKET_SIZE: 1MB
+    EMQX_MQTT__MAX_PACKET_SIZE: 64KB
+    EMQX_MQTT__MAX_QOS_ALLOWED: "1"
+    EMQX_MQTT__MAX_INFLIGHT: "32"
+    EMQX_MQTT__MAX_AWAITING_REL: "16"
     EMQX_MQTT__RETAIN_AVAILABLE: "true"
     EMQX_MQTT__WILDCARD_SUBSCRIPTION: "true"
     EMQX_MQTT__SHARED_SUBSCRIPTION: "true"
+    # Zone `internal` (service sessions): inflight window = BRIDGE_MAX_INFLIGHT, larger packets for
+    # service-to-service traffic (device sessions still cap downlinks at 64KB).
+    EMQX_ZONES__INTERNAL__MQTT__MAX_INFLIGHT: "1024"
+    EMQX_ZONES__INTERNAL__MQTT__MAX_AWAITING_REL: "100"
+    EMQX_ZONES__INTERNAL__MQTT__MAX_PACKET_SIZE: 1MB
     EMQX_AUTHENTICATION__1__MECHANISM: password_based
     EMQX_AUTHENTICATION__1__BACKEND: http
     EMQX_AUTHENTICATION__1__METHOD: post
