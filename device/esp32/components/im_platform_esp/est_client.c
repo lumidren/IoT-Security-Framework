@@ -17,6 +17,14 @@
  * HTTP/1.1 is spoken over the IronMesh TLS transport (im_tls.c) rather than esp_http_client so
  * that the TLS client key can be an ATECC slot key; esp-tls only supports slot 0.
  *
+ * Pinning (threat model T-29), exactly like MQTT: the EST server chain must contain a CA whose
+ * SPKI SHA-256 is pinned (im_tls.c pin_required). The pins come from im_agent_est_pins() - the
+ * pure rule in im_core (im_est_pins_select, host-tested): the signed trust bundle's ca_pins once
+ * enrolled, before that the factory-provisioned PKI CA pin(s): NVS "est_pins" (n * 32 bytes,
+ * tools/factory_provision.py --est-pin), falling back to the SPKI of the CA certificate in
+ * esp_secure_cert. With no pin at all the enrollment fails closed. The /cacerts response is still
+ * stored, but it can only ever add anchors that are already pinned.
+ *
  * NOT COMPILED HERE (ESP-IDF v5.3 + mbedTLS 3.6 x509write_csr / base64).
  */
 #include <stdio.h>
@@ -25,9 +33,11 @@
 
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_secure_cert_read.h"
 #include "esp_transport.h"
 #include "im_esp.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/sha256.h"
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/x509_csr.h"
 #include "nvs.h"
@@ -45,6 +55,8 @@ typedef struct {
 } http_resp_t;
 
 static uint8_t s_resp[RESP_MAX];
+static uint8_t s_est_pins[IM_AGENT_PINS * IM_PIN_LEN];
+static size_t s_n_est_pins;
 
 static int rng(void *ctx, unsigned char *out, size_t len)
 {
@@ -53,9 +65,53 @@ static int rng(void *ctx, unsigned char *out, size_t len)
     return 0;
 }
 
+/* Factory PKI CA pin(s): NVS "est_pins" written at the factory, else the SPKI SHA-256 of the CA
+ * certificate in esp_secure_cert (the factory-provisioned PKI CA). Returns the number of pins. */
+static size_t factory_pins(uint8_t *out, size_t cap)
+{
+    nvs_handle_t h;
+    size_t n = cap * IM_PIN_LEN;
+    char *ca = NULL;
+    uint32_t ca_len = 0;
+    mbedtls_x509_crt crt;
+    size_t got = 0;
+    if (nvs_open("ironmesh", NVS_READONLY, &h) == ESP_OK) {
+        esp_err_t e = nvs_get_blob(h, "est_pins", out, &n);
+        nvs_close(h);
+        if (e == ESP_OK && n > 0 && n % IM_PIN_LEN == 0) {
+            return n / IM_PIN_LEN;
+        }
+    }
+    mbedtls_x509_crt_init(&crt);
+    if (cap > 0 && esp_secure_cert_get_ca_cert(&ca, &ca_len) == ESP_OK &&
+        mbedtls_x509_crt_parse(&crt, (const uint8_t *)ca, ca_len) == 0 &&
+        mbedtls_sha256(crt.pk_raw.p, crt.pk_raw.len, out, 0) == 0) {
+        ESP_LOGW(TAG, "no factory est_pins in NVS: pinning the esp_secure_cert CA");
+        got = 1;
+    }
+    mbedtls_x509_crt_free(&crt);
+    return got;
+}
+
+/* T-29: the pins every EST request of this enrollment must satisfy (bundle pins once enrolled,
+ * the factory pin before; decided by im_core). */
+static esp_err_t select_pins(im_agent_t *a)
+{
+    static uint8_t factory[IM_AGENT_PINS * IM_PIN_LEN];
+    size_t nf = factory_pins(factory, IM_AGENT_PINS);
+    s_n_est_pins = 0;
+    return im_agent_est_pins(a, factory, nf, s_est_pins, IM_AGENT_PINS, &s_n_est_pins) == IM_OK &&
+                   s_n_est_pins > 0
+               ? ESP_OK
+               : ESP_FAIL;
+}
+
 static esp_err_t http(const char *req, size_t req_len, http_resp_t *out)
 {
-    im_tls_opts_t o = {.alpn = NULL, .pin_required = false, .pins = NULL, .n_pins = 0};
+    im_tls_opts_t o = {.alpn = NULL,
+                       .pin_required = true,
+                       .pins = (const uint8_t(*)[32])s_est_pins,
+                       .n_pins = s_n_est_pins};
     esp_transport_handle_t t = im_tls_transport_new(&o);
     size_t n = 0;
     char *sep;
@@ -335,6 +391,10 @@ esp_err_t im_esp_est_enroll(im_agent_t *a, bool renew)
     }
     ESP_LOGI(TAG, "%s: tls/attestation slot %u, new key slot %u",
              plan.reenroll ? "simplereenroll" : "simpleenroll", plan.tls_slot, plan.new_slot);
+    if (select_pins(a) != ESP_OK) {
+        fail(a, 0, "tls_pin_mismatch"); /* no bundle and no factory pin: never connect unpinned */
+        return ESP_FAIL;
+    }
 
     /* CA certificates (anchors / pin candidates for the broker) */
     if (get(req, sizeof req, "/.well-known/est/cacerts", &r) == 0 && r.status == 200 &&
@@ -343,7 +403,7 @@ esp_err_t im_esp_est_enroll(im_agent_t *a, bool renew)
     }
     /* nonce */
     if (get(req, sizeof req, "/.well-known/est/ironmesh/nonce", &r) != 0) {
-        fail(a, 0, "network");
+        fail(a, 0, im_tls_last_failure()); /* network, tls_pin_mismatch, ... */
         return ESP_FAIL;
     }
     if (r.status != 200) {

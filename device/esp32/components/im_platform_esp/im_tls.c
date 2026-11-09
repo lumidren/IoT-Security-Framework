@@ -113,8 +113,10 @@ static int verify_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flag
     return 0;
 }
 
-/* CA certificates from EST /cacerts (NVS) or, before the first enrollment, the factory CA in
- * esp_secure_cert. With pins, keep only pinned anchors. */
+/* Anchor candidates: CA certificates from EST /cacerts (NVS) and the factory CA in
+ * esp_secure_cert. With pins (MQTT, and EST since T-29), every candidate is considered and only
+ * pinned ones are kept, so a stored /cacerts blob can never add an unpinned anchor and the
+ * factory PKI CA stays usable after /cacerts was stored. Without pins: NVS, else the factory CA. */
 static esp_err_t load_anchors(im_tls_t *t)
 {
     static uint8_t buf[4096];
@@ -129,7 +131,8 @@ static esp_err_t load_anchors(im_tls_t *t)
     }
     if (from_nvs) {
         (void)mbedtls_x509_crt_parse(&all, buf, n);
-    } else {
+    }
+    if (!from_nvs || t->opts.pin_required) {
         char *ca = NULL;
         uint32_t ca_len = 0;
         if (esp_secure_cert_get_ca_cert(&ca, &ca_len) == ESP_OK) {

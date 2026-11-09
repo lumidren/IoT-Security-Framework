@@ -7,7 +7,9 @@ Orchestrates esptool / espsecure / espefuse (pip install esptool>=4.7):
   2. writes the esp_secure_cert partition: bootstrap certificate (issued by the Factory CA for
      the CSR the factory image printed), the Factory CA certificate (initial EST trust anchor)
      and the PKI bundle Ed25519 public key (TLV USER_DATA_1),
-  3. writes NVS seed values (device_id, tenant_id) into the encrypted NVS partition,
+  3. writes NVS seed values (device_id, tenant_id and, with --est-pin, the factory EST SPKI
+     pins `est_pins` used before the first trust bundle - threat model T-29) into the encrypted
+     NVS partition,
   4. for --profile prod|hil: verifies the bootloader signature with the production (or HIL)
      Secure Boot public key BEFORE anything is burned, prints EVERY eFuse it is about to burn,
      and burns them only with --yes-i-understand.
@@ -99,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bootstrap-cert", type=Path, required=True)
     ap.add_argument("--factory-ca", type=Path, required=True)
     ap.add_argument("--bundle-pubkey", required=True, help="PKI bundle Ed25519 key, 64 hex chars")
+    ap.add_argument("--est-pin", action="append", default=[],
+                    help="SHA-256 of the PKI (Services) CA SubjectPublicKeyInfo, 64 hex chars; "
+                         "repeatable (max 4). Without it the device pins the esp_secure_cert CA.")
     ap.add_argument("--device-id", required=True)
     ap.add_argument("--tenant-id", required=True)
     ap.add_argument("--yes-i-understand", action="store_true",
@@ -109,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("device id must be dev-<16 hex>, tenant id a lower-case UUIDv4")
     if not re.fullmatch(r"[0-9a-f]{64}", a.bundle_pubkey):
         ap.error("--bundle-pubkey must be 64 lower-case hex characters")
+    if len(a.est_pin) > 4 or not all(re.fullmatch(r"[0-9a-f]{64}", p) for p in a.est_pin):
+        ap.error("--est-pin must be 64 lower-case hex characters (at most 4)")
     if a.profile != "dev" and (a.bootloader is None or a.secure_boot_pubkey is None):
         ap.error("hil/prod need --bootloader and --secure-boot-pubkey")
     execute = a.yes_i_understand
@@ -128,10 +135,12 @@ def main(argv: list[str] | None = None) -> int:
              "--device-cert", str(a.bootstrap_cert), "--ca-cert", str(a.factory_ca),
              "--priv_key_algo", "ECDSA", "256", "--sec_cert_type", "cust_flash_tlv",
              "--user-data-1", str(key_bin)], execute)
-        print("[3/4] NVS seed (device_id, tenant_id)")
+        print("[3/4] NVS seed (device_id, tenant_id, est_pins)")
         csv = Path(tmp) / "nvs.csv"
+        pins = f"est_pins,data,hex2bin,{''.join(a.est_pin)}\n" if a.est_pin else ""
         csv.write_text("key,type,encoding,value\nironmesh,namespace,,\n"
-                       f"device_id,data,string,{a.device_id}\ntenant_id,data,string,{a.tenant_id}\n")
+                       f"device_id,data,string,{a.device_id}\ntenant_id,data,string,{a.tenant_id}\n"
+                       + pins)
         run(["python", "-m", "esp_idf_nvs_partition_gen", "encrypt", str(csv),
              str(Path(tmp) / "nvs.bin"), "0x6000", "--keygen", "--keyfile", "nvs_keys.bin"], execute)
 

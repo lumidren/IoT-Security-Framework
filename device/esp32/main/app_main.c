@@ -260,6 +260,7 @@ void app_main(void)
     cfg.target = "esp32-hil";
     cfg.boot_reason = im_esp_boot_reason();
     cfg.active_slot = slot;
+    cfg.ota_host = CONFIG_IRONMESH_OTA_HOST; /* T-60 artifact host allowlist */
 
     pf.ctx = &s_agent;
     pf.now_unix = now_unix;

@@ -19,6 +19,13 @@ menu "IronMesh"
             int "EST server port (mTLS)"
             range 1 65535
             default 8443
+        config IRONMESH_OTA_HOST
+            string "OTA artifact host (allowlisted together with the trust bundle's broker host)"
+            default "ota.ironmesh.local"
+            help
+                Threat model T-60: firmware artifacts are only downloaded from this host or
+                from the broker host in the signed trust bundle. Any other host in an
+                OtaNotify url is rejected with ota_state error "download".
         config IRONMESH_TELEMETRY_INTERVAL_S
             int "Telemetry interval (s)"
             range 5 86400
