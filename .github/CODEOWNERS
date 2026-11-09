@@ -1,0 +1,20 @@
+# Code owners (GitHub requires their review on matching paths when branch protection enables it).
+# Later lines take precedence.
+
+*                                   @lumidren
+
+# Security-sensitive surfaces: PKI, policy, signing, device trust, CI/CD and infrastructure.
+/services/pki/                      @lumidren
+/services/policy/                   @lumidren
+/services/ota/                      @lumidren
+/device/                            @lumidren
+/libs/python/ironmesh-wire/         @lumidren
+/docs/DESIGN_CONTRACT.md            @lumidren
+/docs/API_CONTRACT.md               @lumidren
+/THREAT_MODEL.md                    @lumidren
+/SECURITY.md                        @lumidren
+/.github/                           @lumidren
+/deploy/                            @lumidren
+/security/                          @lumidren
+/.gitleaks.toml                     @lumidren
+/.trivyignore                       @lumidren

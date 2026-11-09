@@ -1,0 +1,109 @@
+version: 2
+
+# Weekly, grouped minor/patch updates per ecosystem; security updates are always raised
+# immediately by Dependabot security updates (repository setting).
+updates:
+  # --- Go ------------------------------------------------------------------------------------
+  - package-ecosystem: gomod
+    directory: /services/pki
+    schedule: { interval: weekly, day: monday }
+    groups:
+      go-minor: { update-types: [minor, patch] }
+    labels: [dependencies, go, pki]
+  - package-ecosystem: gomod
+    directory: /services/policy
+    schedule: { interval: weekly, day: monday }
+    groups:
+      go-minor: { update-types: [minor, patch] }
+    labels: [dependencies, go, policy]
+  - package-ecosystem: gomod
+    directory: /services/bridge
+    schedule: { interval: weekly, day: monday }
+    groups:
+      go-minor: { update-types: [minor, patch] }
+    labels: [dependencies, go, bridge]
+
+  # --- Python ----------------------------------------------------------------------------------
+  - package-ecosystem: pip
+    directory: /services/registry
+    schedule: { interval: weekly, day: monday }
+    groups:
+      python-minor: { update-types: [minor, patch] }
+    labels: [dependencies, python, registry]
+  - package-ecosystem: pip
+    directory: /services/ota
+    schedule: { interval: weekly, day: monday }
+    groups:
+      python-minor: { update-types: [minor, patch] }
+    labels: [dependencies, python, ota]
+  - package-ecosystem: pip
+    directory: /services/anomaly
+    schedule: { interval: weekly, day: monday }
+    groups:
+      python-minor: { update-types: [minor, patch] }
+    labels: [dependencies, python, anomaly]
+  - package-ecosystem: pip
+    directory: /libs/python/ironmesh-wire
+    schedule: { interval: weekly, day: monday }
+    groups:
+      python-minor: { update-types: [minor, patch] }
+    labels: [dependencies, python, wire]
+
+  # --- Rust ------------------------------------------------------------------------------------
+  - package-ecosystem: cargo
+    directory: /device/agent-rs
+    schedule: { interval: weekly, day: tuesday }
+    groups:
+      cargo-minor: { update-types: [minor, patch] }
+    labels: [dependencies, rust, agent]
+  - package-ecosystem: cargo
+    directory: /device/agent-rs/fuzz
+    schedule: { interval: monthly }
+    labels: [dependencies, rust, fuzz]
+  - package-ecosystem: cargo
+    directory: /device/esp32/host
+    schedule: { interval: weekly, day: tuesday }
+    groups:
+      cargo-minor: { update-types: [minor, patch] }
+    labels: [dependencies, rust, esp32]
+  - package-ecosystem: cargo
+    directory: /device/esp32/host/fuzz
+    schedule: { interval: monthly }
+    labels: [dependencies, rust, fuzz]
+
+  # --- JavaScript ----------------------------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: /console
+    schedule: { interval: weekly, day: wednesday }
+    groups:
+      npm-minor: { update-types: [minor, patch] }
+    labels: [dependencies, javascript, console]
+
+  # --- GitHub Actions (SHA pins are updated with their version comments) -------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: thursday }
+    groups:
+      actions: { patterns: ["*"] }
+    labels: [dependencies, ci]
+
+  # --- Container base images ---------------------------------------------------------------------
+  - package-ecosystem: docker
+    directories:
+      - /services/pki
+      - /services/policy
+      - /services/bridge
+      - /services/registry
+      - /services/ota
+      - /services/anomaly
+      - /console
+      - /device/agent-rs
+      - /deploy/docker/pki-init
+    schedule: { interval: weekly, day: friday }
+    groups:
+      base-images: { patterns: ["*"] }
+    labels: [dependencies, docker]
+  - package-ecosystem: docker-compose
+    directory: /deploy/docker
+    schedule: { interval: weekly, day: friday }
+    labels: [dependencies, docker]

@@ -1,0 +1,61 @@
+name: Bug report
+description: Something in IronMesh does not work as documented.
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security vulnerabilities must not be reported here.** Use a private security advisory
+        as described in [SECURITY.md](https://github.com/lumidren/IoT-Security-Framework/blob/main/SECURITY.md).
+        Never paste private keys, tokens, bootstrap certificates or `.env` contents.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - pki
+        - policy
+        - bridge
+        - registry
+        - ota
+        - anomaly
+        - console
+        - agent-rs / fleet simulator
+        - esp32 firmware
+        - deploy (compose / Helm / Kustomize / Terraform)
+        - CI / release
+        - docs
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.2.0 or 1a2b3c4
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. scripts/demo/quickstart.sh
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs (redacted)
+      render: text
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: compose on Ubuntu 24.04 / EKS 1.31 / ESP32-S3 board rev ...

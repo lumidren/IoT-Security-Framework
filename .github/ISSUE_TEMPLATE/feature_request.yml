@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a new capability or a change to an existing one.
+labels: [enhancement, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Changes to the wire format, topics, certificate profiles or service APIs are contract
+        changes (`docs/DESIGN_CONTRACT.md`, `docs/API_CONTRACT.md`) and need a design discussion.
+        For vulnerabilities use [SECURITY.md](https://github.com/lumidren/IoT-Security-Framework/blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: dropdown
+    id: contract
+    attributes:
+      label: Does this change the design or API contract?
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security considerations
+      description: New trust boundaries, inputs, key material or privileges (THREAT_MODEL.md).
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
