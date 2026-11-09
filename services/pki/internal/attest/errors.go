@@ -1,6 +1,7 @@
 // Package attest verifies the IronMesh enrollment attestation (DESIGN_CONTRACT
-// §3): a COSE_Sign1 (tag 18, ES256) signed by the device's current identity
-// key over the CBOR map
+// §3, WIRE_FORMAT.md §4): a COSE_Sign1 (tag 18, ES256) signed by the device's
+// current identity key over a type-10 envelope {1: seq, 2: ts, 3: 10, 4: body}
+// whose body is the CBOR map
 //
 //	{1: nonce, 2: sha256(csr_der), 3: fw_hash, 4: fw_version, 5: se_type, 6: evidence}
 //
@@ -10,7 +11,8 @@
 //
 // Verification is split into steps so the EST handler can interleave its own
 // checks (nonce consumption, registry lookups) and map failures to RFC 7030
-// status codes: Parse -> VerifySignature -> VerifyBinding -> VerifyEvidence.
+// status codes: Parse -> VerifySignature -> VerifyTimestamp -> VerifyKeyID ->
+// (nonce) -> VerifyBinding -> VerifyEvidence.
 package attest
 
 import (

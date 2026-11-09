@@ -8,6 +8,8 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"math"
+	"time"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/veraison/go-cose"
@@ -30,9 +32,27 @@ const (
 	MaxFwVersionLen = 64
 	// MaxAttestationSize bounds the encoded COSE message accepted from devices.
 	MaxAttestationSize = 64 * 1024
+	// MessageTypeAttestation is the envelope type of an attestation
+	// (WIRE_FORMAT.md §3.2 / §4).
+	MessageTypeAttestation = 10
+	// MaxSkew is the accepted |now - ts| of the envelope (WIRE_FORMAT.md §3.6
+	// step 9: 300 s early and late are accepted, 301 s is rejected).
+	MaxSkew = 300 * time.Second
 )
 
-// payload is the CBOR map signed by the device.
+// envelope is the signed COSE_Sign1 payload (WIRE_FORMAT.md §3.1):
+// {1: seq, 2: ts, 3: type, 4: body}. Attestations never carry key 5 (nonce
+// echo), so the strict decoder rejects it as an unknown field.
+type envelope struct {
+	Seq  *uint64         `cbor:"1,keyasint"`
+	Ts   *uint64         `cbor:"2,keyasint"`
+	Type *uint64         `cbor:"3,keyasint"`
+	Body cbor.RawMessage `cbor:"4,keyasint"`
+}
+
+// payload is the attestation body (key 4 of the envelope, WIRE_FORMAT.md
+// §3.4 / §4): {1: nonce, 2: csr_hash, 3: fw_hash, 4: fw_version, 5: se_type,
+// 6: evidence}.
 type payload struct {
 	Nonce     []byte          `cbor:"1,keyasint"`
 	CSRHash   []byte          `cbor:"2,keyasint"`
@@ -78,6 +98,9 @@ func EncMode() cbor.EncMode { return encMode }
 // Statement is a decoded, not yet verified attestation.
 type Statement struct {
 	msg *cose.Sign1Message
+	// Seq and Ts are the envelope sequence number and Unix timestamp.
+	Seq uint64
+	Ts  uint64
 	// KeyID is the protected-header kid (the device cert serial as bstr), if any.
 	KeyID []byte
 	// Nonce is the 32-byte nonce the device obtained from the server.
@@ -116,11 +139,21 @@ func Parse(raw []byte) (*Statement, error) {
 	if len(msg.Payload) == 0 {
 		return nil, malformed("detached payload not supported", nil)
 	}
-	var p payload
-	if err := decMode.Unmarshal(msg.Payload, &p); err != nil {
-		return nil, malformed("invalid attestation payload", err)
+	var env envelope
+	if err := decMode.Unmarshal(msg.Payload, &env); err != nil {
+		return nil, malformed("invalid attestation envelope (want {1: seq, 2: ts, 3: 10, 4: body})", err)
 	}
-	st := &Statement{msg: msg, Nonce: p.Nonce, CSRHash: p.CSRHash, FwHash: p.FwHash, FwVersion: p.FwVersion, SeType: p.SeType}
+	switch {
+	case env.Seq == nil || env.Ts == nil || env.Type == nil || len(env.Body) == 0:
+		return nil, malformed("attestation envelope must carry seq, ts, type and body", nil)
+	case *env.Type != MessageTypeAttestation:
+		return nil, malformed(fmt.Sprintf("envelope type %d is not an attestation (10)", *env.Type), nil)
+	}
+	var p payload
+	if err := decMode.Unmarshal(env.Body, &p); err != nil {
+		return nil, malformed("invalid attestation body", err)
+	}
+	st := &Statement{msg: msg, Seq: *env.Seq, Ts: *env.Ts, Nonce: p.Nonce, CSRHash: p.CSRHash, FwHash: p.FwHash, FwVersion: p.FwVersion, SeType: p.SeType}
 	if len(p.Evidence) > 0 && !bytes.Equal(p.Evidence, []byte{0xf6}) { // 0xf6 = CBOR null
 		st.Evidence = []byte(p.Evidence)
 	}
@@ -174,6 +207,20 @@ func (s *Statement) VerifySignature(pub *ecdsa.PublicKey) error {
 	}
 	if err := s.msg.Verify(nil, verifier); err != nil {
 		return unauthorized("attestation signature invalid", err)
+	}
+	return nil
+}
+
+// VerifyTimestamp enforces the envelope freshness window |now - ts| <= MaxSkew
+// against the PKI clock (WIRE_FORMAT.md §3.6 step 9; attestations are not a
+// retainable type, so both directions are bounded).
+func (s *Statement) VerifyTimestamp(now time.Time) error {
+	if s.Ts > uint64(math.MaxInt64) {
+		return unauthorized("attestation timestamp out of range", nil)
+	}
+	skew := now.Sub(time.Unix(int64(s.Ts), 0))
+	if skew > MaxSkew || skew < -MaxSkew {
+		return unauthorized(fmt.Sprintf("attestation timestamp is %s away from the server clock (max %s)", skew.Truncate(time.Second), MaxSkew), nil)
 	}
 	return nil
 }

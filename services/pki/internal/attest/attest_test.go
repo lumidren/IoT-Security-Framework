@@ -139,7 +139,33 @@ func TestParseSchemaErrors(t *testing.T) {
 			o := baseOpts(key, csr)
 			o.Extra = map[int]any{9: "x"}
 			return testutil.BuildAttestationRaw(t, o)
-		}, "payload"},
+		}, "attestation body"},
+		{"wrong envelope type", func(t *testing.T) []byte {
+			o := baseOpts(key, csr)
+			o.Type = 1 // Telemetry
+			return testutil.BuildAttestationRaw(t, o)
+		}, "envelope type 1"},
+		{"bare legacy map", func(t *testing.T) []byte {
+			// The pre-envelope form {1: nonce, ..., 6: evidence} is no longer accepted.
+			o := baseOpts(key, csr)
+			o.Envelope = map[int]any{1: nonce(), 2: make([]byte, 32), 3: make([]byte, 32), 4: "1", 5: attest.SeTypeATECC608, 6: nil}
+			return testutil.BuildAttestationRaw(t, o)
+		}, "envelope"},
+		{"envelope missing ts", func(t *testing.T) []byte {
+			o := baseOpts(key, csr)
+			o.Envelope = map[int]any{1: 1, 3: 10}
+			return testutil.BuildAttestationRaw(t, o)
+		}, "seq, ts, type and body"},
+		{"envelope with nonce echo", func(t *testing.T) []byte {
+			o := baseOpts(key, csr)
+			o.Envelope = map[int]any{1: 1, 2: time.Now().Unix(), 3: 10, 5: make([]byte, 16)}
+			return testutil.BuildAttestationRaw(t, o)
+		}, "envelope"},
+		{"body not a map", func(t *testing.T) []byte {
+			o := baseOpts(key, csr)
+			o.Envelope = map[int]any{1: 1, 2: time.Now().Unix(), 3: 10, 4: "body"}
+			return testutil.BuildAttestationRaw(t, o)
+		}, "attestation body"},
 		{"kid wrong type", func(t *testing.T) []byte {
 			// go-cose refuses to encode a non-bstr kid, so hand-encode the
 			// COSE_Sign1 array: protected {1: -7, 4: 42}, unprotected {}, payload, sig.
@@ -151,7 +177,7 @@ func TestParseSchemaErrors(t *testing.T) {
 			signer, _ := cose.NewSigner(cose.AlgorithmES256, key)
 			msg, _ := cose.Sign1(rand.Reader, signer, cose.Headers{Protected: cose.ProtectedHeader{cose.HeaderLabelAlgorithm: cose.AlgorithmES256}}, testutil.MustCBOR(t, []int{1, 2}), nil)
 			return msg
-		}, "payload"},
+		}, "envelope"},
 		{"no alg header", func(t *testing.T) []byte {
 			// Hand-build a Sign1 with an empty protected header.
 			msg := cose.NewSign1Message()
@@ -429,5 +455,50 @@ func TestErrorType(t *testing.T) {
 	}
 	if attest.DecMode() == nil || attest.EncMode() == nil {
 		t.Fatal("modes")
+	}
+}
+
+func TestVerifyTimestamp(t *testing.T) {
+	t.Parallel()
+	key := testutil.P256Key(t)
+	csr := testutil.BuildCSR(t, testutil.P256Key(t), "dev-8f3a1c2b9d4e5f60", testutil.Tenant)
+	now := time.Unix(1767225600, 0)
+	for _, c := range []struct {
+		name string
+		ts   int64
+		ok   bool
+	}{
+		{"exact", now.Unix(), true},
+		{"300s old", now.Unix() - 300, true},
+		{"300s ahead", now.Unix() + 300, true},
+		{"stale 301s", now.Unix() - 301, false},
+		{"future 301s", now.Unix() + 301, false},
+		{"epoch", 1, false},
+	} {
+		o := baseOpts(key, csr)
+		o.Ts = c.ts
+		st, err := attest.Parse(testutil.BuildAttestationRaw(t, o))
+		if err != nil {
+			t.Fatalf("%s: Parse: %v", c.name, err)
+		}
+		if st.Ts != uint64(c.ts) || st.Seq != 1 {
+			t.Fatalf("%s: envelope seq=%d ts=%d", c.name, st.Seq, st.Ts)
+		}
+		err = st.VerifyTimestamp(now)
+		if (err == nil) != c.ok {
+			t.Errorf("%s: err=%v want ok=%v", c.name, err, c.ok)
+		}
+		if err != nil && attest.CodeOf(err) != attest.CodeUnauthorized {
+			t.Errorf("%s: code %v", c.name, attest.CodeOf(err))
+		}
+	}
+	o := baseOpts(key, csr)
+	o.Envelope = map[int]any{1: 1, 2: uint64(1) << 63, 3: 10}
+	st, err := attest.Parse(testutil.BuildAttestationRaw(t, o))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.VerifyTimestamp(now); err == nil {
+		t.Error("out-of-range ts accepted")
 	}
 }
