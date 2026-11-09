@@ -1,0 +1,12 @@
+# ---- dev: bring-up only. Software keys allowed, UART console, no Secure Boot. -----------------
+CONFIG_IRONMESH_SE_SOFTWARE=y
+CONFIG_IRONMESH_DUT_CONTROL=n
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_SECURE_BOOT=n
+CONFIG_SECURE_FLASH_ENC_ENABLED=n
+# NVS encryption without flash encryption needs the HMAC key-protection scheme (chips with the
+# HMAC peripheral: ESP32-S3/C3/C6). On a classic ESP32 dev kit set CONFIG_NVS_ENCRYPTION=n
+# locally - keys are then NOT protected at rest (dev only).
+CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC=y
+CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID=0

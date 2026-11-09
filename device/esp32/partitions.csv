@@ -1,0 +1,17 @@
+# Name,          Type, SubType,          Offset,   Size,     Flags
+# 8 MiB flash (ESP32-WROOM-32E-N8 / ESP32-S3-WROOM-1-N8). Offsets are 4 KiB/64 KiB aligned.
+nvs,             data, nvs,              0x9000,   0x6000,
+# NVS encryption keys (flash-encryption based scheme; on chips with the HMAC peripheral the
+# HMAC scheme is used and this partition stays empty but reserved)
+nvs_keys,        data, nvs_keys,         0xF000,   0x1000,   encrypted
+# bootstrap certificate + PKI bundle public key from the factory (esp_secure_cert_mgr layout)
+esp_secure_cert, 0x3F, ,                 0x10000,  0x2000,   encrypted
+otadata,         data, ota,              0x12000,  0x2000,
+phy_init,        data, phy,              0x14000,  0x1000,
+ota_0,           app,  ota_0,            0x20000,  0x2E0000,
+ota_1,           app,  ota_1,            0x300000, 0x2E0000,
+# offline telemetry ring buffer (contract section 4: up to 10 000 messages / 4 MiB). 1 MiB here =
+# 2048 slots of 512 B on an 8 MiB part; use 4 MiB on 16 MiB parts. NOT flash-encrypted on
+# purpose: the ring buffer relies on NOR bit-clearing for delivery acks, which ciphertext does
+# not allow. Records are ES256-signed envelopes (integrity), telemetry is not secret (README).
+storage,         data, 0x40,             0x5E0000, 0x100000,
