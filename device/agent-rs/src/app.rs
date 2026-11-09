@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::agent::{AgentEvent, AgentOptions, RebootReason};
+use crate::atrest::AtRestKey;
 use crate::identity::software::{SecretSource, SoftwareIdentity};
 use crate::identity::{IdentityError, SharedIdentity};
 use crate::ota::boot::{BootControl, FileBootControl, FwSetenvBootControl};
@@ -21,6 +22,15 @@ pub fn secret_source(s: &Settings) -> SecretSource {
         return SecretSource::FileAndKeyring(s.identity.machine_secret.clone());
     }
     SecretSource::File(s.identity.machine_secret.clone())
+}
+
+/// The agent's at-rest key ([`crate::atrest`]) for the provisioned device in these settings.
+///
+/// # Errors
+/// No `identity.json` yet, or an unreadable / insecure machine secret.
+pub fn at_rest_key(s: &Settings) -> Result<AtRestKey, IdentityError> {
+    let (device_id, _, _) = crate::identity::software::read_identity_ids(&s.identity.dir)?;
+    AtRestKey::load(&secret_source(s), &device_id)
 }
 
 /// Open the configured identity backend.
@@ -104,7 +114,9 @@ mod tests {
         let mut s = Settings::default();
         s.rebase(dir.path());
         assert!(open_identity(&s).is_err());
+        assert!(at_rest_key(&s).is_err());
         let id = create_identity(&s, "dev-0000000000000001", "7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11").unwrap();
+        assert!(at_rest_key(&s).is_ok());
         assert_eq!(id.device_id(), "dev-0000000000000001");
         assert!(open_identity(&s).is_ok());
         s.identity.backend = Backend::Tpm;

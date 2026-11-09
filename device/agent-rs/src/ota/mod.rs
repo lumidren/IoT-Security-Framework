@@ -108,6 +108,9 @@ pub struct OtaContext {
     pub boot: Arc<dyn BootControl>,
     /// Bundle `fw_signing_pubkeys`.
     pub trusted_keys: Vec<Vec<u8>>,
+    /// Hosts artifacts may be downloaded from ([`crate::settings::Settings::download_allowlist`]);
+    /// empty means no host is allowed.
+    pub allowed_hosts: Vec<String>,
     /// Running firmware.
     pub running: RunningFirmware,
     /// TLS for artifact downloads.
@@ -159,9 +162,7 @@ pub async fn stage_update(ctx: &OtaContext, notify: &OtaNotify, report: &(dyn Fn
         return Err(OtaFailure::wire(ErrorCode::MfMinVersion, "current version below min_version_code"));
     }
     let url = download::parse_https_url(&notify.url).map_err(|e| OtaFailure::local("URL_NOT_ALLOWED", e.to_string()))?;
-    if !ctx.settings.allowed_hosts.is_empty() && !ctx.settings.allowed_hosts.iter().any(|h| h.eq_ignore_ascii_case(&url.host)) {
-        return Err(OtaFailure::local("URL_NOT_ALLOWED", format!("host {} not allowlisted", url.host)));
-    }
+    check_download_host(&ctx.allowed_hosts, &url.host)?;
     let use_delta = match (&m.delta, notify.delta_from) {
         (Some(_), Some(from)) => {
             if from != ctx.running.fw_hash {
@@ -213,6 +214,12 @@ pub async fn stage_update(ctx: &OtaContext, notify: &OtaNotify, report: &(dyn Fn
         let _ = std::fs::remove_file(&staging);
         return Err(OtaFailure::wire(code, "produced image rejected"));
     }
+    // Fail closed (T-57): the anti-rollback floor must be durably at least the running version
+    // before anything is applied; a floor store that cannot be written stops the update here.
+    if let Err(e) = ctx.slots.raise_anti_rollback(current) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(OtaFailure::local("IO", format!("anti-rollback floor could not be persisted: {e}")));
+    }
     let image = ctx.slots.image_path(target);
     std::fs::rename(&staging, &image).map_err(io_fail)?;
     let _ = std::fs::remove_file(&part);
@@ -240,6 +247,18 @@ pub async fn stage_update(ctx: &OtaContext, notify: &OtaNotify, report: &(dyn Fn
     ctx.boot.set_pending(target).map_err(io_fail)?;
     r(OtaState::Rebooting, 100);
     Ok(Staged { slot: target, manifest: m })
+}
+
+/// T-60: the artifact host must be on the allowlist; an empty allowlist allows nothing.
+///
+/// # Errors
+/// `URL_NOT_ALLOWED` (DUT `ota_state.error` = `download`).
+pub fn check_download_host(allowed: &[String], host: &str) -> Result<(), OtaFailure> {
+    if allowed.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+        Ok(())
+    } else {
+        Err(OtaFailure::local("URL_NOT_ALLOWED", format!("host {host} not allowlisted")))
+    }
 }
 
 fn apply_delta_file(
@@ -327,6 +346,19 @@ mod tests {
         assert_eq!(dut_reason("IO"), "");
         assert_eq!(OtaFailure::local("URL_NOT_ALLOWED", "x").dut_reason(), "download");
         assert_eq!(OtaFailure::local("DOWNLOAD", "x").dut_reason(), "download");
+    }
+
+    #[test]
+    fn download_host_allowlist() {
+        let allowed = vec!["pki.example".to_string(), "OTA.example".to_string()];
+        assert!(check_download_host(&allowed, "pki.example").is_ok());
+        assert!(check_download_host(&allowed, "ota.EXAMPLE").is_ok());
+        let e = check_download_host(&allowed, "evil.example").unwrap_err();
+        assert_eq!(e.code, "URL_NOT_ALLOWED");
+        assert_eq!(e.dut_reason(), "download");
+        // Empty no longer means "any host".
+        assert_eq!(check_download_host(&[], "pki.example").unwrap_err().dut_reason(), "download");
+        assert!(check_download_host(&allowed, "pki.example.evil").is_err());
     }
 
     #[test]

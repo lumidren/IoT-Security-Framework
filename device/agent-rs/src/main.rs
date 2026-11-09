@@ -97,14 +97,29 @@ fn factory(settings: &Settings, cli: &Cli) -> ExitCode {
 }
 
 fn boot_status(settings: &Settings) -> ExitCode {
+    use ironmesh_agent::atrest::Sealed;
+    use ironmesh_agent::ota::slots::{SlotStore, UnavailableFloor};
     let boot = app::boot_control(settings);
-    match (boot.state(), ironmesh_agent::ota::slots::SlotStore::open(&settings.ota.slots_dir)) {
+    // The floor is authenticated with the at-rest key; without access to the machine secret
+    // (or before provisioning) the slots are still reported, the floor as unavailable.
+    let slots = match app::at_rest_key(settings) {
+        Ok(key) => SlotStore::open(&settings.ota.slots_dir, &key),
+        Err(e) => SlotStore::open_with_floor(&settings.ota.slots_dir, std::sync::Arc::new(UnavailableFloor(e.to_string()))),
+    };
+    match (boot.state(), slots) {
         (Ok(state), Ok(slots)) => {
+            let (floor, floor_status) = match slots.anti_rollback_record() {
+                Sealed::Valid(v) => (Some(v), "valid".to_owned()),
+                Sealed::Missing => (None, "missing".to_owned()),
+                Sealed::Invalid(why) => (None, format!("invalid: {why}")),
+            };
             let out = serde_json::json!({
                 "active": state.active.name(),
                 "pending": state.pending.map(|p| p.name()),
                 "boot_count": state.boot_count,
-                "anti_rollback_version_code": slots.anti_rollback(),
+                "anti_rollback_version_code": floor,
+                "anti_rollback_status": floor_status,
+                "anti_rollback_store": slots.anti_rollback_kind(),
                 "slots": {
                     "a": slots.meta(ironmesh_agent::ota::boot::Slot::A),
                     "b": slots.meta(ironmesh_agent::ota::boot::Slot::B),

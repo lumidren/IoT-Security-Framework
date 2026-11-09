@@ -13,6 +13,7 @@ use serde_json::{json, Value as Json};
 use tokio::sync::{broadcast, mpsc, watch, Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 
+use crate::atrest::{AtRestKey, Purpose, Sealed, SealedValue};
 use crate::buffer::{Record, RingBuffer};
 use crate::commands::{self, Effect, IdempotencyCache};
 use crate::config::ConfigState;
@@ -209,6 +210,7 @@ struct Shared {
     reconnect: Notify,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     renew_jitter: Mutex<Option<(Vec<u8>, f64)>>,
+    time_floor: SealedValue,
 }
 
 /// Handle to a running agent.
@@ -241,7 +243,52 @@ fn running_firmware(s: &Settings, slots: &SlotStore, slot: Slot) -> RunningFirmw
     };
     let version = meta.as_ref().map_or_else(|| s.agent.fw_version.clone(), |m| m.version.clone());
     let code = meta.as_ref().map_or(s.agent.fw_version_code, |m| m.version_code);
-    RunningFirmware { slot, version, version_code: code.max(slots.anti_rollback()), fw_hash, image_path }
+    RunningFirmware { slot, version, version_code: code.max(slots.anti_rollback(code)), fw_hash, image_path }
+}
+
+/// Check (and, outside a trial boot, re-create) the anti-rollback floor record at start-up.
+/// A missing or unauthenticated record is never read as zero: the running `version_code` is
+/// used instead and written back with a fresh tag.
+fn ensure_floor(slots: &SlotStore, running_version_code: u64, trial: bool) {
+    match slots.anti_rollback_record() {
+        Sealed::Valid(_) => {}
+        Sealed::Missing => {
+            tracing::info!(version_code = running_version_code, "anti-rollback floor initialised at the running version_code")
+        }
+        Sealed::Invalid(why) => tracing::warn!(
+            reason = %why,
+            version_code = running_version_code,
+            "anti-rollback floor record failed authentication; using the running version_code"
+        ),
+    }
+    // During a trial boot the running image is not committed yet: the health gate raises the
+    // floor to it (or the bootloader rolls back), never the boot itself.
+    if trial {
+        return;
+    }
+    if let Err(e) = slots.raise_anti_rollback(running_version_code) {
+        tracing::error!(error = %e, "anti-rollback floor could not be persisted; updates are refused until it can");
+    }
+}
+
+/// Why a healthy update could not be committed.
+#[derive(Debug)]
+enum CommitError {
+    /// The anti-rollback floor could not be raised durably (fail closed: roll back).
+    Floor(std::io::Error),
+    /// The boot control refused to mark the slot good.
+    MarkGood(crate::ota::boot::BootError),
+}
+
+/// Commit an update that passed its health gate. T-57: the anti-rollback floor is raised (and
+/// persisted) **before** the slot is marked good, so an update is never committed with a floor
+/// that a power loss or a write error could leave below it.
+fn commit_update(slots: &SlotStore, boot: &dyn BootControl, p: &PendingUpdate) -> Result<(), CommitError> {
+    slots.raise_anti_rollback(p.version_code).map_err(CommitError::Floor)?;
+    boot.mark_good().map_err(CommitError::MarkGood)?;
+    let _ = slots.set_state(p.slot, "valid");
+    let _ = slots.set_pending_update(None);
+    Ok(())
 }
 
 impl Agent {
@@ -256,9 +303,22 @@ impl Agent {
         let s = opts.settings;
         let state_dir = s.agent.state_dir.clone();
         crate::persist::ensure_private_dir(&state_dir)?;
-        let slots = SlotStore::open(&s.ota.slots_dir)?;
+        let at_rest = AtRestKey::load(&crate::app::secret_source(&s), opts.identity.device_id())
+            .map_err(|e| AgentError::Io(std::io::Error::other(format!("at-rest key: {e}"))))?;
+        let slots = SlotStore::open(&s.ota.slots_dir, &at_rest)?;
         let outcome = opts.boot.on_boot()?;
         let running = running_firmware(&s, &slots, outcome.running());
+        ensure_floor(&slots, running.version_code, matches!(outcome, BootOutcome::Trial(_)));
+        let time_floor = SealedValue::new(&state_dir.join("time_floor.json"), at_rest.subkey(Purpose::TimeFloor), "time-floor");
+        match time_floor.read() {
+            Sealed::Valid(t) => {
+                if opts.clock.raise_floor(t) {
+                    tracing::warn!(unix_s = t, "device clock behind the last authenticated server time; using the persisted time floor");
+                }
+            }
+            Sealed::Missing => {}
+            Sealed::Invalid(why) => tracing::warn!(reason = %why, "time floor record ignored"),
+        }
         let creds = Credentials::load(&s.identity.dir, &opts.identity, s.bundle_key().as_ref(), &s.pki.ca_bundle)?;
         crate::logging::set_identity(opts.identity.tenant_id(), opts.identity.device_id());
         let (reboot_tx, reboot_rx) = mpsc::unbounded_channel();
@@ -268,7 +328,12 @@ impl Agent {
         let sh = Arc::new(Shared {
             seq: SeqCounter::open(&state_dir.join("seq.json"), s.agent.seq_block)?,
             replay: Mutex::new(FileReplayStore::open(&state_dir.join("replay.json"))?),
-            buffer: AsyncMutex::new(RingBuffer::open(&state_dir.join("buffer"), s.agent.buffer_capacity, false)?),
+            buffer: AsyncMutex::new(RingBuffer::open(
+                &state_dir.join("buffer"),
+                s.agent.buffer_capacity,
+                false,
+                &at_rest.subkey(Purpose::OfflineBuffer),
+            )?),
             idem: Mutex::new(IdempotencyCache::open(&state_dir.join("idempotency.json"))?),
             shadow: Mutex::new(Shadow::open(&state_dir.join("shadow.json"))?),
             config: Mutex::new(ConfigState::open(&state_dir.join("config.json"))?),
@@ -298,6 +363,7 @@ impl Agent {
             reconnect: Notify::new(),
             tasks: Mutex::new(Vec::new()),
             renew_jitter: Mutex::new(None),
+            time_floor,
             s,
         });
         let agent = Agent { sh: sh.clone() };
@@ -599,6 +665,21 @@ impl Shared {
         self.emit("message_rejected", json!({"topic": topic, "code": code}));
     }
 
+    /// T-10: when enrollment moved an unset (or far behind) clock forward to the EST server's
+    /// `Date` (received over the mutually authenticated, pinned EST connection), persist the
+    /// floor (HMAC-tagged) so a reboot cannot fall back below it.
+    fn persist_time_hint(&self, out: &EnrollOutcome) {
+        let Some(t) = out.time_hint else { return };
+        tracing::warn!(
+            server_unix_s = t,
+            cert_not_before = out.certificate.not_before,
+            "device clock was unset or behind the certificate; raised to the authenticated EST server time"
+        );
+        if let Err(e) = self.time_floor.write(t) {
+            tracing::warn!(error = %e, "time floor could not be persisted");
+        }
+    }
+
     fn topic(&self, class: TopicClass) -> Result<String, WireError> {
         ids::build_topic(self.identity.tenant_id(), self.identity.device_id(), class)
     }
@@ -641,7 +722,7 @@ impl Shared {
             timeout: Duration::from_secs(self.s.pki.timeout_s.max(1)),
             force_bootstrap,
         };
-        let result = enroll::enroll(req).await;
+        let result = enroll::enroll_with_clock(req, Some(self.clock.as_ref())).await;
         match &result {
             Ok(out) => {
                 if let Ok(c) = Credentials::load(&self.s.identity.dir, &self.identity, self.s.bundle_key().as_ref(), &self.s.pki.ca_bundle)
@@ -650,6 +731,7 @@ impl Shared {
                 }
                 let serial = out.certificate.serial_hex();
                 tracing::info!(serial = %serial, not_after = out.certificate.not_after, reenroll = out.reenroll, "certificate issued");
+                self.persist_time_hint(out);
                 if renewing && out.previous_serial.is_some() {
                     self.emit(
                         "cert_renewed",
@@ -1017,6 +1099,7 @@ impl Shared {
                 slots: sh.slots.clone(),
                 boot: sh.boot.clone(),
                 trusted_keys: creds.bundle.map(|b| b.fw_signing_pubkeys).unwrap_or_default(),
+                allowed_hosts: sh.s.download_allowlist(),
                 running: read(&sh.running).clone(),
                 download_tls,
                 timeout: Duration::from_secs(sh.s.pki.timeout_s.max(1)),
@@ -1260,13 +1343,19 @@ async fn health_task(sh: Arc<Shared>) {
         () = sh.health_acked.notified() => {
             let Some(h) = lock(&sh.health).take() else { return };
             let p = h.pending;
-            if let Err(e) = sh.boot.mark_good() {
-                tracing::error!(error = %e, "mark_good failed");
-                return;
+            match commit_update(&sh.slots, sh.boot.as_ref(), &p) {
+                Ok(()) => {}
+                Err(CommitError::Floor(e)) => {
+                    tracing::error!(error = %e, campaign = %p.campaign_id, "anti-rollback floor could not be raised; not committing the update, rolling back");
+                    let _ = sh.boot.rollback();
+                    sh.request_reboot(RebootReason::Rollback);
+                    return;
+                }
+                Err(CommitError::MarkGood(e)) => {
+                    tracing::error!(error = %e, "mark_good failed");
+                    return;
+                }
             }
-            let _ = sh.slots.raise_anti_rollback(p.version_code);
-            let _ = sh.slots.set_state(p.slot, "valid");
-            let _ = sh.slots.set_pending_update(None);
             let fw_hash = read(&sh.running).fw_hash;
             tracing::info!(campaign = %p.campaign_id, slot = p.slot.name(), "update healthy");
             let r = OtaReport { campaign_id: p.campaign_id, state: OtaState::Success, progress_pct: 100, error: None, fw_hash: Some(fw_hash) };
@@ -1283,6 +1372,57 @@ async fn health_task(sh: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ota::boot::FileBootControl;
+
+    fn pending() -> PendingUpdate {
+        PendingUpdate { campaign_id: "c".into(), slot: Slot::B, previous: Slot::A, version_code: 200, sha256_hex: "00".into() }
+    }
+
+    #[test]
+    fn commit_raises_the_floor_before_marking_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let slots = SlotStore::open(dir.path(), &AtRestKey::from_bytes([5; 32])).unwrap();
+        let boot = FileBootControl::new(dir.path(), 3);
+        boot.set_pending(Slot::B).unwrap();
+        assert_eq!(boot.on_boot().unwrap(), BootOutcome::Trial(Slot::B));
+        slots.set_pending_update(Some(&pending())).unwrap();
+        commit_update(&slots, &boot, &pending()).unwrap();
+        assert_eq!(slots.anti_rollback_record(), Sealed::Valid(200));
+        assert!(boot.state().unwrap().pending.is_none());
+        assert!(slots.pending_update().is_none());
+    }
+
+    #[test]
+    fn commit_fails_closed_when_the_floor_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let slots = SlotStore::open(dir.path(), &AtRestKey::from_bytes([5; 32])).unwrap();
+        std::fs::create_dir(dir.path().join(crate::ota::slots::HmacFileFloor::FILE)).unwrap();
+        let boot = FileBootControl::new(dir.path(), 3);
+        boot.set_pending(Slot::B).unwrap();
+        assert_eq!(boot.on_boot().unwrap(), BootOutcome::Trial(Slot::B));
+        slots.set_pending_update(Some(&pending())).unwrap();
+        assert!(matches!(commit_update(&slots, &boot, &pending()), Err(CommitError::Floor(_))));
+        // Not committed: the slot is still on trial and the update record is kept.
+        assert_eq!(boot.state().unwrap().pending, Some(Slot::B));
+        assert!(slots.pending_update().is_some());
+    }
+
+    #[test]
+    fn floor_is_healed_at_start_but_not_during_a_trial_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let slots = SlotStore::open(dir.path(), &AtRestKey::from_bytes([5; 32])).unwrap();
+        ensure_floor(&slots, 150, true);
+        assert_eq!(slots.anti_rollback_record(), Sealed::Missing);
+        ensure_floor(&slots, 150, false);
+        assert_eq!(slots.anti_rollback_record(), Sealed::Valid(150));
+        std::fs::write(dir.path().join(crate::ota::slots::HmacFileFloor::FILE), b"{}").unwrap();
+        assert_eq!(slots.anti_rollback(160), 160);
+        ensure_floor(&slots, 160, false);
+        assert_eq!(slots.anti_rollback_record(), Sealed::Valid(160));
+        // A valid, higher floor is never lowered.
+        ensure_floor(&slots, 100, false);
+        assert_eq!(slots.anti_rollback_record(), Sealed::Valid(160));
+    }
 
     #[test]
     fn names() {

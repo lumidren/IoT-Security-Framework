@@ -67,6 +67,9 @@ fn boot_status_and_rollback() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["active"], "a");
     assert!(v["pending"].is_null());
+    // Not provisioned: no at-rest key, so the floor is reported as unavailable (never as 0).
+    assert!(v["anti_rollback_version_code"].is_null());
+    assert!(v["anti_rollback_status"].as_str().unwrap().starts_with("invalid: unavailable"));
     assert!(bin().args(["--config"]).arg(&cfg).arg("--rollback").status().unwrap().success());
     let out = bin().args(["--config"]).arg(dir.path().join("missing.toml")).arg("--boot-status").output().unwrap();
     assert!(!out.status.success());
