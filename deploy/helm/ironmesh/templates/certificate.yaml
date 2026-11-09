@@ -52,6 +52,13 @@ metadata:
 spec:
   secretName: {{ include "ironmesh.tlsSecretName" $ctx }}
   commonName: svc-{{ $name }}
+  # The policy authn hook admits service principals only with O=IronMesh, OU=services
+  # (services/policy/internal/hooks/authn.go).
+  subject:
+    organizations:
+      - IronMesh
+    organizationalUnits:
+      - services
   duration: {{ $itls.duration }}
   renewBefore: {{ $itls.renewBefore }}
   privateKey:
@@ -95,6 +102,11 @@ metadata:
 spec:
   secretName: {{ .Values.emqxTls.secretName }}
   commonName: svc-emqx
+  subject:
+    organizations:
+      - IronMesh
+    organizationalUnits:
+      - services
   duration: {{ .Values.internalTls.certManager.duration }}
   renewBefore: {{ .Values.internalTls.certManager.renewBefore }}
   privateKey:
