@@ -1233,6 +1233,11 @@ emqx:
     EMQX_AUTHENTICATION__1__BODY__USERNAME: "${username}"
     EMQX_AUTHENTICATION__1__BODY__CERT_COMMON_NAME: "${cert_common_name}"
     EMQX_AUTHENTICATION__1__BODY__CERT_SUBJECT: "${cert_subject}"
+    # Serial revocation at CONNECT (policy POLICY_REQUIRE_CERT_SERIAL=true denies a body without
+    # either). VERIFY on the deployed 5.8.x that ${cert_pem} renders in HTTP authn bodies; see
+    # services/policy/deploy/emqx/emqx.conf.
+    EMQX_AUTHENTICATION__1__BODY__CERT_PEM: "${cert_pem}"
+    EMQX_AUTHENTICATION__1__BODY__CERT_SERIAL: "${client_attrs.cert_serial}"
     EMQX_AUTHENTICATION__1__BODY__PEERHOST: "${peerhost}"
     EMQX_AUTHENTICATION__1__CONNECT_TIMEOUT: 5s
     EMQX_AUTHENTICATION__1__REQUEST_TIMEOUT: 5s
