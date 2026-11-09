@@ -1,0 +1,1 @@
+{"id":4,"op":"publish_raw","args":{"topic":"im/v1/x/dev-0/telemetry","payload_b64":"aGVsbG8=","qos":1,"retain":false}}
