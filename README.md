@@ -374,8 +374,12 @@ simulated devices that enroll, connect, receive a staged OTA, and one of which g
 ./scripts/demo/quickstart.sh
 ```
 
-Windows: `scripts/demo/quickstart.ps1`. Details are in
-[deploy/docker/README.md](deploy/docker/README.md).
+Windows: `scripts/demo/quickstart.ps1`. It needs only Docker with Compose v2. The script writes
+`deploy/docker/.env` with random secrets, starts the stack, enrolls the 500-device fleet, uploads a
+signed demo firmware, runs a 1 % → 10 % → 100 % campaign, waits until the anomaly engine quarantines
+the misbehaving device, and prints the console URL (http://localhost:3000) with the demo sign-in.
+Details are in [deploy/docker/README.md](deploy/docker/README.md); `make help` lists the developer
+targets.
 
 **Run the tests for a component:**
 
