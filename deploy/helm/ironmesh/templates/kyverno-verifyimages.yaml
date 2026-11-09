@@ -1,0 +1,74 @@
+{{- /*
+Admission control for IronMesh images (THREAT_MODEL T-67). Requires Kyverno >= 1.11 in the
+cluster (CRD kyverno.io/v1 ClusterPolicy); enable with admission.imageVerification.enabled.
+
+Every Pod image matching imageReferences must carry, from Rekor-backed keyless Sigstore:
+  * a cosign signature whose Fulcio certificate identity is
+      https://github.com/<repository>/<workflow>@<ref>   (ref: main or a v* tag)
+    issued by the GitHub Actions OIDC provider, and
+  * a CycloneDX SBOM attestation (`cosign attest --type cyclonedx`) from the same identity.
+Kyverno then pins the Pod to the verified digest (mutateDigest), so the image that runs is the
+image that was verified, even when a tag is moved afterwards.
+*/}}
+{{- $iv := .Values.admission.imageVerification }}
+{{- if $iv.enabled }}
+{{- $subject := printf "^https://github\\.com/%s/%s@%s$" (regexQuoteMeta $iv.repository) (regexQuoteMeta $iv.workflow) $iv.refsRegex }}
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: {{ include "ironmesh.fullname" . }}-verify-images
+  labels:
+    {{- include "ironmesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admission
+  annotations:
+    policies.kyverno.io/title: Verify IronMesh image signatures and SBOM attestations
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Admits IronMesh images only when they are signed (cosign keyless) and CycloneDX-attested by
+      {{ $iv.repository }}/{{ $iv.workflow }} on main or a release tag, and rewrites the image to
+      the verified digest.
+spec:
+  validationFailureAction: {{ $iv.failureAction }}
+  background: false
+  failurePolicy: Fail
+  webhookTimeoutSeconds: {{ $iv.webhookTimeoutSeconds }}
+  rules:
+    - name: verify-ironmesh-images
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            {{- range $iv.imageReferences }}
+            - {{ . | quote }}
+            {{- end }}
+          type: Cosign
+          required: true
+          mutateDigest: true
+          verifyDigest: true
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    subjectRegExp: {{ $subject | quote }}
+                    issuer: {{ $iv.issuer | quote }}
+                    rekor:
+                      url: {{ $iv.rekorUrl | quote }}
+          {{- if $iv.requireSbomAttestation }}
+          attestations:
+            - type: {{ $iv.sbomPredicateType | quote }}
+              attestors:
+                - count: 1
+                  entries:
+                    - keyless:
+                        subjectRegExp: {{ $subject | quote }}
+                        issuer: {{ $iv.issuer | quote }}
+                        rekor:
+                          url: {{ $iv.rekorUrl | quote }}
+          {{- end }}
+{{- end }}

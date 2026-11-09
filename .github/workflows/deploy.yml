@@ -1,11 +1,17 @@
 # Continuous deployment: staging after every successful release on main, then production behind
 # the `production` environment's required reviewers.
 #
-#   staging     cosign verify -> helm upgrade --atomic -> helm test -> synthetic device enrollment
-#               -> SLO check (Prometheus) -> automatic helm rollback on any failure
-#   production  manual approval -> canary (replica-weighted clones of every Deployment running the
-#               new images) -> smoke + SLO on the canary -> full helm upgrade -> smoke + SLO ->
-#               automatic helm rollback on any failure
+#   resolve     release tag -> image digests (registry), cross-checked against the digests the
+#               release run built and signed (its image-* artifacts) when triggered by that run
+#   staging     cosign verify <image>@<digest> -> helm upgrade --atomic by digest -> helm test ->
+#               synthetic device enrollment -> SLO check (Prometheus) -> automatic helm rollback
+#               on any failure
+#   production  manual approval -> cosign verify by digest -> canary (replica-weighted clones of
+#               every Deployment running the new digests) -> smoke + SLO on the canary -> full helm
+#               upgrade by digest -> smoke + SLO -> automatic helm rollback on any failure
+#
+# Images are never deployed by their mutable tag (THREAT_MODEL T-67): every job uses the digests
+# resolved once by `resolve`, and the cluster's Kyverno policy re-verifies them at admission.
 #
 # AWS access is GitHub OIDC -> IAM role (no long-lived keys). Per-environment configuration lives
 # in environment variables: AWS_DEPLOY_ROLE_ARN, AWS_REGION, EKS_CLUSTER_NAME,
@@ -46,11 +52,15 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions: {}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # digest records (image-* artifacts) of the triggering release run
+      packages: read # resolve tags to digests on ghcr.io
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       sha: ${{ steps.tag.outputs.sha }}
+      digests: ${{ steps.digests.outputs.digests }}
     steps:
       - id: tag
         env:
@@ -63,6 +73,33 @@ jobs:
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "sha=${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.tag.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The digests release.yml built, scanned and signed (digests/<name>.json per image).
+      - name: release run digest records
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-images
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: resolve image digests
+        id: digests
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_DIGESTS_DIR: ${{ github.event_name == 'workflow_run' && format('{0}/release-images/digests', runner.temp) || '' }}
+        run: |
+          digests="$(scripts/ci/deploy_helm.sh resolve-digests "${TAG}" ${RELEASE_DIGESTS_DIR:+"${RELEASE_DIGESTS_DIR}"})"
+          echo "digests=${digests}" >> "${GITHUB_OUTPUT}"
 
   staging:
     name: staging
@@ -78,6 +115,9 @@ jobs:
       packages: read # pull / verify release images
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
+      # {"<svc>":"sha256:..."} for every service and the fleet image; nothing below uses the tag
+      # to pull or run an image.
+      IMAGE_DIGESTS: ${{ needs.resolve.outputs.digests }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -89,7 +129,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
-      - name: verify image signatures and SBOM attestations
+      - name: verify image signatures and SBOM attestations (by digest)
         run: scripts/ci/deploy_helm.sh verify-images "${TAG}"
       - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
@@ -111,9 +151,9 @@ jobs:
           echo "PREVIOUS_REVISION=$(scripts/ci/deploy_helm.sh revision)" >> "${GITHUB_ENV}"
       - name: helm upgrade (atomic) + helm test
         run: scripts/ci/deploy_helm.sh upgrade staging "${TAG}"
-      - name: fleet simulator binary from the release image
+      - name: fleet simulator binary from the release image (verified digest)
         run: |
-          cid="$(docker create "${IMAGE_NAMESPACE}/ironmesh-fleet:${TAG}")"
+          cid="$(docker create "$(scripts/ci/deploy_helm.sh image-ref fleet)")"
           docker cp "${cid}:/usr/local/bin/ironmesh-fleet" "${RUNNER_TEMP}/ironmesh-fleet"
           docker rm "${cid}" >/dev/null
           chmod 0755 "${RUNNER_TEMP}/ironmesh-fleet"
@@ -150,6 +190,9 @@ jobs:
       packages: read # pull / verify release images
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
+      # {"<svc>":"sha256:..."} for every service and the fleet image; nothing below uses the tag
+      # to pull or run an image.
+      IMAGE_DIGESTS: ${{ needs.resolve.outputs.digests }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -161,7 +204,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
-      - name: verify image signatures and SBOM attestations
+      - name: verify image signatures and SBOM attestations (by digest)
         run: scripts/ci/deploy_helm.sh verify-images "${TAG}"
       - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
@@ -181,9 +224,9 @@ jobs:
           helm repo add redpanda https://charts.redpanda.com
           scripts/ci/deploy_helm.sh values prod
           echo "PREVIOUS_REVISION=$(scripts/ci/deploy_helm.sh revision)" >> "${GITHUB_ENV}"
-      - name: fleet simulator binary from the release image
+      - name: fleet simulator binary from the release image (verified digest)
         run: |
-          cid="$(docker create "${IMAGE_NAMESPACE}/ironmesh-fleet:${TAG}")"
+          cid="$(docker create "$(scripts/ci/deploy_helm.sh image-ref fleet)")"
           docker cp "${cid}:/usr/local/bin/ironmesh-fleet" "${RUNNER_TEMP}/ironmesh-fleet"
           docker rm "${cid}" >/dev/null
           chmod 0755 "${RUNNER_TEMP}/ironmesh-fleet"
