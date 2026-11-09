@@ -41,6 +41,8 @@ pub struct DeviceConfig {
     pub bootstrap_serial: Vec<u8>,
     pub bundle_pubkey: [u8; 32],
     pub telemetry_interval_s: u32,
+    /// OTA artifact host allowed besides the bundle's broker host (T-60, `im_agent_config_t.ota_host`).
+    pub ota_host: String,
     pub real: Option<net::RealConfig>,
 }
 
@@ -58,6 +60,7 @@ impl DeviceConfig {
             bootstrap_serial: vec![0x0b, 0x00, 0x7a, 0x11],
             bundle_pubkey: keys.bundle.public(),
             telemetry_interval_s: 0,
+            ota_host: sim_cloud::ARTIFACT_HOST.into(),
             real: None,
         }
     }
@@ -71,6 +74,7 @@ pub struct Inner {
     c_product: CString,
     c_fw_version: CString,
     c_target: CString,
+    c_ota_host: CString,
     c_slot_names: [CString; 2],
     agent: Opaque,
     identity: Box<SoftIdentity>,
@@ -485,6 +489,7 @@ impl Inner {
             target: self.c_target.as_ptr(),
             boot_reason: reason,
             active_slot: self.c_slot_names[self.slots.active].as_ptr(),
+            ota_host: self.c_ota_host.as_ptr(),
         };
         let pf = self.platform();
         im_host::check(im_agent_init(self.agent.ptr(), &cfg, &pf)).map_err(String::from)?;
@@ -512,6 +517,7 @@ impl Device {
             c_product: CString::new(cfg.product.clone()).map_err(|e| e.to_string())?,
             c_fw_version: CString::new(cfg.fw_version.clone()).map_err(|e| e.to_string())?,
             c_target: CString::new(TARGET).unwrap(),
+            c_ota_host: CString::new(cfg.ota_host.clone()).map_err(|e| e.to_string())?,
             c_slot_names: [CString::new("ota_0").unwrap(), CString::new("ota_1").unwrap()],
             agent: Opaque::new(unsafe { im_agent_ctx_size() }),
             identity,
@@ -644,6 +650,16 @@ impl Device {
         let topic = unsafe { format!("im/v1/{}/{}/{}", (*self.p).cfg.tenant_id, (*self.p).cfg.device_id, suffix) };
         self.sim().broker.inject(&topic, payload, retain);
         self.poll();
+    }
+
+    /// T-29: the EST pins the C core selects for `factory_pins` (see `im_agent_est_pins`).
+    pub fn est_pins(&self, factory_pins: &[[u8; 32]]) -> Result<Vec<[u8; 32]>, String> {
+        unsafe { agent_est_pins((*self.p).agent.ptr(), factory_pins) }
+    }
+
+    /// T-60: whether the C core would download an artifact from `url`.
+    pub fn download_allowed(&self, url: &str) -> bool {
+        unsafe { im_agent_download_allowed((*self.p).agent.ptr(), url.as_ptr().cast(), url.len()) }
     }
 
     pub fn tenant_id(&self) -> String {
@@ -780,7 +796,16 @@ unsafe fn enroll(p: *mut Inner, renew: bool) {
             out.truncate(n);
             Ok(out)
         };
-        match net::est_enroll(&real, renew, (*p).op_cert.as_deref(), &(*p).identity, &csr, attest) {
+        // T-29: the same pin rule as the C platform layer (est_client.c): bundle pins once
+        // enrolled, the factory PKI CA pin before - decided by the C core.
+        let pins = match agent_est_pins((*p).agent.ptr(), &real.est_pins) {
+            Ok(pins) => pins,
+            Err(e) => {
+                fail_enroll(p, 0, &e);
+                return;
+            }
+        };
+        match net::est_enroll(&real, renew, &pins, (*p).op_cert.as_deref(), &(*p).identity, &csr, attest) {
             Ok(res) => finish_enroll(p, new_key, res.cert, res.bundle),
             Err((status, reason)) => fail_enroll(p, status, &reason),
         }
@@ -829,8 +854,30 @@ unsafe fn enroll(p: *mut Inner, renew: bool) {
         spki: vec![],
         subject_cn: Some((*p).cfg.device_id.clone()),
         is_ca: false,
+        issuer: vec![],
+        subject: vec![],
     };
     finish_enroll(p, new_key, cert, Some(bundle));
+}
+
+/// EST server pins chosen by the C core (`im_agent_est_pins`): the loaded bundle's `ca_pins`, or
+/// the factory pins before the first enrollment. No pin at all is an error (fail closed).
+unsafe fn agent_est_pins(agent: *mut c_void, factory_pins: &[[u8; 32]]) -> Result<Vec<[u8; 32]>, String> {
+    let factory: Vec<u8> = factory_pins.iter().flatten().copied().collect();
+    let mut out = [0u8; 4 * IM_PIN_LEN];
+    let mut n = 0usize;
+    let r = im_agent_est_pins(
+        agent,
+        if factory.is_empty() { std::ptr::null() } else { factory.as_ptr() },
+        factory_pins.len(),
+        out.as_mut_ptr(),
+        4,
+        &mut n,
+    );
+    if r != IM_OK {
+        return Err(format!("tls_pin_mismatch: no EST pin available ({})", im_host::err_name(r)));
+    }
+    Ok(out[..n * IM_PIN_LEN].chunks(IM_PIN_LEN).map(|c| c.try_into().unwrap()).collect())
 }
 
 /// Serial of the certificate the device presents to the EST server (the expected attestation

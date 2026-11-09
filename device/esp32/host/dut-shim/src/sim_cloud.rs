@@ -7,6 +7,9 @@
 //! `net.rs` and the real broker/PKI are covered by the HIL job.
 
 use im_host::err::*;
+
+/// Host of the simulated artifact store (`https://ota.example/...`).
+pub const ARTIFACT_HOST: &str = "ota.example";
 use im_host::ffi::*;
 use im_host::ffi2::*;
 use im_host::{testkit, EdSigner};

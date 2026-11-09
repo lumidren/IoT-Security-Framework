@@ -65,6 +65,9 @@ pub struct CertInfo {
     pub spki: Vec<u8>,
     pub subject_cn: Option<String>,
     pub is_ca: bool,
+    /// Raw issuer / subject Name encodings (self-issued when equal).
+    pub issuer: Vec<u8>,
+    pub subject: Vec<u8>,
 }
 
 const OID_CN: &[u8] = &[0x55, 0x04, 0x03];
@@ -135,6 +138,7 @@ pub fn parse_cert(der: &[u8]) -> Option<CertInfo> {
         i = 1; // [0] version
     }
     let serial = f.get(i)?;
+    let issuer = f.get(i + 2)?;
     let validity = children(f.get(i + 3)?.content)?;
     let subject = f.get(i + 4)?;
     let spki = f.get(i + 5)?;
@@ -171,6 +175,8 @@ pub fn parse_cert(der: &[u8]) -> Option<CertInfo> {
         spki: spki.raw.to_vec(),
         subject_cn: cn,
         is_ca,
+        issuer: issuer.raw.to_vec(),
+        subject: subject.raw.to_vec(),
     })
 }
 

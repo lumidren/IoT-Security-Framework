@@ -331,8 +331,19 @@ fn c_off_1_offline_buffering_and_ordered_resync() {
 }
 
 fn campaign(t: &mut T, image: &[u8], vc: u64, signer_seed: Option<[u8; 32]>, delta: Option<(Vec<u8>, Vec<u8>)>) -> Vec<u8> {
+    campaign_from(t, "ota.example", image, vc, signer_seed, delta)
+}
+
+fn campaign_from(
+    t: &mut T,
+    host: &str,
+    image: &[u8],
+    vc: u64,
+    signer_seed: Option<[u8; 32]>,
+    delta: Option<(Vec<u8>, Vec<u8>)>,
+) -> Vec<u8> {
     let cfg_product = "sensor-esp32";
-    let url = format!("https://ota.example/fw-{vc}.bin");
+    let url = format!("https://{host}/fw-{vc}.bin");
     let manifest = {
         let sim = t.dev.sim();
         let own;
@@ -604,4 +615,60 @@ fn renewal_attests_with_the_operational_cert_and_expiry_falls_back_to_bootstrap(
     let kids = t.dev.sim().pki.attestation_kids.clone();
     let boot = DeviceConfig::sim().bootstrap_serial;
     assert_eq!(kids.last().unwrap(), &boot, "post-expiry attestation is under the bootstrap serial");
+}
+
+#[test]
+fn t60_artifact_host_must_be_allowlisted() {
+    let mut t = T::new();
+    // Before a bundle exists only the configured OTA host is allowed.
+    assert!(t.dev.download_allowed("https://ota.example/fw.bin"));
+    assert!(!t.dev.download_allowed("https://mqtt.ironmesh.local/fw.bin"));
+    t.online();
+    let mut img = DeviceConfig::sim().firmware;
+    img[10] ^= 1;
+    // A validly signed campaign whose artifact sits on an unlisted host: rejected, "download",
+    // and the C core never asks the platform to fetch it.
+    let n = campaign_from(&mut t, "evil.example", &img, 10001, None, None);
+    t.dev.inject("ota/notify", &n, false);
+    assert_eq!(ota_states(&mut t).last().unwrap(), &("rejected".to_string(), json!("download")));
+    assert_eq!(t.ok("ota_slots", json!({}))["pending_slot"], Value::Null);
+    // The signed bundle's broker host and the configured OTA host are allowed (case-insensitive).
+    assert!(t.dev.download_allowed("https://MQTT.ironmesh.local:8443/fw.bin"));
+    assert!(t.dev.download_allowed("https://ota.example/fw.bin?x=1"));
+    for bad in [
+        "http://ota.example/fw.bin",
+        "https://user@ota.example/fw.bin",
+        "https://ota.example.evil/fw.bin",
+        "https://ota.example:0/fw.bin",
+        "https:///fw.bin",
+    ] {
+        assert!(!t.dev.download_allowed(bad), "{bad}");
+    }
+    // The same campaign from the allowed host goes through.
+    let n = campaign(&mut t, &img, 10002, None, None);
+    t.dev.inject("ota/notify", &n, false);
+    for _ in 0..50 {
+        t.dev.poll();
+    }
+    let st: Vec<String> = ota_states(&mut t).into_iter().map(|s| s.0).collect();
+    assert!(
+        st.contains(&"downloading".to_string()) && !st.contains(&"rejected".to_string()),
+        "{st:?}"
+    );
+}
+
+#[test]
+fn t29_est_pins_follow_the_bundle_once_enrolled() {
+    let mut t = T::new();
+    let factory = [[0xF1u8; 32]];
+    // Before the first enrollment: the factory PKI CA pin; with none at all: fail closed.
+    assert_eq!(t.dev.est_pins(&factory).unwrap(), factory.to_vec());
+    assert!(t.dev.est_pins(&[]).unwrap_err().contains("tls_pin_mismatch"));
+    t.online();
+    // Enrolled: exactly the signed bundle's ca_pins (the MQTT pins), the factory pin is ignored.
+    let bundle = t.dev.sim().pki.bundle();
+    let expected = im_shim::net::bundle_pins(&bundle);
+    assert!(!expected.is_empty());
+    assert_eq!(t.dev.est_pins(&factory).unwrap(), expected);
+    assert_eq!(t.dev.est_pins(&[]).unwrap(), expected);
 }

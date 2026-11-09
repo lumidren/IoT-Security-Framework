@@ -6,6 +6,7 @@
 //!   im-dut-shim                      simulated cloud (in-process broker / EST / artifacts)
 //!   im-dut-shim --est HOST:PORT --ca ca.pem --bootstrap-cert boot.pem --bootstrap-key key.hex
 //!               [--device-id dev-..] [--tenant-id uuid] [--bundle-pubkey hex32]
+//!               [--est-pin hex32]... [--ota-host HOST]
 //!                                    real IronMesh stack (TLS 1.3 + EST); not run in this repo's
 //!                                    host CI, see README
 
@@ -74,12 +75,28 @@ fn config(args: &[String]) -> Result<DeviceConfig, String> {
         }
         cfg.bootstrap_serial = kid.to_vec();
         cfg.bundle_pubkey = hex32(&arg(args, "--bundle-pubkey").ok_or("--bundle-pubkey required")?)?;
+        let ca_roots = pem_blocks(&ca);
+        // T-29: factory EST pins (repeatable --est-pin); default: the non-self-issued CA(s) in --ca.
+        let explicit: Vec<[u8; 32]> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "--est-pin")
+            .map(|(i, _)| args.get(i + 1).ok_or("--est-pin needs a value".to_string()).and_then(|v| hex32(v)))
+            .collect::<Result<_, _>>()?;
+        let est_pins = if explicit.is_empty() {
+            im_shim::net::default_est_pins(&ca_roots)
+        } else {
+            explicit
+        };
+        // T-60: artifacts only from the bundle's broker host or this host (default: the EST host).
+        cfg.ota_host = arg(args, "--ota-host").unwrap_or_else(|| host.to_string());
         cfg.real = Some(RealConfig {
             est_host: host.into(),
             est_port: port.parse().map_err(|e| format!("--est port: {e}"))?,
-            ca_roots: pem_blocks(&ca),
+            ca_roots,
             bootstrap_cert,
             bootstrap_key: hex32(key.trim())?,
+            est_pins,
         });
     }
     Ok(cfg)

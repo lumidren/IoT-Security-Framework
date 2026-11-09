@@ -423,6 +423,7 @@ pub struct im_agent_config_t {
     pub target: *const c_char,
     pub boot_reason: c_int,
     pub active_slot: *const c_char,
+    pub ota_host: *const c_char,
 }
 
 #[repr(C)]
@@ -499,6 +500,15 @@ extern "C" {
     ) -> im_err_t;
     pub fn im_agent_on_enroll_failed(a: *mut c_void, http_status: c_int, reason: *const c_char);
     pub fn im_agent_load_bundle(a: *mut c_void, bundle: *const u8, len: usize) -> im_err_t;
+    pub fn im_agent_est_pins(
+        a: *const c_void,
+        factory: *const u8,
+        n_factory: usize,
+        out: *mut u8,
+        cap: usize,
+        n_out: *mut usize,
+    ) -> im_err_t;
+    pub fn im_agent_download_allowed(a: *const c_void, url: *const c_char, url_len: usize) -> bool;
     pub fn im_agent_on_connected(a: *mut c_void, tls: *const c_char, alpn: *const c_char, sp: bool, resumed: bool);
     pub fn im_agent_on_connect_failed(a: *mut c_void, reason: *const c_char);
     pub fn im_agent_on_disconnected(a: *mut c_void, reason: *const c_char, code: c_int);
@@ -517,6 +527,25 @@ extern "C" {
         cap: usize,
         out_len: *mut usize,
     ) -> im_err_t;
+}
+
+// ---- im_util.h: endpoint policy (T-29, T-60) ----------------------------------------------------
+
+pub const IM_PIN_LEN: usize = 32;
+
+extern "C" {
+    pub fn im_est_pins_select(
+        bundle_pins: *const u8,
+        n_bundle: usize,
+        factory_pins: *const u8,
+        n_factory: usize,
+        out: *mut u8,
+        cap: usize,
+        n_out: *mut usize,
+    ) -> im_err_t;
+    pub fn im_pin_match(spki_sha256: *const u8, pins: *const u8, n: usize) -> bool;
+    pub fn im_url_https_host(url: *const c_char, len: usize, host: *mut *const c_char, host_len: *mut usize) -> im_err_t;
+    pub fn im_host_allowed(host: *const c_char, host_len: usize, allowed: *const *const c_char, n: usize) -> bool;
 }
 
 // ---- im_keyslot.h -----------------------------------------------------------------------------

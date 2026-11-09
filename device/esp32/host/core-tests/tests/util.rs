@@ -5,6 +5,7 @@ use im_host::err::*;
 use im_host::err_name;
 use im_host::ffi::*;
 use im_host::ffi2::*;
+use std::ffi::CString;
 
 struct J {
     _src: Vec<u8>,
@@ -275,4 +276,103 @@ fn replay_store_fail_closed() {
     let mut last = 0u64;
     assert!(unsafe { im_replay_mem_last(&*s, [1u8].as_ptr(), 1, 0, &mut last) });
     assert_eq!(last, 6);
+}
+
+// ---- endpoint policy (T-29 EST pinning, T-60 artifact host allowlist) -------------------------
+
+fn pins_select(bundle: &[[u8; 32]], factory: &[[u8; 32]], cap: usize) -> Result<Vec<[u8; 32]>, &'static str> {
+    let b: Vec<u8> = bundle.iter().flatten().copied().collect();
+    let f: Vec<u8> = factory.iter().flatten().copied().collect();
+    let mut out = vec![0u8; cap.max(1) * IM_PIN_LEN];
+    let mut n = 0usize;
+    let r = unsafe {
+        im_est_pins_select(
+            if b.is_empty() { std::ptr::null() } else { b.as_ptr() },
+            bundle.len(),
+            if f.is_empty() { std::ptr::null() } else { f.as_ptr() },
+            factory.len(),
+            out.as_mut_ptr(),
+            cap,
+            &mut n,
+        )
+    };
+    if r != IM_OK {
+        return Err(err_name(r));
+    }
+    Ok(out[..n * IM_PIN_LEN].chunks(IM_PIN_LEN).map(|c| c.try_into().unwrap()).collect())
+}
+
+#[test]
+fn est_pins_bundle_first_then_factory_never_none() {
+    let (b1, b2, f1) = ([1u8; 32], [2u8; 32], [9u8; 32]);
+    assert_eq!(pins_select(&[b1, b2], &[f1], 4).unwrap(), vec![b1, b2]);
+    assert_eq!(pins_select(&[], &[f1], 4).unwrap(), vec![f1]);
+    assert_eq!(pins_select(&[b1, b2], &[], 1).unwrap(), vec![b1], "truncated to cap");
+    assert_eq!(pins_select(&[], &[], 4).unwrap_err(), "NOT_FOUND");
+    assert_eq!(pins_select(&[b1], &[f1], 0).unwrap_err(), "ARG");
+}
+
+#[test]
+fn pin_match_is_exact() {
+    let pins: Vec<u8> = [[1u8; 32], [2u8; 32]].iter().flatten().copied().collect();
+    assert!(unsafe { im_pin_match([2u8; 32].as_ptr(), pins.as_ptr(), 2) });
+    let mut near = [2u8; 32];
+    near[31] = 3;
+    assert!(!unsafe { im_pin_match(near.as_ptr(), pins.as_ptr(), 2) });
+    assert!(!unsafe { im_pin_match([2u8; 32].as_ptr(), pins.as_ptr(), 1) });
+    assert!(!unsafe { im_pin_match([2u8; 32].as_ptr(), std::ptr::null(), 2) });
+}
+
+fn url_host(url: &str) -> Option<String> {
+    let mut host: *const c_char = std::ptr::null();
+    let mut n = 0usize;
+    let r = unsafe { im_url_https_host(url.as_ptr().cast(), url.len(), &mut host, &mut n) };
+    (r == IM_OK).then(|| String::from_utf8(unsafe { std::slice::from_raw_parts(host.cast::<u8>(), n) }.to_vec()).unwrap())
+}
+
+#[test]
+fn https_url_host_parsing() {
+    assert_eq!(url_host("https://ota.example/fw.bin").as_deref(), Some("ota.example"));
+    assert_eq!(url_host("https://ota.example").as_deref(), Some("ota.example"));
+    assert_eq!(url_host("https://ota.example:8443/a?b#c").as_deref(), Some("ota.example"));
+    assert_eq!(url_host("https://ota.example?x").as_deref(), Some("ota.example"));
+    assert_eq!(url_host("https://[2001:db8::1]:443/x").as_deref(), Some("2001:db8::1"));
+    for bad in [
+        "http://ota.example/x",
+        "HTTPS://ota.example/x",
+        "https://",
+        "https:///x",
+        "https://:443/x",
+        "https://user@ota.example/x",
+        "https://ota.example:/x",
+        "https://ota.example:0/x",
+        "https://ota.example:65536/x",
+        "https://ota.example:123456/x",
+        "https://ota.example:44a/x",
+        "https://ota example/x",
+        "https://ota.example\0.evil/x",
+        "https://[]/x",
+        "https://[::1/x",
+        "https://[::1]x/x",
+        "https://ota\\evil/x",
+    ] {
+        assert_eq!(url_host(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn host_allowlist_is_exact_and_case_insensitive() {
+    let names = [CString::new("OTA.example").unwrap(), CString::new("").unwrap()];
+    let list = [names[0].as_ptr(), names[1].as_ptr(), std::ptr::null()];
+    let allowed = |h: &str| unsafe { im_host_allowed(h.as_ptr().cast(), h.len(), list.as_ptr(), list.len()) };
+    assert!(allowed("ota.example"));
+    assert!(allowed("Ota.Example"));
+    assert!(!allowed("ota.example.evil"));
+    assert!(!allowed("xota.example"));
+    assert!(!allowed("ota.exampl"));
+    assert!(!allowed(""), "an empty host never matches the empty entry");
+    assert!(
+        !unsafe { im_host_allowed("ota.example".as_ptr().cast(), 11, list.as_ptr(), 0) },
+        "empty list allows nothing"
+    );
 }

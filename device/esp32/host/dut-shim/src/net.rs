@@ -33,6 +33,35 @@ pub struct RealConfig {
     pub bootstrap_cert: Vec<u8>,
     /// Bootstrap private scalar (the shim's stand-in for the ATECC slot 0 key).
     pub bootstrap_key: [u8; 32],
+    /// Factory-provisioned EST pins (SPKI SHA-256 of the PKI/Services CA), used until a trust
+    /// bundle is loaded (T-29). See [`default_est_pins`].
+    pub est_pins: Vec<[u8; 32]>,
+}
+
+/// Default factory EST pins when none are given explicitly: the SPKI SHA-256 of every CA
+/// certificate in `roots` that is not self-issued (the Services CA, as the conformance harness
+/// and the Linux agent's `pki.est_pins` use); if every root is self-issued, all of them.
+pub fn default_est_pins(roots: &[Vec<u8>]) -> Vec<[u8; 32]> {
+    let parsed: Vec<der::CertInfo> = roots.iter().filter_map(|r| der::parse_cert(r)).collect();
+    let intermediates: Vec<[u8; 32]> = parsed
+        .iter()
+        .filter(|c| c.issuer != c.subject)
+        .map(|c| Sha256::digest(&c.spki).into())
+        .collect();
+    if intermediates.is_empty() {
+        parsed.iter().map(|c| Sha256::digest(&c.spki).into()).collect()
+    } else {
+        intermediates
+    }
+}
+
+/// Anchors whose SPKI SHA-256 is pinned; never "all roots" (an empty pin set pins nothing).
+fn pinned_anchors(roots: &[Vec<u8>], pins: &[[u8; 32]]) -> Vec<Vec<u8>> {
+    roots
+        .iter()
+        .filter(|c| spki_hash(c).is_some_and(|h| pins.contains(&h)))
+        .cloned()
+        .collect()
 }
 
 pub trait Link {
@@ -80,10 +109,8 @@ pub fn classify(err: &str) -> &'static str {
     // A broker certificate that does not chain to a pinned anchor surfaces either as
     // UnknownIssuer or, when a rogue CA reuses the pinned CA's subject name, as a chain signature
     // failure ("invalid peer certificate: BadSignature"). Both are pin mismatches.
-    let bad_chain = err.contains("invalid peer certificate")
-        && !err.contains("Expired")
-        && !err.contains("Revoked")
-        && !err.contains("NotValidYet");
+    let bad_chain =
+        err.contains("invalid peer certificate") && !err.contains("Expired") && !err.contains("Revoked") && !err.contains("NotValidYet");
     if err.contains("tls_pin_mismatch") || err.contains("UnknownIssuer") || err.contains("pin") || bad_chain {
         "tls_pin_mismatch"
     } else if err.contains("timed out") || err.contains("timeout") {
@@ -249,11 +276,7 @@ impl TlsLink {
         let anchors: Vec<Vec<u8>> = if pins.is_empty() {
             real.ca_roots.clone()
         } else {
-            real.ca_roots
-                .iter()
-                .filter(|c| spki_hash(c).is_some_and(|h| pins.contains(&h)))
-                .cloned()
-                .collect()
+            pinned_anchors(&real.ca_roots, pins)
         };
         if anchors.is_empty() {
             return Err("tls_pin_mismatch: no configured CA matches the bundle pins".into());
@@ -410,16 +433,24 @@ pub struct EnrollResult {
 }
 
 /// RFC 7030 enrollment with the IronMesh attestation. `attest(nonce)` returns the COSE bytes.
+///
+/// T-29: the EST server chain must end in a CA whose SPKI SHA-256 is in `pins` (the bundle's
+/// `ca_pins`, or the factory pin before the first enrollment), exactly like the MQTT link.
 pub fn est_enroll(
     real: &RealConfig,
     renew: bool,
+    pins: &[[u8; 32]],
     op_cert: Option<&[u8]>,
     identity: &SoftIdentity,
     csr: &[u8],
     attest: impl Fn(&[u8; 32]) -> Result<Vec<u8>, String>,
 ) -> Result<EnrollResult, (i32, String)> {
+    let anchors = pinned_anchors(&real.ca_roots, pins);
+    if anchors.is_empty() {
+        return Err((0, "tls_pin_mismatch: no configured CA matches the EST pins".into()));
+    }
     let cert = if renew { op_cert.map(<[u8]>::to_vec) } else { None }.unwrap_or_else(|| real.bootstrap_cert.clone());
-    let cfg = client_config(&real.ca_roots, Some(cert), identity, false).map_err(|e| (0, e))?;
+    let cfg = client_config(&anchors, Some(cert), identity, false).map_err(|e| (0, e))?;
     let host = real.est_host.as_str();
     let req = format!("GET /.well-known/est/ironmesh/nonce HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     let r = https(host, real.est_port, cfg.clone(), req.as_bytes()).map_err(|e| (0, e))?;
