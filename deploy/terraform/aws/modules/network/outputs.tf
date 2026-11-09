@@ -41,3 +41,8 @@ output "vpc_endpoint_security_group_id" {
 output "flow_log_group_name" {
   value = aws_cloudwatch_log_group.flow.name
 }
+
+# Regional S3 prefix-list CIDRs routed through the gateway endpoint (NetworkPolicy egress for ota).
+output "s3_gateway_cidrs" {
+  value = aws_vpc_endpoint.s3.cidr_blocks
+}

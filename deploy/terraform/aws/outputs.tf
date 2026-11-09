@@ -232,6 +232,16 @@ output "helm_values" {
       enabled          = true
       secretPathPrefix = local.secrets_path_prefix
     }
+    # NetworkPolicy egress (THREAT_MODEL T-30): AWS APIs only through the interface endpoints in the
+    # private subnets, S3 only through the gateway endpoint's prefix list; the NLB health check of
+    # the broker targets 8883 from the VPC (never 18083).
+    networkPolicy = {
+      loadBalancerCidrs = [module.network.vpc_cidr]
+      httpsEgress = {
+        awsApis = { cidrs = module.network.private_subnet_cidrs }
+        s3      = { cidrs = module.network.s3_gateway_cidrs }
+      }
+    }
     services = {
       pki = {
         serviceAccount = { roleArn = module.iam.role_arns["pki"] }

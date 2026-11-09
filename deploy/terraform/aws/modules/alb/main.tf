@@ -30,24 +30,30 @@ locals {
     }
   }
 
+  # The broker is health-checked with a plain TCP connect on its own MQTT port: the EMQX
+  # management API (18083) is never reachable from the NLB or the VPC CIDR (THREAT_MODEL T-76),
+  # so no security group rule opens it.
   nlb_targets = {
     emqx = {
-      port          = 8883
-      listener_port = 8883
-      health_port   = 18083
-      health_path   = "/status"
+      port            = 8883
+      listener_port   = 8883
+      health_protocol = "TCP"
+      health_port     = 8883
+      health_path     = ""
     }
     pki_mtls = {
-      port          = 8443
-      listener_port = 443
-      health_port   = 8444
-      health_path   = "/healthz"
+      port            = 8443
+      listener_port   = 443
+      health_protocol = "HTTP"
+      health_port     = 8444
+      health_path     = "/healthz"
     }
     pki_crl = {
-      port          = 8444
-      listener_port = 80
-      health_port   = 8444
-      health_path   = "/healthz"
+      port            = 8444
+      listener_port   = 80
+      health_protocol = "HTTP"
+      health_port     = 8444
+      health_path     = "/healthz"
     }
   }
 
@@ -216,6 +222,8 @@ resource "aws_vpc_security_group_ingress_rule" "pods_from_nlb" {
   ip_protocol                  = "tcp"
 }
 
+# Health-check ports that differ from the traffic port (pki 8444 for the 8443 target group). The
+# broker is checked on 8883 itself, so 18083 never appears here.
 resource "aws_vpc_security_group_ingress_rule" "pods_from_nlb_healthcheck" {
   for_each = toset([for k, v in local.nlb_targets : tostring(v.health_port) if v.health_port != v.port])
 
@@ -479,10 +487,10 @@ resource "aws_lb_target_group" "nlb" {
   deregistration_delay   = 60
 
   health_check {
-    protocol            = "HTTP"
+    protocol            = each.value.health_protocol
     port                = tostring(each.value.health_port)
-    path                = each.value.health_path
-    matcher             = "200-399"
+    path                = each.value.health_protocol == "HTTP" ? each.value.health_path : null
+    matcher             = each.value.health_protocol == "HTTP" ? "200-399" : null
     interval            = 15
     healthy_threshold   = 3
     unhealthy_threshold = 3
