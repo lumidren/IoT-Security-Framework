@@ -518,3 +518,33 @@ extern "C" {
         out_len: *mut usize,
     ) -> im_err_t;
 }
+
+// ---- im_keyslot.h -----------------------------------------------------------------------------
+
+pub const IM_SLOT_BOOTSTRAP: u8 = 0;
+pub const IM_SLOT_OP_A: u8 = 2;
+pub const IM_SLOT_OP_B: u8 = 3;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct im_keyslot_plan_t {
+    pub tls_slot: u8,
+    pub bootstrap_cert: bool,
+    pub reenroll: bool,
+    pub new_slot: u8,
+}
+
+extern "C" {
+    pub fn im_keyslot_operational_valid(active: u8, provisioned: bool, now: u64, not_after: u64) -> bool;
+    pub fn im_keyslot_inactive(active: u8) -> u8;
+    pub fn im_keyslot_plan(active: u8, provisioned: bool, now: u64, not_after: u64, plan: *mut im_keyslot_plan_t) -> im_err_t;
+    pub fn im_keyslot_record_encode(
+        active: u8,
+        cert: *const u8,
+        cert_len: usize,
+        out: *mut u8,
+        cap: usize,
+        out_len: *mut usize,
+    ) -> im_err_t;
+    pub fn im_keyslot_record_decode(rec: *const u8, len: usize, active: *mut u8, cert: *mut *const u8, cert_len: *mut usize) -> im_err_t;
+}

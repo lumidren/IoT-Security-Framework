@@ -582,3 +582,26 @@ fn downlink_replay_streams_are_per_type_and_retained_messages_may_be_old() {
     t.dev.inject("cmd/req", &old_cmd, false);
     assert_eq!(t.take("message_rejected")[0]["code"], "ENV_TS_SKEW");
 }
+
+#[test]
+fn renewal_attests_with_the_operational_cert_and_expiry_falls_back_to_bootstrap() {
+    let mut t = T::new();
+    t.dev.sim().pki.cert_ttl = 1000;
+    t.online();
+    let first = t.dev.sim().pki.issued[0].clone();
+    // normal renewal at 50-60 % of the lifetime: attestation kid = operational serial
+    t.dev.advance(620_000);
+    assert_eq!(t.take("cert_renewed").len(), 1);
+    assert_eq!(t.dev.sim().pki.attestation_kids.last().unwrap(), &first);
+    // renewals keep failing until the certificate expires ...
+    t.dev.sim().pki.quarantined = true;
+    t.dev.advance(1_100_000);
+    assert!(!t.take("renew_failed").is_empty());
+    t.dev.sim().pki.quarantined = false;
+    // ... then the device falls back to the bootstrap identity (simpleenroll)
+    t.dev.advance(30_000_000);
+    assert!(!t.take("cert_renewed").is_empty(), "re-enrolled after expiry");
+    let kids = t.dev.sim().pki.attestation_kids.clone();
+    let boot = DeviceConfig::sim().bootstrap_serial;
+    assert_eq!(kids.last().unwrap(), &boot, "post-expiry attestation is under the bootstrap serial");
+}

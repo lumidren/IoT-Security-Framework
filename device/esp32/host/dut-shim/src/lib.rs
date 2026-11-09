@@ -813,6 +813,7 @@ unsafe fn enroll(p: *mut Inner, renew: bool) {
         fail_enroll(p, 403, "device quarantined");
         return;
     }
+    sim.pki.attestation_kids.push(kid.clone());
     if let Err(e) = sim.pki.verify_attestation(&att, &tls_key, &nonce, &csr, &kid, now) {
         fail_enroll(p, 400, e);
         return;
@@ -832,9 +833,20 @@ unsafe fn enroll(p: *mut Inner, renew: bool) {
     finish_enroll(p, new_key, cert, Some(bundle));
 }
 
+/// Serial of the certificate the device presents to the EST server (the expected attestation
+/// kid): the operational cert while valid, the bootstrap cert first and after expiry - the same
+/// rule as im_keyslot_plan()/im_agent_attestation in C.
 unsafe fn current_kid(p: *mut Inner) -> Vec<u8> {
+    let now = now_unix(&*p);
     match (*p).kv.map.get("prov") {
-        Some(b) if b.len() == 37 && b[0] >= 1 && b[0] <= 20 => b[1..1 + b[0] as usize].to_vec(),
+        Some(b) if b.len() == 37 && b[0] >= 1 && b[0] <= 20 => {
+            let not_after = u64::from_be_bytes(b[29..37].try_into().unwrap());
+            if now < not_after {
+                b[1..1 + b[0] as usize].to_vec()
+            } else {
+                (*p).cfg.bootstrap_serial.clone()
+            }
+        }
         _ => (*p).cfg.bootstrap_serial.clone(),
     }
 }

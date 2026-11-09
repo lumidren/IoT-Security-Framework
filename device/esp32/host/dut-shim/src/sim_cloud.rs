@@ -233,6 +233,8 @@ pub struct SimPki {
     pub broker_host: String,
     pub pins: Vec<[u8; 32]>,
     pub issued: Vec<Vec<u8>>,
+    /// kid the EST server expected for each attestation (serial of the presented TLS cert)
+    pub attestation_kids: Vec<Vec<u8>>,
 }
 
 impl SimPki {
@@ -245,6 +247,7 @@ impl SimPki {
             broker_host: "mqtt.ironmesh.local".into(),
             pins: vec![testkit::sha256(b"sim services ca spki")],
             issued: vec![],
+            attestation_kids: vec![],
         }
     }
 
