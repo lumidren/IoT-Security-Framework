@@ -93,6 +93,10 @@ pub struct CloudOptions {
     pub repo_root: PathBuf,
     /// Tenant id.
     pub tenant_id: String,
+    /// Extra policy service environment (load tests: production cache TTLs, log level).
+    pub policy_env: Vec<(String, String)>,
+    /// Persistent hook connection pool size for the broker double (`None`: one connection per call).
+    pub hook_pool: Option<usize>,
 }
 
 /// The enrollment authority of the hermetic backend.
@@ -236,10 +240,14 @@ impl Cloud {
             crl_issuer_file: device_ca_file,
             state_dir: o.run_dir.join("policy-state"),
             log_file: o.run_dir.join("policy.log"),
+            extra_env: o.policy_env.clone(),
         })
         .await
         .context("start the policy service")?;
-        let policy_client = svc.client.clone();
+        let policy_client = match o.hook_pool {
+            Some(n) => svc.client.clone().with_hook_pool(n)?,
+            None => svc.client.clone(),
+        };
         let certs = match &material {
             Some(m) => {
                 let mut c = BrokerCerts::hermetic(&pki);

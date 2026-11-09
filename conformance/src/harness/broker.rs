@@ -13,10 +13,17 @@
 //! Fault injection: [`BrokerMode`] (rogue CA certificate, TLS 1.2 only), per-client CONNECT
 //! refusal, per-client telemetry PUBACK suppression and a silent broker-side session drop.
 //! Everything the broker sees is recorded as an [`Obs`] for the cases to assert on.
+//!
+//! Load mode ([`Broker::set_load_mode`]): the observation log is switched off (it would keep every
+//! payload of a 10 000-device run) and the broker keeps only counters, hook round-trip timings
+//! ([`BrokerStats`]) and an optional tap of accepted client publishes for the uplink verifier.
+//! Subscriptions without wildcards are indexed by topic, so routing a publish does not scan every
+//! session.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -32,7 +39,68 @@ use tokio::sync::{broadcast, mpsc};
 
 use super::net::{self, ClientAuth, Versions};
 use super::pki::{self, TestPki};
+use crate::load::stats::Recorder;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+/// Broker-side counters and hook timings (atomics; hook timings only in load mode).
+#[derive(Default)]
+pub struct BrokerStats {
+    /// TLS handshakes that completed.
+    pub handshakes_ok: AtomicU64,
+    /// TLS handshakes that failed (reasons in `handshake_errors`).
+    pub handshakes_failed: AtomicU64,
+    /// CONNECTs accepted (CONNACK 0).
+    pub connects_ok: AtomicU64,
+    /// CONNECTs refused (authn deny, hook failure or injected refusal).
+    pub connects_denied: AtomicU64,
+    /// Client PUBLISHes the policy allowed.
+    pub publishes_accepted: AtomicU64,
+    /// Of which on `.../telemetry`.
+    pub telemetry_accepted: AtomicU64,
+    /// Client PUBLISHes the policy denied.
+    pub publishes_denied: AtomicU64,
+    /// SUBSCRIBE filters granted.
+    pub subscribes_granted: AtomicU64,
+    /// SUBSCRIBE filters denied.
+    pub subscribes_denied: AtomicU64,
+    /// QoS 1 downlinks handed to sessions.
+    pub downlinks_delivered: AtomicU64,
+    /// PUBACKs received for downlinks.
+    pub downlink_acks: AtomicU64,
+    /// authn/authz hook calls that failed at the transport level (treated as deny: fail closed).
+    pub hook_errors: AtomicU64,
+    /// Sessions currently open.
+    pub live_sessions: AtomicI64,
+    /// Highest number of simultaneously open sessions.
+    pub peak_sessions: AtomicI64,
+    /// Session ends by cause.
+    pub closes: Mutex<BTreeMap<String, u64>>,
+    /// Handshake failures by error text.
+    pub handshake_errors: Mutex<BTreeMap<String, u64>>,
+    /// Hook transport errors by text.
+    pub hook_error_texts: Mutex<BTreeMap<String, u64>>,
+    /// `POST /emqx/authn` round trips seen by the broker (load mode only).
+    pub authn_latency: Recorder,
+    /// `POST /emqx/authz` round trips seen by the broker (load mode only).
+    pub authz_latency: Recorder,
+}
+
+fn bump(m: &Mutex<BTreeMap<String, u64>>, key: String) {
+    *lock(m).entry(key).or_default() += 1;
+}
+
+/// An accepted client PUBLISH handed to the tap (load-mode uplink verification).
+#[derive(Debug, Clone)]
+pub struct Tapped {
+    /// When the broker accepted it (before the PUBACK was queued).
+    pub at: Instant,
+    /// Client id.
+    pub client_id: String,
+    /// Topic.
+    pub topic: String,
+    /// Payload.
+    pub payload: Vec<u8>,
+}
 
 /// TLS identities of the broker listener.
 pub struct BrokerCerts {
@@ -255,6 +323,45 @@ struct BrokerState {
     drop_telemetry_acks: HashSet<String>,
     certs: HashMap<String, Vec<Vec<u8>>>,
     log: Vec<Obs>,
+    /// Subscribers of wildcard-free filters, by filter (= topic).
+    exact_subs: HashMap<String, HashSet<String>>,
+    /// Clients whose session holds at least one wildcard filter.
+    wildcard_clients: HashSet<String>,
+}
+
+fn has_wildcard(filter: &str) -> bool {
+    filter.contains('+') || filter.contains('#')
+}
+
+impl BrokerState {
+    /// Forget the subscription index entries of `client_id` (its session is being replaced).
+    fn unindex(&mut self, client_id: &str) {
+        if let Some(sess) = self.sessions.get(client_id) {
+            for f in &sess.subs {
+                if let Some(set) = self.exact_subs.get_mut(f) {
+                    set.remove(client_id);
+                    if set.is_empty() {
+                        self.exact_subs.remove(f);
+                    }
+                }
+            }
+        }
+        self.wildcard_clients.remove(client_id);
+    }
+
+    /// Clients whose session has a filter matching `topic` (each once).
+    fn matching_sessions(&self, topic: &str) -> Vec<String> {
+        let mut out: Vec<String> = self.exact_subs.get(topic).map(|c| c.iter().cloned().collect()).unwrap_or_default();
+        for c in &self.wildcard_clients {
+            if out.contains(c) {
+                continue;
+            }
+            if self.sessions.get(c).is_some_and(|sess| sess.subs.iter().any(|f| has_wildcard(f) && topic_matches(f, topic))) {
+                out.push(c.clone());
+            }
+        }
+        out
+    }
 }
 
 struct Inner {
@@ -269,6 +376,9 @@ struct Inner {
     obs_tx: broadcast::Sender<Obs>,
     next_conn: Mutex<u64>,
     mgmt_auth: String,
+    stats: Arc<BrokerStats>,
+    load_mode: AtomicBool,
+    tap: OnceLock<mpsc::UnboundedSender<Tapped>>,
 }
 
 /// The running broker double.
@@ -390,6 +500,9 @@ impl Broker {
             obs_tx,
             next_conn: Mutex::new(0),
             mgmt_auth,
+            stats: Arc::new(BrokerStats::default()),
+            load_mode: AtomicBool::new(false),
+            tap: OnceLock::new(),
         });
         let listener = net::bind(host, 0).await?;
         let addr = listener.local_addr()?;
@@ -413,6 +526,23 @@ impl Broker {
     #[must_use]
     pub fn mgmt_url(&self) -> String {
         format!("http://{}", self.mgmt_addr)
+    }
+
+    /// Load mode: no observation log (counters and hook timings only). Cases that assert on
+    /// observations must not run in this mode.
+    pub fn set_load_mode(&self, on: bool) {
+        self.inner.load_mode.store(on, Ordering::SeqCst);
+    }
+
+    /// Counters and hook timings.
+    #[must_use]
+    pub fn stats(&self) -> Arc<BrokerStats> {
+        self.inner.stats.clone()
+    }
+
+    /// Receive every accepted client PUBLISH (set once; returns `false` if a tap was already set).
+    pub fn set_tap(&self, tx: mpsc::UnboundedSender<Tapped>) -> bool {
+        self.inner.tap.set(tx).is_ok()
     }
 
     /// Switch the listener mode (applies to new connections).
@@ -522,7 +652,7 @@ impl Broker {
     #[must_use]
     pub fn subscribers(&self, topic: &str) -> usize {
         let s = lock(&self.inner.state);
-        s.sessions.iter().filter(|(c, sess)| s.conns.contains_key(*c) && sess.subs.iter().any(|f| topic_matches(f, topic))).count()
+        s.matching_sessions(topic).iter().filter(|c| s.conns.contains_key(*c)).count()
     }
 
     /// Retained message on `topic`.
@@ -584,6 +714,9 @@ impl Broker {
 
 impl Inner {
     fn record(&self, conn: u64, kind: ObsKind) {
+        if self.load_mode.load(Ordering::Relaxed) {
+            return;
+        }
         let o = Obs { at: Instant::now(), conn, kind };
         lock(&self.state).log.push(o.clone());
         let _ = self.obs_tx.send(o);
@@ -602,8 +735,7 @@ impl Inner {
                     s.retained.insert(topic.to_owned(), payload.to_vec());
                 }
             }
-            let targets: Vec<String> =
-                s.sessions.iter().filter(|(_, sess)| sess.subs.iter().any(|f| topic_matches(f, topic))).map(|(c, _)| c.clone()).collect();
+            let targets = s.matching_sessions(topic);
             for client in targets {
                 if let Some(conn) = s.conns.get_mut(&client) {
                     conn.next_pid = conn.next_pid.wrapping_add(1).max(1);
@@ -625,10 +757,27 @@ impl Inner {
             }
         }
         let _ = from_cloud;
+        self.stats.downlinks_delivered.fetch_add(records.len() as u64, Ordering::Relaxed);
         for (cid, client, pid) in records {
             self.record(cid, ObsKind::Delivered { client_id: client, topic: topic.to_owned(), packet_id: pid, retain: false });
         }
         delivered
+    }
+
+    /// Account for one hook call; the decision, or `None` on a transport failure (deny).
+    fn hook_done<T>(&self, hook: &str, started: Instant, r: Result<T>) -> Option<T> {
+        if self.load_mode.load(Ordering::Relaxed) {
+            let rec = if hook == "authn" { &self.stats.authn_latency } else { &self.stats.authz_latency };
+            rec.record(started.elapsed());
+        }
+        match r {
+            Ok(v) => Some(v),
+            Err(e) => {
+                self.stats.hook_errors.fetch_add(1, Ordering::Relaxed);
+                bump(&self.stats.hook_error_texts, format!("{hook}: {e:#}"));
+                None
+            }
+        }
     }
 
     fn next_conn_id(&self) -> u64 {
@@ -671,6 +820,8 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
     let tls = match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await {
         Ok(Ok(t)) => t,
         Ok(Err(e)) => {
+            inner.stats.handshakes_failed.fetch_add(1, Ordering::Relaxed);
+            bump(&inner.stats.handshake_errors, e.to_string());
             inner.record(
                 conn_id,
                 ObsKind::Handshake {
@@ -687,6 +838,8 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
             return;
         }
         Err(_) => {
+            inner.stats.handshakes_failed.fetch_add(1, Ordering::Relaxed);
+            bump(&inner.stats.handshake_errors, "handshake timeout".into());
             inner.record(
                 conn_id,
                 ObsKind::Handshake {
@@ -716,6 +869,7 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
             c.peer_certificates().and_then(|p| p.first()).map(|c| c.to_vec()),
         )
     };
+    inner.stats.handshakes_ok.fetch_add(1, Ordering::Relaxed);
     let facts = leaf.as_ref().and_then(|d| pki::cert_facts(d).ok());
     if let (Some(d), Some(cn)) = (&leaf, facts.as_ref().and_then(|f| f.cn.clone())) {
         let mut st = lock(&inner.state);
@@ -759,6 +913,7 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
     let refuse = lock(&inner.state).refuse.get(&client_id).copied();
     let reject = |code: u8| Packet::ConnAck(ConnAck { session_present: false, reason_code: code, properties: Properties::new() });
     if let Some(code) = refuse {
+        inner.stats.connects_denied.fetch_add(1, Ordering::Relaxed);
         inner.record(conn_id, connect_obs(false, code, false));
         if let Ok(b) = reject(code).encode() {
             let _ = wr.write_all(&b).await;
@@ -767,21 +922,25 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
         return;
     }
     let decision = match &facts {
-        Some(f) => inner
-            .policy
-            .authn(&AuthnRequest {
-                clientid: client_id.clone(),
-                username: cn.clone(),
-                peerhost: peer.ip().to_string(),
-                cert_common_name: cn.clone(),
-                cert_subject: f.subject.clone(),
-                cert_pem: leaf.as_ref().map(|d| crate::util::pem("CERTIFICATE", d)),
-            })
-            .await
-            .ok(),
+        Some(f) => {
+            let t = Instant::now();
+            let r = inner
+                .policy
+                .authn(&AuthnRequest {
+                    clientid: client_id.clone(),
+                    username: cn.clone(),
+                    peerhost: peer.ip().to_string(),
+                    cert_common_name: cn.clone(),
+                    cert_subject: f.subject.clone(),
+                    cert_pem: leaf.as_ref().map(|d| crate::util::pem("CERTIFICATE", d)),
+                })
+                .await;
+            inner.hook_done("authn", t, r)
+        }
         None => None,
     };
     let Some(decision) = decision.filter(|d| d.allow) else {
+        inner.stats.connects_denied.fetch_add(1, Ordering::Relaxed);
         inner.record(conn_id, connect_obs(false, codec::reason::NOT_AUTHORIZED, false));
         if let Ok(b) = reject(codec::reason::NOT_AUTHORIZED).encode() {
             let _ = wr.write_all(&b).await;
@@ -797,6 +956,7 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
         let mut s = lock(&inner.state);
         let present = !c.clean_start && s.sessions.contains_key(&client_id);
         if c.clean_start || !present {
+            s.unindex(&client_id);
             s.sessions.insert(client_id.clone(), Session::default());
         }
         let old = s.conns.insert(
@@ -810,11 +970,18 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
         old.kill.notify_one();
         inner.record(old.id, ObsKind::Closed { client_id: client_id.clone(), cause: CloseCause::TakenOver });
     }
+    inner.stats.connects_ok.fetch_add(1, Ordering::Relaxed);
+    let live = inner.stats.live_sessions.fetch_add(1, Ordering::Relaxed) + 1;
+    inner.stats.peak_sessions.fetch_max(live, Ordering::Relaxed);
     inner.record(conn_id, connect_obs(true, 0, session_present));
     let ack = Packet::ConnAck(ConnAck { session_present, reason_code: 0, properties: props_connack() });
     match ack.encode() {
         Ok(b) if wr.write_all(&b).await.is_ok() => {}
-        _ => return,
+        _ => {
+            inner.stats.live_sessions.fetch_sub(1, Ordering::Relaxed);
+            bump(&inner.stats.closes, "connack_write_failed".into());
+            return;
+        }
     }
     let writer = tokio::spawn(async move {
         while let Some(p) = rx.recv().await {
@@ -840,7 +1007,8 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
                     cause = CloseCause::Protocol("QoS 2 not supported".into());
                     break;
                 }
-                let allowed = inner
+                let t = Instant::now();
+                let r = inner
                     .policy
                     .authz(&AuthzRequest {
                         clientid: client_id.clone(),
@@ -852,8 +1020,24 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
                         retain: p.retain,
                         attrs: attrs.clone(),
                     })
-                    .await
-                    .unwrap_or(false);
+                    .await;
+                let allowed = inner.hook_done("authz", t, r).unwrap_or(false);
+                if allowed {
+                    inner.stats.publishes_accepted.fetch_add(1, Ordering::Relaxed);
+                    if p.topic.ends_with("/telemetry") {
+                        inner.stats.telemetry_accepted.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if let Some(tap) = inner.tap.get() {
+                        let _ = tap.send(Tapped {
+                            at: Instant::now(),
+                            client_id: client_id.clone(),
+                            topic: p.topic.clone(),
+                            payload: p.payload.clone(),
+                        });
+                    }
+                } else {
+                    inner.stats.publishes_denied.fetch_add(1, Ordering::Relaxed);
+                }
                 inner.record(
                     conn_id,
                     ObsKind::Publish {
@@ -885,7 +1069,8 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
                 let mut granted_filters = Vec::new();
                 for (filter, opts) in &s.filters {
                     let qos = opts & 0x03;
-                    let allowed = inner
+                    let t = Instant::now();
+                    let r = inner
                         .policy
                         .authz(&AuthzRequest {
                             clientid: client_id.clone(),
@@ -897,8 +1082,13 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
                             retain: false,
                             attrs: attrs.clone(),
                         })
-                        .await
-                        .unwrap_or(false);
+                        .await;
+                    let allowed = inner.hook_done("authz", t, r).unwrap_or(false);
+                    if allowed {
+                        inner.stats.subscribes_granted.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        inner.stats.subscribes_denied.fetch_add(1, Ordering::Relaxed);
+                    }
                     inner.record(conn_id, ObsKind::Subscribe { client_id: client_id.clone(), filter: filter.clone(), granted: allowed });
                     if allowed {
                         codes.push(qos.min(1));
@@ -911,11 +1101,20 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
                 // Store the subscriptions, then deliver retained messages for them.
                 let retained: Vec<(String, Vec<u8>)> = {
                     let mut st = lock(&inner.state);
+                    let mut added = Vec::new();
                     if let Some(sess) = st.sessions.get_mut(&client_id) {
                         for f in &granted_filters {
                             if !sess.subs.contains(f) {
                                 sess.subs.push(f.clone());
+                                added.push(f.clone());
                             }
+                        }
+                    }
+                    for f in added {
+                        if has_wildcard(&f) {
+                            st.wildcard_clients.insert(client_id.clone());
+                        } else {
+                            st.exact_subs.entry(f).or_default().insert(client_id.clone());
                         }
                     }
                     st.retained
@@ -947,6 +1146,7 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
                 }
             }
             Packet::PubAck(a) => {
+                inner.stats.downlink_acks.fetch_add(1, Ordering::Relaxed);
                 inner.record(
                     conn_id,
                     ObsKind::DownlinkAck { client_id: client_id.clone(), packet_id: a.packet_id, reason_code: a.reason_code },
@@ -974,6 +1174,18 @@ async fn handle_tcp(inner: Arc<Inner>, tcp: tokio::net::TcpStream, peer: SocketA
             false
         }
     };
+    inner.stats.live_sessions.fetch_sub(1, Ordering::Relaxed);
+    let label = match &cause {
+        CloseCause::ClientDisconnect => "client_disconnect".to_owned(),
+        CloseCause::Closed if !removed => "kicked_or_taken_over".to_owned(),
+        CloseCause::Closed => "transport_closed_or_keepalive".to_owned(),
+        CloseCause::Kicked => "kicked".to_owned(),
+        CloseCause::DeniedPublish => "denied_publish".to_owned(),
+        CloseCause::TakenOver => "taken_over".to_owned(),
+        CloseCause::Dropped => "dropped".to_owned(),
+        CloseCause::Protocol(p) => format!("protocol: {p}"),
+    };
+    bump(&inner.stats.closes, label);
     if removed {
         inner.record(conn_id, ObsKind::Closed { client_id: client_id.clone(), cause });
     }

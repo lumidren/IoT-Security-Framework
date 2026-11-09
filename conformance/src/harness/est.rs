@@ -542,6 +542,16 @@ impl EstServer {
         lock(&self.state).records.iter().filter(|r| r.device_id == device_id).cloned().collect()
     }
 
+    /// Enrollment attempts by HTTP status (all devices).
+    #[must_use]
+    pub fn status_counts(&self) -> std::collections::BTreeMap<u16, u64> {
+        let mut m = std::collections::BTreeMap::new();
+        for r in &lock(&self.state).records {
+            *m.entry(r.status).or_insert(0) += 1;
+        }
+        m
+    }
+
     /// Certificate issued with `serial_hex`.
     #[must_use]
     pub fn issued(&self, serial_hex: &str) -> Option<Vec<u8>> {

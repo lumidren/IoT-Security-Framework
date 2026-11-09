@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::process::{Child, Command};
 
-use super::net::{http_request, HttpResponse};
+use super::net::{http_request, HookPool, HttpResponse};
 
 /// HTTP headers of a request.
 pub type Headers = Vec<(&'static str, String)>;
@@ -141,11 +141,37 @@ pub struct PolicyClient {
     pub pki_token: String,
     /// PKI HMAC key.
     pub pki_hmac: Vec<u8>,
+    /// Persistent connection pool for the authn/authz hooks (`None`: one connection per call).
+    pub hooks: Option<Arc<HookPool>>,
 }
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 impl PolicyClient {
+    /// The same client with a persistent hook connection pool of `max` connections (load tests).
+    ///
+    /// # Errors
+    /// Invalid base URL.
+    pub fn with_hook_pool(mut self, max: usize) -> Result<Self> {
+        self.hooks = Some(Arc::new(HookPool::new(&self.base, max)?));
+        Ok(self)
+    }
+
+    async fn hook_post(&self, path: &str, body: Vec<u8>) -> Result<HttpResponse> {
+        match &self.hooks {
+            Some(pool) => pool.post(path, &self.hook_headers(), body, TIMEOUT).await,
+            None => http_request("POST", &format!("{}{path}", self.base), &self.hook_headers(), body, None, TIMEOUT).await,
+        }
+    }
+
+    /// The raw `/metrics` exposition text.
+    ///
+    /// # Errors
+    /// Transport failure.
+    pub async fn metrics_text(&self) -> Result<String> {
+        Ok(http_request("GET", &format!("{}/metrics", self.base), &[], Vec::new(), None, TIMEOUT).await?.text())
+    }
+
     fn hook_headers(&self) -> Vec<(&'static str, String)> {
         let mut h = vec![("content-type", "application/json".to_string())];
         if let Some(t) = &self.hook_token {
@@ -160,7 +186,7 @@ impl PolicyClient {
     /// Transport or a non-200 answer.
     pub async fn authn(&self, req: &AuthnRequest) -> Result<AuthnDecision> {
         let body = serde_json::to_vec(req)?;
-        let r = http_request("POST", &format!("{}/emqx/authn", self.base), &self.hook_headers(), body, None, TIMEOUT).await?;
+        let r = self.hook_post("/emqx/authn", body).await?;
         if r.status != 200 {
             bail!("authn hook answered {}: {}", r.status, r.text());
         }
@@ -190,8 +216,7 @@ impl PolicyClient {
             "device_id": req.attrs.device_id,
             "kind": req.attrs.kind,
         });
-        let r = http_request("POST", &format!("{}/emqx/authz", self.base), &self.hook_headers(), serde_json::to_vec(&body)?, None, TIMEOUT)
-            .await?;
+        let r = self.hook_post("/emqx/authz", serde_json::to_vec(&body)?).await?;
         if r.status != 200 {
             bail!("authz hook answered {}: {}", r.status, r.text());
         }
@@ -277,6 +302,8 @@ pub struct PolicySpawn {
     pub state_dir: PathBuf,
     /// Log file (stdout + stderr of the process).
     pub log_file: PathBuf,
+    /// Extra environment, applied after the defaults (load tests: production cache TTL, log level).
+    pub extra_env: Vec<(String, String)>,
 }
 
 /// A running policy service.
@@ -341,6 +368,7 @@ impl PolicyService {
             .env("POLICY_STATE_DIR", &s.state_dir)
             .env("POLICY_HOOK_TOKEN", &hook_token)
             .env("POLICY_LOG_LEVEL", "debug")
+            .envs(s.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log2))
@@ -351,6 +379,7 @@ impl PolicyService {
             hook_token: Some(hook_token),
             pki_token,
             pki_hmac: pki_hmac.into_bytes(),
+            hooks: None,
         };
         let mut svc = Self { child, client, log_file: s.log_file };
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -376,6 +405,12 @@ impl PolicyService {
     pub async fn stop(&mut self) {
         let _ = self.child.start_kill();
         let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+    }
+
+    /// Process id.
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
     }
 
     /// Whether the process is still running.
@@ -421,7 +456,8 @@ mod tests {
 
     #[test]
     fn revocation_request_is_signed_like_the_pki_publisher() {
-        let c = PolicyClient { base: "http://x".into(), hook_token: None, pki_token: "tok".into(), pki_hmac: b"secret".to_vec() };
+        let c =
+            PolicyClient { base: "http://x".into(), hook_token: None, pki_token: "tok".into(), pki_hmac: b"secret".to_vec(), hooks: None };
         let ev = RevocationEvent {
             event_id: "e1".into(),
             serial: "0a1b".into(),

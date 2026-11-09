@@ -239,6 +239,127 @@ async fn http_request_inner(
     Ok(HttpResponse { status, headers, body })
 }
 
+/// A pool of persistent HTTP/1.1 connections to one plain-HTTP origin.
+///
+/// EMQX keeps a connection pool to its HTTP authn/authz backends; [`http_request`] opens one TCP
+/// connection per call, which at load-test rates (thousands of hook calls per second) would leave
+/// tens of thousands of client sockets in TIME_WAIT and exhaust the ephemeral port range. The pool
+/// hands out idle keep-alive connections, opens new ones up to `max` concurrent requests and
+/// retries once on a fresh connection when a reused one turns out to be closed (hook calls are
+/// idempotent decisions).
+pub struct HookPool {
+    host: String,
+    port: u16,
+    authority: String,
+    idle: std::sync::Mutex<Vec<hyper::client::conn::http1::SendRequest<Full<Bytes>>>>,
+    permits: tokio::sync::Semaphore,
+    opened: std::sync::atomic::AtomicU64,
+    max: usize,
+    /// Time each request waited for a free pool slot (load-test diagnostics).
+    pub permit_wait: crate::load::stats::Recorder,
+}
+
+impl HookPool {
+    /// Pool for `http://host:port` with at most `max` concurrent requests.
+    ///
+    /// # Errors
+    /// Not an `http://host:port` base URL.
+    pub fn new(base: &str, max: usize) -> Result<Self> {
+        let rest = base.strip_prefix("http://").ok_or_else(|| anyhow!("hook pool needs an http:// URL, got {base}"))?;
+        let authority = rest.trim_end_matches('/').to_owned();
+        let (host, port) = authority.rsplit_once(':').ok_or_else(|| anyhow!("hook pool URL {base} has no port"))?;
+        Ok(Self {
+            host: host.trim_matches(['[', ']']).to_owned(),
+            port: port.parse()?,
+            authority: authority.clone(),
+            idle: std::sync::Mutex::new(Vec::new()),
+            permits: tokio::sync::Semaphore::new(max.max(1)),
+            opened: std::sync::atomic::AtomicU64::new(0),
+            max: max.max(1),
+            permit_wait: crate::load::stats::Recorder::new(),
+        })
+    }
+
+    /// Connections opened so far.
+    #[must_use]
+    pub fn opened(&self) -> u64 {
+        self.opened.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Maximum concurrent requests.
+    #[must_use]
+    pub fn max(&self) -> usize {
+        self.max
+    }
+
+    fn take_idle(&self) -> Option<hyper::client::conn::http1::SendRequest<Full<Bytes>>> {
+        let mut idle = self.idle.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while let Some(s) = idle.pop() {
+            if !s.is_closed() {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    async fn open(&self) -> Result<hyper::client::conn::http1::SendRequest<Full<Bytes>>> {
+        let tcp = TcpStream::connect((self.host.as_str(), self.port)).await.with_context(|| format!("connect {}", self.authority))?;
+        tcp.set_nodelay(true).ok();
+        let (sender, conn) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(tcp)).await?;
+        tokio::spawn(conn);
+        self.opened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(sender)
+    }
+
+    /// `POST path` with a body; the connection goes back to the pool after the body was read.
+    ///
+    /// # Errors
+    /// Transport failures and timeouts.
+    pub async fn post(&self, path: &str, headers: &[(&str, String)], body: Vec<u8>, timeout: Duration) -> Result<HttpResponse> {
+        tokio::time::timeout(timeout, self.post_inner(path, headers, Bytes::from(body)))
+            .await
+            .map_err(|_| anyhow!("POST {}{path}: timed out after {timeout:?}", self.authority))?
+    }
+
+    async fn post_inner(&self, path: &str, headers: &[(&str, String)], body: Bytes) -> Result<HttpResponse> {
+        let waited = std::time::Instant::now();
+        let _permit = self.permits.acquire().await.map_err(|e| anyhow!("{e}"))?;
+        self.permit_wait.record(waited.elapsed());
+        let mut last_err = None;
+        for attempt in 0..2 {
+            let (mut sender, reused) = match self.take_idle() {
+                Some(s) if attempt == 0 => (s, true),
+                _ => (self.open().await?, false),
+            };
+            let mut req = hyper::Request::builder().method("POST").uri(path).header("host", self.authority.as_str());
+            for (k, v) in headers {
+                req = req.header(*k, v.as_str());
+            }
+            let req = req.body(Full::new(body.clone()))?;
+            let resp = match sender.ready().await {
+                Ok(()) => sender.send_request(req).await,
+                Err(e) => Err(e),
+            };
+            match resp {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let headers = resp
+                        .headers()
+                        .iter()
+                        .map(|(k, v)| (k.as_str().to_ascii_lowercase(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+                        .collect();
+                    let body = resp.into_body().collect().await?.to_bytes().to_vec();
+                    self.idle.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(sender);
+                    return Ok(HttpResponse { status, headers, body });
+                }
+                Err(e) if reused => last_err = Some(anyhow!("{e}")),
+                Err(e) => return Err(anyhow!("POST {}{path}: {e}", self.authority)),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("POST {}{path} failed", self.authority)))
+    }
+}
+
 /// A TLS client configuration trusting `anchors`, optionally with a client certificate.
 ///
 /// # Errors
