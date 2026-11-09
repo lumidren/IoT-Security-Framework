@@ -3,6 +3,10 @@
 // and the CRL, metrics and health endpoints on the plain listener
 // (PKI_LISTEN_PLAIN, :8444). All configuration comes from PKI_* environment
 // variables; see README.md.
+//
+// "pki healthcheck [--url URL] [--timeout D]" GETs the plain listener's
+// /healthz (default derived from PKI_LISTEN_PLAIN) and exits 0 or 1, for
+// container health checks in the distroless image.
 package main
 
 import (
@@ -12,15 +16,29 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/app"
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/config"
+	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/healthcheck"
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/logging"
 )
 
 func main() {
-	os.Exit(run(context.Background(), os.Stdout, os.Stderr))
+	os.Exit(dispatch(context.Background(), os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr))
+}
+
+// dispatch runs the healthcheck subcommand or the service.
+func dispatch(ctx context.Context, args []string, lookup func(string) (string, bool), stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "healthcheck" {
+		listen := ":8444"
+		if v, ok := lookup("PKI_LISTEN_PLAIN"); ok && strings.TrimSpace(v) != "" {
+			listen = v
+		}
+		return healthcheck.Run(ctx, "pki", args[1:], healthcheck.DefaultURL(listen, "/healthz"), stdout, stderr)
+	}
+	return run(ctx, stdout, stderr)
 }
 
 // requireProductionKMS refuses to start with the development file KMS when

@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -107,5 +110,50 @@ func TestRunServesAndStops(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("service did not stop")
+	}
+}
+
+func TestDispatchHealthcheck(t *testing.T) {
+	t.Parallel()
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+	listen := strings.TrimPrefix(srv.URL, "http://")
+	env := func(k string) (string, bool) {
+		if k == "PKI_LISTEN_PLAIN" {
+			return listen, true
+		}
+		return "", false
+	}
+	var out, errOut bytes.Buffer
+	if code := dispatch(context.Background(), []string{"healthcheck"}, env, &out, &errOut); code != 0 {
+		t.Fatalf("healthy: %d %s", code, errOut.String())
+	}
+	status = http.StatusServiceUnavailable
+	if code := dispatch(context.Background(), []string{"healthcheck"}, env, &out, &errOut); code != 1 {
+		t.Fatalf("unhealthy: %d", code)
+	}
+	status = http.StatusOK
+	if code := dispatch(context.Background(), []string{"healthcheck", "--url", srv.URL + "/healthz"}, func(string) (string, bool) { return "", false }, &out, &errOut); code != 0 {
+		t.Fatalf("--url: %d %s", code, errOut.String())
+	}
+	// Without an override the default plain listener :8444 on loopback is probed.
+	if code := dispatch(context.Background(), []string{"healthcheck", "--timeout", "200ms"}, func(string) (string, bool) { return "", false }, &out, &errOut); code != 1 && code != 0 {
+		t.Fatalf("default url: %d", code)
+	}
+}
+
+func TestDispatchRunsService(t *testing.T) {
+	t.Setenv("PKI_FILE_KMS_PASSPHRASE", "")
+	t.Setenv("PKI_KMS", "file")
+	var out, errOut bytes.Buffer
+	if code := dispatch(context.Background(), nil, os.LookupEnv, &out, &errOut); code != 2 {
+		t.Fatalf("code %d: %s", code, errOut.String())
 	}
 }

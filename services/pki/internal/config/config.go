@@ -35,6 +35,15 @@ type Config struct {
 	ListenMTLS  string
 	ListenPlain string
 	DatabaseURL string
+	// MigrationDatabaseURL (PKI_MIGRATION_DATABASE_URL) is the schema-owner
+	// DSN used only to apply migrations at start; DatabaseURL can then be the
+	// non-owner runtime role (pki_app). Empty: migrate with DatabaseURL.
+	MigrationDatabaseURL string
+	// DBIAMAuth (PKI_DB_IAM_AUTH) authenticates to RDS/Aurora with IAM tokens
+	// minted per connection; DBIAMRegion (PKI_DB_IAM_REGION) overrides the
+	// region of the default AWS configuration.
+	DBIAMAuth   bool
+	DBIAMRegion string
 
 	KMS               string
 	FileKMSPassphrase string
@@ -48,6 +57,10 @@ type Config struct {
 	DeviceCAKeyRef   string
 	ServicesCAKeyRef string
 	BundleKeyFile    string
+	// BundleKeySecretARN (PKI_BUNDLE_KEY_SECRET_ARN), when set, loads the
+	// Ed25519 bundle key seed (base64 secret string) from AWS Secrets Manager
+	// instead of BundleKeyFile.
+	BundleKeySecretARN string
 
 	OperationalCertTTL time.Duration
 	NonceTTL           time.Duration
@@ -135,19 +148,23 @@ func Load(lookup Lookup) (*Config, error) {
 
 	caDir := get("PKI_CA_DIR", "./pki-data")
 	cfg := &Config{
-		Env:               strings.ToLower(get("PKI_ENV", EnvDevelopment)),
-		ListenMTLS:        get("PKI_LISTEN_MTLS", ":8443"),
-		ListenPlain:       get("PKI_LISTEN_PLAIN", ":8444"),
-		DatabaseURL:       get("PKI_DATABASE_URL", ""),
-		KMS:               strings.ToLower(get("PKI_KMS", KMSFile)),
-		FileKMSPassphrase: get("PKI_FILE_KMS_PASSPHRASE", ""),
-		PKCS11Module:      get("PKI_PKCS11_MODULE", "/usr/lib/softhsm/libsofthsm2.so"),
-		PKCS11Token:       get("PKI_PKCS11_TOKEN", "ironmesh"),
-		PKCS11PIN:         get("PKI_PKCS11_PIN", ""),
-		CADir:             caDir,
-		DeviceCAKeyRef:    get("PKI_KEY_DEVICE_CA", ""),
-		ServicesCAKeyRef:  get("PKI_KEY_SERVICES_CA", ""),
-		BundleKeyFile:     get("PKI_BUNDLE_KEY_FILE", caDir+"/bundle.key.json"),
+		Env:                  strings.ToLower(get("PKI_ENV", EnvDevelopment)),
+		ListenMTLS:           get("PKI_LISTEN_MTLS", ":8443"),
+		ListenPlain:          get("PKI_LISTEN_PLAIN", ":8444"),
+		DatabaseURL:          get("PKI_DATABASE_URL", ""),
+		MigrationDatabaseURL: get("PKI_MIGRATION_DATABASE_URL", ""),
+		DBIAMAuth:            boolean("PKI_DB_IAM_AUTH", false),
+		DBIAMRegion:          get("PKI_DB_IAM_REGION", ""),
+		KMS:                  strings.ToLower(get("PKI_KMS", KMSFile)),
+		FileKMSPassphrase:    get("PKI_FILE_KMS_PASSPHRASE", ""),
+		PKCS11Module:         get("PKI_PKCS11_MODULE", "/usr/lib/softhsm/libsofthsm2.so"),
+		PKCS11Token:          get("PKI_PKCS11_TOKEN", "ironmesh"),
+		PKCS11PIN:            get("PKI_PKCS11_PIN", ""),
+		CADir:                caDir,
+		DeviceCAKeyRef:       get("PKI_KEY_DEVICE_CA", ""),
+		ServicesCAKeyRef:     get("PKI_KEY_SERVICES_CA", ""),
+		BundleKeyFile:        get("PKI_BUNDLE_KEY_FILE", caDir+"/bundle.key.json"),
+		BundleKeySecretARN:   get("PKI_BUNDLE_KEY_SECRET_ARN", ""),
 
 		OperationalCertTTL: duration("PKI_OPERATIONAL_CERT_TTL", "336h"),
 		NonceTTL:           duration("PKI_NONCE_TTL", "120s"),
@@ -220,6 +237,15 @@ func Load(lookup Lookup) (*Config, error) {
 	}
 	if (cfg.ServerCertFile == "") != (cfg.ServerKeyFile == "") {
 		errs = append(errs, "PKI_SERVER_CERT_FILE and PKI_SERVER_KEY_FILE must be set together")
+	}
+	if cfg.MigrationDatabaseURL != "" && cfg.DatabaseURL == "" {
+		errs = append(errs, "PKI_MIGRATION_DATABASE_URL: requires PKI_DATABASE_URL (the in-memory store has no migrations)")
+	}
+	if cfg.DBIAMAuth && cfg.DatabaseURL == "" {
+		errs = append(errs, "PKI_DB_IAM_AUTH: requires PKI_DATABASE_URL")
+	}
+	if cfg.BundleKeySecretARN != "" && !strings.HasPrefix(cfg.BundleKeySecretARN, "arn:") {
+		errs = append(errs, fmt.Sprintf("PKI_BUNDLE_KEY_SECRET_ARN: %q is not an ARN", cfg.BundleKeySecretARN))
 	}
 	for _, d := range cfg.TPMAllowedPCRDigests {
 		if len(d) != 64 || !isHex(d) {

@@ -97,6 +97,10 @@ func TestValidationErrors(t *testing.T) {
 		"server cert only":   {"PKI_SERVER_CERT_FILE": "a.crt"},
 		"bad pcr digest":     {"PKI_TPM_ALLOWED_PCR_DIGESTS": "abcd"},
 		"bad log level":      {"PKI_LOG_LEVEL": "loud"},
+		"migration url only": {"PKI_MIGRATION_DATABASE_URL": "postgres://owner@db/pki"},
+		"iam without db":     {"PKI_DB_IAM_AUTH": "true"},
+		"bad iam bool":       {"PKI_DATABASE_URL": "postgres://db/pki", "PKI_DB_IAM_AUTH": "yes please"},
+		"bundle secret name": {"PKI_BUNDLE_KEY_SECRET_ARN": "ironmesh/bundle"},
 	}
 	for name, extra := range cases {
 		m := map[string]string{}
@@ -127,5 +131,32 @@ func TestFromEnv(t *testing.T) {
 	t.Setenv("PKI_ENV", "mars")
 	if _, err := FromEnv(); err == nil {
 		t.Fatal("unknown environment accepted")
+	}
+}
+
+func TestDatabaseAndSecretsSettings(t *testing.T) {
+	t.Parallel()
+	cfg, err := Load(lookup(map[string]string{"PKI_FILE_KMS_PASSPHRASE": "pw"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MigrationDatabaseURL != "" || cfg.DBIAMAuth || cfg.DBIAMRegion != "" || cfg.BundleKeySecretARN != "" {
+		t.Fatalf("defaults %+v", cfg)
+	}
+	arn := "arn:aws:secretsmanager:eu-west-1:123456789012:secret:ironmesh/pki/bundle-key-AbCdEf"
+	cfg, err = Load(lookup(map[string]string{
+		"PKI_KMS":                    "awskms",
+		"PKI_DATABASE_URL":           "postgres://pki_app@db.example:5432/pki?sslmode=verify-full",
+		"PKI_MIGRATION_DATABASE_URL": "postgres://pki_owner:pw@db.example:5432/pki?sslmode=verify-full",
+		"PKI_DB_IAM_AUTH":            "true",
+		"PKI_DB_IAM_REGION":          "eu-west-1",
+		"PKI_BUNDLE_KEY_SECRET_ARN":  arn,
+	}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MigrationDatabaseURL != "postgres://pki_owner:pw@db.example:5432/pki?sslmode=verify-full" || !cfg.DBIAMAuth ||
+		cfg.DBIAMRegion != "eu-west-1" || cfg.BundleKeySecretARN != arn {
+		t.Fatalf("values %+v", cfg)
 	}
 }

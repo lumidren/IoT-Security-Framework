@@ -42,22 +42,26 @@ servers. Postgres tests run only when `PKI_TEST_DATABASE_URL` is set; SoftHSM te
 | `PKI_ENV` | `development` | `production` refuses `PKI_KMS=file` at startup (`requireProductionKMS`) |
 | `PKI_LISTEN_MTLS` | `:8443` | EST, OCSP, management API (TLS, optional client certs) |
 | `PKI_LISTEN_PLAIN` | `:8444` | `/crl/device-ca.crl`, `/metrics`, `/healthz`, `/readyz` |
-| `PKI_DATABASE_URL` | – | Postgres DSN (pgx). Unset = in-memory store (dev only, warns) |
+| `PKI_DATABASE_URL` | – | Postgres DSN (pgx). Unset = in-memory store (dev only, warns). With `PKI_MIGRATION_DATABASE_URL` set this is the non-owner runtime role (`pki_app`) and never migrates; otherwise it must be the schema owner and migrates at start (legacy) |
+| `PKI_MIGRATION_DATABASE_URL` | – | Schema-owner DSN used **only** to apply the embedded migrations at start (under an advisory lock), then closed. Requires `PKI_DATABASE_URL` |
+| `PKI_DB_IAM_AUTH` | `false` | `true`: authenticate to RDS/Aurora with IAM tokens (`feature/rds/auth.BuildAuthToken`, default AWS credential chain) minted per new connection in a pgx `BeforeConnect` hook. Applies to `PKI_DATABASE_URL`, and to `PKI_MIGRATION_DATABASE_URL` when that DSN carries no password. TLS is mandatory (`sslmode=require`/`verify-full`; plaintext fallbacks are dropped). The DB user needs `rds_iam` |
+| `PKI_DB_IAM_REGION` | AWS config (`AWS_REGION`) | Region used to sign IAM tokens |
 | `PKI_KMS` | `file` | `file` (dev only, warns), `softhsm` (PKCS#11, `-tags pkcs11`), `awskms` |
 | `PKI_FILE_KMS_PASSPHRASE` | – | Passphrase for file-backed keys (Argon2id + AES-256-GCM) |
 | `PKI_CA_DIR` | `./pki-data` | Directory written by `pkictl` (see layout below) |
 | `PKI_KEY_DEVICE_CA` / `PKI_KEY_SERVICES_CA` | per backend | Key reference: file path, KMS alias/ARN or PKCS#11 label |
-| `PKI_BUNDLE_KEY_FILE` | `<CA_DIR>/bundle.key.json` | Ed25519 bundle signing key (always file-backed; KMS has no Ed25519) |
+| `PKI_BUNDLE_KEY_FILE` | `<CA_DIR>/bundle.key.json` | Ed25519 bundle signing key, file KMS envelope (development path; ignored when `PKI_BUNDLE_KEY_SECRET_ARN` is set) |
+| `PKI_BUNDLE_KEY_SECRET_ARN` | – | Secrets Manager ARN of the bundle key: base64 32-byte Ed25519 seed as `SecretString` (or raw/base64 `SecretBinary`), encrypted server-side with a KMS key only the PKI role may use (contract §3). Loaded with `GetSecretValue` (default AWS credential chain); the decoded seed is zeroized after the key is derived |
 | `PKI_OPERATIONAL_CERT_TTL` | `336h` | Operational cert lifetime, bounded **168h–720h** |
 | `PKI_NONCE_TTL` | `120s` | Attestation nonce lifetime |
 | `PKI_PUBLIC_BASE_URL` | `https://pki.ironmesh.local` | Base of the CRL DP / AIA OCSP URLs embedded in certs |
 | `PKI_SERVER_CERT_FILE` / `PKI_SERVER_KEY_FILE` | – | Listener certificate; unset = issued at start from the Services CA |
 | `PKI_SERVER_SANS` | `pki,pki.ironmesh.local,localhost,127.0.0.1` | SANs of the self-issued listener certificate |
 | `PKI_POLICY_URL` / `PKI_POLICY_TOKEN` / `PKI_POLICY_HMAC_KEY` | – | Policy service for revocation push (HMAC key falls back to the token) |
-| `PKI_REGISTRY_URL` / `PKI_REGISTRY_TOKEN` | – | Registry for lifecycle checks. Unset = every device treated as active (dev only, warns) |
+| `PKI_REGISTRY_URL` / `PKI_REGISTRY_TOKEN` | – | Registry for lifecycle checks and the synchronous enrolled callback (bearer token). Unset = every device treated as active and enrollments are not reported (dev only, warns) |
 | `PKI_MGMT_ALLOWED_CNS` | `svc-registry,svc-policy,svc-console` | Services CA client CNs allowed on the management API |
 | `PKI_MGMT_JWT_PUBLIC_KEY_FILE` | – | PEM `PUBLIC KEY` blocks (P-256) trusted for ES256 bearer JWTs (`aud=pki`) |
-| `PKI_DEFAULT_ALLOW_SOFTWARE_KEYS` | `false` | Policy for tenants without a stored policy |
+| `PKI_DEFAULT_ALLOW_SOFTWARE_KEYS` | `false` | Policy for tenants without a stored policy; also seeds `allow_software_keys` when the tenant policy API creates a tenant's record |
 | `PKI_TPM_AK_CA_FILE` / `PKI_TPM_ALLOWED_PCR_DIGESTS` | – | Service-wide TPM attestation CA bundle and hex PCR digests (merged into tenant policies) |
 | `PKI_BROKER_HOST` / `PKI_BROKER_PORT` | `mqtt.ironmesh.local` / `8883` | Defaults for the trust bundle |
 | `PKI_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -84,10 +88,29 @@ mTLS listener (`PKI_LISTEN_MTLS`):
 | `POST /v1/devices/{device_id}/revoke-all` | same | revoke every current certificate |
 | `GET /v1/ca/chain` | same | PEM bundle |
 | `GET /v1/stats` | same | totals and expiring counts (24h/72h/7d) |
+| `PUT /v1/tenants/{tenant}/command-key` | owner **registry**: Services CA cert CN `svc-registry` or JWT `sub` `registry`/`svc-registry` | `{"public_key_b64"}` 32-byte Ed25519 (std or URL base64) → `204` |
+| `PUT /v1/tenants/{tenant}/firmware-keys` | owner **ota**: CN `svc-ota` or JWT `sub` `ota`/`svc-ota` | `{"public_keys_b64": [..]}` 1–16 keys, Ed25519 (32 B, at least one) and/or ML-DSA-65 (1952 B), no duplicates → `204` |
+| `PUT /v1/tenants/{tenant}/enrollment` | owner **registry** | `{"allow_software_keys": bool}` → `204` |
+| `GET /v1/tenants/{tenant}/policy` | allow-listed caller or an owning service | `{command_key_b64, firmware_keys_b64, allow_software_keys, updated_at}` (service defaults and `updated_at: null` for tenants without a record) |
+
+Tenant policy endpoints authorize by field owner, independently of `PKI_MGMT_ALLOWED_CNS` (an
+allow-listed `svc-console` may read but not write; `svc-ota` may write firmware keys without being
+allow-listed). Errors are RFC 9457 problem details (`422` validation with `errors[]`, `400`
+malformed JSON / unknown fields, `401`, `403`, `503` store failure). Every write logs an audit line
+(`audit=true`, `action=pki.tenant_policy.<field>.set`, `actor`, `auth_method`, `tenant_id`,
+SHA-256 key fingerprints, `outcome`). Updates are read-modify-write through `PutTenantPolicy`,
+serialised per process; the EST bundle builder reads the stored policy on every enrollment, so a
+new command or firmware key reaches devices with their next (re)enrollment.
 
 Plain listener (`PKI_LISTEN_PLAIN`): `GET /crl/device-ca.crl` (`application/pkix-crl`, `ETag`,
 `Last-Modified`, 304 support; regenerated on every revocation and every 60 s; nextUpdate 24 h),
 `GET /metrics`, `GET /healthz`, `GET /readyz`.
+
+Health check for the distroless image (no curl): `pki healthcheck [--url URL] [--timeout 3s]`
+GETs `http://127.0.0.1:<port of PKI_LISTEN_PLAIN>/healthz` (unspecified listen hosts map to
+loopback) and exits `0` on 2xx, `1` otherwise, `2` on usage errors. Proxies are ignored and
+redirects are not followed; TLS verification is skipped only for an `https` URL on a loopback
+host. Example: `test: ["CMD", "/usr/local/bin/pki", "healthcheck"]`.
 
 ### Enrollment checks (contract §3 step 5)
 
@@ -104,13 +127,23 @@ Plain listener (`PKI_LISTEN_PLAIN`): `GET /crl/device-ca.crl` (`application/pkix
    qualifying data = nonce), a valid ECDSA/RSASSA signature, PCR bank SHA-256 over exactly
    PCRs 0,2,4,7 and a `pcrDigest` on the allow list.
 7. Registry lifecycle state in `manufactured | provisioned | active`.
-8. Issue the operational certificate (profile per §2), record it with the assurance level, record
-   the assurance level in the Registry, return the certs-only PKCS#7 plus `X-IronMesh-Bundle`
-   (COSE_Sign1 by the Ed25519 bundle key over `{1: tenant_cmd_pubkey, 2: fw_signing_pubkeys,
-   3: broker_host, 4: broker_port, 5: ca_pins}`).
+8. Issue the operational certificate (profile per §2), record it with the assurance level, build
+   `X-IronMesh-Bundle` (COSE_Sign1 by the Ed25519 bundle key over `{1: tenant_cmd_pubkey,
+   2: fw_signing_pubkeys, 3: broker_host, 4: broker_port, 5: ca_pins}`).
+9. **Synchronously** report the enrollment to the Registry: `POST /internal/v1/devices/{id}/enrolled`
+   with `{serial_hex, not_before, not_after, se_type, assurance_level, fw_version, fw_hash_hex}`
+   (bearer `PKI_REGISTRY_TOKEN`), retried 3 times with 500 ms backoff (404 and other 4xx except
+   408/429 are not retried). If it still fails the just-issued certificate is revoked (reason
+   `cessationOfOperation`, revoked by `pki:enroll-rollback`; CRL regenerated, OCSP invalidated, no
+   push to the Policy service because the certificate was never delivered) and the device gets
+   `503` with `Retry-After: 30` — a device is never active in the PKI while the Registry does not
+   know it (API_CONTRACT §5). On a renewal the previous certificate is then left untouched.
+10. Record the assurance level in the Registry (best effort), return the certs-only PKCS#7 and the
+    bundle.
 
 Error codes follow RFC 7030: 400 malformed, 401 authentication (nonce, signatures, revoked), 403
-policy/identity, 415 wrong content type, 429 rate limited (`Retry-After`).
+policy/identity, 415 wrong content type, 429 rate limited (`Retry-After`), 503 store or Registry
+unavailable (`Retry-After` when the enrolled callback failed).
 
 ### Threat-model controls (THREAT_MODEL.md)
 
@@ -178,7 +211,8 @@ pkictl issue-bootstrap --dir ./pki-data --tenant 7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7
 pkictl issue-bootstrap --dir ./pki-data --tenant … --device dev-… --csr device.csr
 #    -> devices/<device>.crt (+ factory CA), <device>.key.pem (software only), <device>.record.json
 
-# 6. Server certificates for internal services (CN on the management allow list).
+# 6. Server certificates for internal services (CN on the management allow list). The subject is
+#    CN=<cn>, O=IronMesh, OU=services, which the policy authn hook requires for svc-* principals.
 pkictl issue-server --dir ./pki-data --cn svc-registry --san registry,10.0.0.5
 
 # Operator commands against a running service
@@ -197,7 +231,20 @@ sensitive and non-extractable.
 `internal/store.Store` (certificates, revocations, nonces, CRL number, tenant policies) has an
 in-memory implementation and a Postgres implementation (`internal/store/postgres`, pgx v5) whose
 migrations are embedded and applied at start under an advisory lock. Tables carry `tenant_id` and
-row-level-security policies keyed on `ironmesh.tenant_id` (contract §8).
+row-level-security policies keyed on `ironmesh.tenant_id` (contract §8); an unset setting is a
+service-wide operation (CRL, OCSP, stats) and sees every row.
+
+Migration `0002_force_rls_app_role.sql` (run as the schema owner) `FORCE`s row-level security on
+every table with a policy (`certificates`, `revocations`, `nonces`, `tenant_policies`) and grants
+the non-owner runtime role `pki_app` (`LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`,
+the `registry_app`/`ota_app`/`anomaly_app` pattern) only what the store uses: `SELECT, INSERT` on
+the append-only `certificates` and `revocations`, `SELECT, INSERT, DELETE` on `nonces`,
+`SELECT, INSERT, UPDATE` on `tenant_policies`, `SELECT, UPDATE` on `crl_counter`, `SELECT` on
+`schema_migrations`. The role is created when the owner may create roles, otherwise it must exist
+(`deploy/docker/postgres/10-ironmesh.sh` creates it); `rds_iam` is granted to it when that role
+exists. Production layout: `PKI_MIGRATION_DATABASE_URL=postgres://pki_owner…` and
+`PKI_DATABASE_URL=postgres://pki_app…` (optionally with `PKI_DB_IAM_AUTH=true`). The memory
+store is unaffected.
 
 Tenant policy fields: `allow_software_keys`, `allowed_pcr_digests`, `ak_ca_pem`,
 `tenant_cmd_pubkey`, `fw_signing_pubkeys`, `broker_host`, `broker_port`.

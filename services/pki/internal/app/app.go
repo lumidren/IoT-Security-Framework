@@ -19,9 +19,11 @@ import (
 	"os"
 	"time"
 
+	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/bundlekey"
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/ca"
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/config"
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/crl"
+	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/dbauth"
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/est"
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/kms"
 	"github.com/lumidren/IoT-Security-Framework/services/pki/internal/kms/awskms"
@@ -122,15 +124,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	}
 
 	// Store.
-	if cfg.DatabaseURL != "" {
-		pg, err := postgres.Open(ctx, cfg.DatabaseURL)
-		if err != nil {
-			return nil, err
-		}
-		a.Store = pg
-	} else {
-		logger.Warn("PKI_DATABASE_URL is not set: using the in-memory store; all state is lost on restart")
-		a.Store = store.NewMemory()
+	if a.Store, err = a.openStore(ctx); err != nil {
+		return nil, err
 	}
 	a.closers = append(a.closers, func() { _ = a.Store.Close() })
 
@@ -191,6 +186,7 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 		Store:   a.Store, Registry: reg, Bundler: bundler, Metrics: a.Metrics,
 		NonceTTL: cfg.NonceTTL, DefaultAllowSoftwareKeys: cfg.DefaultAllowSoftwareKeys,
 		DefaultAKRoots: akRoots, DefaultPCRDigests: cfg.TPMAllowedPCRDigests,
+		Rollback: a.Revoker,
 	}); err != nil {
 		return nil, err
 	}
@@ -201,7 +197,8 @@ func Build(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, 
 	auth := mgmt.NewAuthenticator(a.Services, cfg.MgmtAllowedCNs, jwtKeys, nil)
 	if a.Mgmt, err = mgmt.NewHandler(mgmt.Config{
 		Auth: auth, Revoker: a.Revoker, Store: a.Store, Metrics: a.Metrics,
-		Chain: []*x509.Certificate{a.Root, a.Factory, deviceCert, a.Services},
+		Chain:                    []*x509.Certificate{a.Root, a.Factory, deviceCert, a.Services},
+		DefaultAllowSoftwareKeys: cfg.DefaultAllowSoftwareKeys,
 	}); err != nil {
 		return nil, err
 	}
@@ -223,9 +220,80 @@ func (a *App) kmsProvider(ctx context.Context) (kms.Provider, error) {
 	return nil, fmt.Errorf("app: unknown KMS backend %q", cfg.KMS)
 }
 
-// loadBundleKey opens the Ed25519 bundle key; it always lives in the file
-// backend because AWS KMS does not offer Ed25519.
+// Seams for tests: Postgres, RDS IAM and Secrets Manager need live services.
+var (
+	openPostgres = func(ctx context.Context, url string, opts postgres.Options) (store.Store, error) {
+		return postgres.OpenWithOptions(ctx, url, opts)
+	}
+	migratePostgres  = postgres.MigrateURL
+	newIAM           = dbauth.NewIAM
+	newSecretsClient = bundlekey.NewSecretsClient
+)
+
+// openStore connects the Postgres store (PKI_DATABASE_URL) or falls back to
+// the in-memory store. With PKI_MIGRATION_DATABASE_URL the migrations run
+// with that owner DSN first and the runtime DSN (pki_app) never migrates.
+// With PKI_DB_IAM_AUTH every new connection of the runtime DSN, and of the
+// migration DSN when it carries no password, authenticates with an RDS IAM
+// token.
+func (a *App) openStore(ctx context.Context) (store.Store, error) {
+	cfg := a.Config
+	if cfg.DatabaseURL == "" {
+		a.Logger.Warn("PKI_DATABASE_URL is not set: using the in-memory store; all state is lost on restart")
+		return store.NewMemory(), nil
+	}
+	opts := postgres.Options{Migrate: true}
+	var iam *dbauth.IAM
+	if cfg.DBIAMAuth {
+		var err error
+		if iam, err = newIAM(ctx, cfg.DBIAMRegion); err != nil {
+			return nil, fmt.Errorf("app: PKI_DB_IAM_AUTH: %w", err)
+		}
+		opts.BeforeConnect = iam.BeforeConnect
+		a.Logger.Info("database authentication uses RDS IAM tokens", "region", iam.Region)
+	}
+	if cfg.MigrationDatabaseURL != "" {
+		mopts := postgres.Options{}
+		if iam != nil && !dsnHasPassword(cfg.MigrationDatabaseURL) {
+			mopts.BeforeConnect = iam.BeforeConnect
+		}
+		if err := migratePostgres(ctx, cfg.MigrationDatabaseURL, mopts); err != nil {
+			return nil, fmt.Errorf("app: PKI_MIGRATION_DATABASE_URL: %w", err)
+		}
+		a.Logger.Info("database migrations applied with the migration DSN; runtime DSN does not migrate")
+		opts.Migrate = false
+	}
+	st, err := openPostgres(ctx, cfg.DatabaseURL, opts)
+	if err != nil {
+		return nil, err
+	}
+	return st, nil
+}
+
+// dsnHasPassword reports whether a DSN (or the PG* environment / pgpass it
+// falls back to) supplies a password.
+func dsnHasPassword(dsn string) bool {
+	cfg, err := postgres.PoolConfig(dsn, postgres.Options{})
+	return err == nil && cfg.ConnConfig.Password != ""
+}
+
+// loadBundleKey opens the Ed25519 bundle key: from Secrets Manager when
+// PKI_BUNDLE_KEY_SECRET_ARN is set, else from PKI_BUNDLE_KEY_FILE (file KMS
+// envelope; development). It never lives in a KMS backend because AWS KMS
+// does not offer Ed25519.
 func (a *App) loadBundleKey(ctx context.Context) (ed25519.PrivateKey, error) {
+	if arn := a.Config.BundleKeySecretARN; arn != "" {
+		client, err := newSecretsClient(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("app: PKI_BUNDLE_KEY_SECRET_ARN: %w", err)
+		}
+		key, err := bundlekey.Load(ctx, client, arn)
+		if err != nil {
+			return nil, fmt.Errorf("app: PKI_BUNDLE_KEY_SECRET_ARN: %w", err)
+		}
+		a.Logger.Info("bundle key loaded from Secrets Manager", "secret_arn", arn)
+		return key, nil
+	}
 	prov := &file.Provider{Passphrase: []byte(a.Config.FileKMSPassphrase), Logger: a.Logger}
 	signer, err := prov.Open(ctx, a.Config.BundleKeyFile)
 	if err != nil {
