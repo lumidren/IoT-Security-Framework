@@ -97,9 +97,10 @@ deploy/terraform/aws
    * **Databases** `registry`, `ota`, `pki`, `anomaly` and the `*_app` / `ironmesh_backup` roles are
      created by the chart's `dbInit` job using the RDS-managed master secret
      (`rds_master_user_secret_arn`). Terraform has no network path to the database.
-   * **Kafka topics** `im.ingest`, `im.auth`, `im.alerts`, `im.audit`, `im.commands` are created
-     idempotently by the bridge on boot (its role has `kafka-cluster:CreateTopic` on exactly those
-     ARNs; `auto.create.topics.enable=false`). No `null_resource`, no runner-to-broker network.
+   * **Kafka topics** `im.ingest`, `im.auth`, `im.alerts`, `im.audit`, `im.commands`,
+     `im.campaigns` are created idempotently by the bridge on boot (`BRIDGE_KAFKA_TOPICS_CREATE`;
+     its role has `kafka-cluster:CreateTopic` on exactly those ARNs;
+     `auto.create.topics.enable=false`). No `null_resource`, no runner-to-broker network.
    * **CA ceremony**: assume `ceremony_role_arn` (MFA), sign the Device/Services/Factory CA
      certificates with the root key, and wrap the Ed25519 (+ optional ML-DSA-65) firmware signing
      key into `firmware_signing_secret_arn`. See `docs/ops/BACKUP_RESTORE.md` §PKI.
@@ -137,7 +138,7 @@ External Secrets Operator. Signing happens in the ota process memory and every u
 event. Signing-key rotation = add a new public key to the bundle's `fw_signing_pubkeys`, wrap the new
 private key, retire the old one after the fleet has received the new bundle.
 
-The PKI bundle key (`X-IronMesh-Bundle`) is Ed25519 (COSE alg -8, kid `pki-bundle`), which KMS cannot hold, so it follows the firmware-key pattern: the seed lives in Secrets Manager (`<prefix>pki/bundle-signing-key`) encrypted under the symmetric CMK `bundle_kek` (`alias/<prefix>-bundle-kek`), readable only by the pki IRSA role and the ceremony role and decryptable only through Secrets Manager (`kms:ViaService`). The External Secrets role is explicitly denied, so the seed is never materialised as a Kubernetes Secret.
+The PKI bundle key (`X-IronMesh-Bundle`) is Ed25519 (COSE alg -8, kid `pki-bundle`), which KMS cannot hold, so it follows the firmware-key pattern: the seed lives in Secrets Manager (`<prefix>pki/bundle-signing-key`) encrypted under the symmetric CMK `bundle_kek` (`alias/<prefix>-bundle-kek`), readable only by the pki IRSA role and the ceremony role and decryptable only through Secrets Manager (`kms:ViaService`). The External Secrets role is explicitly denied, so the seed is never materialised as a Kubernetes Secret. The pki service reads it directly at start: `helm_values` sets `PKI_BUNDLE_KEY_SECRET_ARN` (and `PKI_DB_IAM_AUTH`/`PKI_DB_IAM_REGION` for the `pki_app` RDS IAM login).
 
 ### Kafka
 

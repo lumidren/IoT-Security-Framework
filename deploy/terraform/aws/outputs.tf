@@ -240,6 +240,11 @@ output "helm_values" {
           PKI_KMS             = "awskms"
           PKI_KEY_DEVICE_CA   = module.kms.alias_names["device_ca"]
           PKI_KEY_SERVICES_CA = module.kms.alias_names["services_ca"]
+          # Ed25519 bundle key seed (Secrets Manager, bundle_kek); replaces PKI_BUNDLE_KEY_FILE.
+          PKI_BUNDLE_KEY_SECRET_ARN = module.kms.bundle_signing_secret_arn
+          # PKI_DATABASE_URL = postgres://pki_app@<rds>/pki with RDS IAM tokens (rds-db:connect).
+          PKI_DB_IAM_AUTH   = "true"
+          PKI_DB_IAM_REGION = var.region
         }
       }
       ota = {

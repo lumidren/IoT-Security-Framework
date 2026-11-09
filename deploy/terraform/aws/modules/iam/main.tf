@@ -3,8 +3,8 @@
 #
 #   pki       sign with Device/Services/Bundle/(Factory) CA keys, never the root; RDS pki db
 #   policy    Kafka write im.auth/im.audit (MSK only)
-#   bridge    Kafka create topics + write im.ingest/im.auth/im.audit (MSK only)
-#   registry  RDS registry db; Kafka read ingest/auth/alerts/audit, write audit/commands
+#   bridge    Kafka create the six event-bus topics + write im.ingest/im.auth/im.audit (MSK only)
+#   registry  RDS registry db; Kafka read ingest/auth/alerts/audit/campaigns, write audit/commands
 #   ota       RDS ota db; S3 artifacts; unwrap firmware signing key via Secrets Manager
 #   anomaly   RDS anomaly db; Kafka read ingest/auth/commands, write alerts/audit
 #   backup    S3 backups write, artifacts read, KMS metadata, RDS backup user
@@ -17,8 +17,9 @@ locals {
   topic_arn_prefix = local.use_msk ? replace(var.msk_cluster_arn, ":cluster/", ":topic/") : ""
   group_arn_prefix = local.use_msk ? replace(var.msk_cluster_arn, ":cluster/", ":group/") : ""
 
-  # Event bus topics (DESIGN_CONTRACT.md §7 + API_CONTRACT.md §6).
-  topics     = ["im.ingest", "im.auth", "im.alerts", "im.audit", "im.commands"]
+  # Event bus topics (DESIGN_CONTRACT.md §7 + API_CONTRACT.md §6); the bridge creates all of them
+  # on boot (BRIDGE_KAFKA_TOPICS_CREATE), im.campaigns included (OTA -> registry WebSocket relay).
+  topics     = ["im.ingest", "im.auth", "im.alerts", "im.audit", "im.commands", "im.campaigns"]
   topic_arns = { for t in local.topics : t => "${local.topic_arn_prefix}/${t}" }
 
   kafka_access = {
@@ -35,14 +36,14 @@ locals {
       groups = []
     }
     registry = {
-      read   = ["im.ingest", "im.auth", "im.alerts", "im.audit"]
+      read   = ["im.ingest", "im.auth", "im.alerts", "im.audit", "im.campaigns"]
       write  = ["im.audit", "im.commands"]
       create = []
       groups = ["registry-*"]
     }
     ota = {
       read   = ["im.ingest", "im.commands"]
-      write  = ["im.audit"]
+      write  = ["im.audit", "im.campaigns"]
       create = []
       groups = ["ota-*"]
     }

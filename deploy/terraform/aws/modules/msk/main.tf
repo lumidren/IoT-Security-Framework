@@ -1,13 +1,14 @@
 #------------------------------------------------------------------------------
 # Kafka on MSK
 #
-# Topics (im.ingest, im.auth, im.alerts, im.audit; DESIGN_CONTRACT.md §7) are deliberately
-# NOT created here: there is no MSK topic resource and a null_resource/local-exec would need
-# network access to the brokers from the Terraform runner. The bridge service creates the
-# topics idempotently on boot through the Kafka admin API; its IRSA role carries
-# kafka-cluster:CreateTopic on exactly those four topic ARNs (modules/iam). Partition and
-# replication settings come from the bridge environment (BRIDGE_KAFKA_TOPIC_PARTITIONS /
-# BRIDGE_KAFKA_TOPIC_REPLICATION) and auto.create.topics.enable is forced off.
+# Topics (im.ingest, im.auth, im.alerts, im.audit, im.commands, im.campaigns; DESIGN_CONTRACT.md
+# §7) are deliberately NOT created here: there is no MSK topic resource and a
+# null_resource/local-exec would need network access to the brokers from the Terraform runner.
+# The bridge service creates the topics idempotently on boot through the Kafka admin API
+# (BRIDGE_KAFKA_TOPICS_CREATE); its IRSA role carries kafka-cluster:CreateTopic on exactly those
+# six topic ARNs (modules/iam). Partition and replication settings come from the bridge
+# environment (BRIDGE_KAFKA_TOPIC_PARTITIONS / BRIDGE_KAFKA_TOPIC_REPLICATION) and
+# auto.create.topics.enable is forced off.
 #------------------------------------------------------------------------------
 
 locals {
