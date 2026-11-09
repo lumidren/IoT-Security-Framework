@@ -1,0 +1,440 @@
+# Release pipeline.
+#
+#   push to main  -> multi-arch images (tags: edge, sha-<short>), Trivy gate, CycloneDX SBOM
+#                    attestations, cosign keyless signatures, SLSA provenance
+#   tag v*        -> the same plus signed firmware (ESP32 prod profile, agent-rs x86_64/aarch64),
+#                    source SBOMs, checksums and a GitHub Release with SLSA provenance
+#
+# Signing is keyless (Sigstore, GitHub OIDC). Firmware manifests are signed with the IronMesh
+# Ed25519 firmware key from the `release-signing` environment (required reviewers recommended).
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ghcr.io/lumidren
+
+jobs:
+  # ------------------------------------------------------------------------------------------
+  # Container images
+  # ------------------------------------------------------------------------------------------
+  images:
+    name: image ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing / attestations
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: pki
+            context: services/pki
+            dockerfile: services/pki/Dockerfile
+          - name: policy
+            context: services/policy
+            dockerfile: services/policy/Dockerfile
+          - name: bridge
+            context: services/bridge
+            dockerfile: services/bridge/Dockerfile
+          - name: registry
+            context: .
+            dockerfile: services/registry/Dockerfile
+          - name: ota
+            context: .
+            dockerfile: services/ota/Dockerfile
+          - name: anomaly
+            context: .
+            dockerfile: services/anomaly/Dockerfile
+          - name: console
+            context: console
+            dockerfile: console/Dockerfile
+          - name: fleet
+            context: device/agent-rs
+            dockerfile: device/agent-rs/Dockerfile
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@49b3bc8e6bdd4a60e6116a5414239cba5943d3cf # v3.2.0
+      - uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5 # v3.8.0
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@369eb591f429131d6889c46b94e711f089e6ca96 # v5.6.1
+        with:
+          images: ${{ env.IMAGE_NAMESPACE }}/ironmesh-${{ matrix.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=edge,branch=main
+          labels: |
+            org.opencontainers.image.title=ironmesh-${{ matrix.name }}
+            org.opencontainers.image.vendor=lumidren
+      - id: build
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false # SLSA provenance comes from slsa-github-generator below
+          sbom: false # CycloneDX SBOM generated with syft below
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: image reference
+        id: ref
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          NAME: ${{ matrix.name }}
+        run: |
+          echo "image=${IMAGE_NAMESPACE}/ironmesh-${NAME}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${IMAGE_NAMESPACE}/ironmesh-${NAME}@${DIGEST}" >> "${GITHUB_OUTPUT}"
+          mkdir -p digests
+          printf '{"name":"%s","image":"%s","digest":"%s"}\n' "${NAME}" "${IMAGE_NAMESPACE}/ironmesh-${NAME}" "${DIGEST}" > "digests/${NAME}.json"
+      # Gate: an image with fixable HIGH/CRITICAL vulnerabilities is never signed, and the
+      # clusters only admit signed images (deploy/k8s policies, ARCHITECTURE.md section 7).
+      - name: trivy image gate (HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
+        with:
+          image-ref: ${{ steps.ref.outputs.ref }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore
+      - name: CycloneDX SBOM (syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.ref.outputs.ref }}
+          format: cyclonedx-json
+          output-file: sbom-image-${{ matrix.name }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - name: cosign sign + attest (keyless)
+        env:
+          REF: ${{ steps.ref.outputs.ref }}
+          NAME: ${{ matrix.name }}
+        run: |
+          cosign sign --yes "${REF}"
+          cosign attest --yes --type cyclonedx --predicate "sbom-image-${NAME}.cdx.json" "${REF}"
+          cosign verify "${REF}" \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: image-${{ matrix.name }}
+          path: |
+            sbom-image-${{ matrix.name }}.cdx.json
+            digests/${{ matrix.name }}.json
+          retention-days: 30
+
+  image-list:
+    name: collect image digests
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          pattern: image-*
+          merge-multiple: true
+      - id: list
+        run: echo "images=$(jq -cs . digests/*.json)" >> "${GITHUB_OUTPUT}"
+
+  image-provenance:
+    name: SLSA provenance ${{ matrix.name }}
+    needs: image-list
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.image-list.outputs.images) }}
+    # Reusable workflows of the SLSA generator must be referenced by tag (it verifies its own ref).
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.0.0
+    with:
+      image: ${{ matrix.image }}
+      digest: ${{ matrix.digest }}
+      registry-username: ${{ github.actor }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+  # ------------------------------------------------------------------------------------------
+  # Source SBOMs (CycloneDX) for every component
+  # ------------------------------------------------------------------------------------------
+  source-sbom:
+    name: source SBOMs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version-file: services/pki/go.mod
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "24"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx
+      - name: Go modules (cyclonedx-gomod)
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.8.0
+          mkdir -p dist/sbom
+          for svc in pki policy bridge; do
+            "$(go env GOPATH)/bin/cyclonedx-gomod" mod -licenses -json -output "dist/sbom/${svc}.cdx.json" "services/${svc}"
+          done
+      - name: Python services (cyclonedx-py)
+        run: |
+          python -m pip install cyclonedx-bom
+          for svc in registry ota anomaly; do
+            python -m venv "/tmp/venv-${svc}"
+            "/tmp/venv-${svc}/bin/pip" install -q ./libs/python/ironmesh-wire "./services/${svc}"
+            cyclonedx-py environment --of JSON -o "dist/sbom/${svc}.cdx.json" "/tmp/venv-${svc}/bin/python"
+          done
+          python -m venv /tmp/venv-wire
+          /tmp/venv-wire/bin/pip install -q ./libs/python/ironmesh-wire
+          cyclonedx-py environment --of JSON -o dist/sbom/ironmesh-wire.cdx.json /tmp/venv-wire/bin/python
+      - name: Rust crates (cargo cyclonedx)
+        run: |
+          (cd device/agent-rs && cargo cyclonedx --format json --all-features)
+          (cd device/esp32/host && cargo cyclonedx --format json)
+          find device/agent-rs device/esp32/host -maxdepth 2 -name '*.cdx.json' -not -path '*/target/*' -exec cp {} dist/sbom/ \;
+      - name: console (cyclonedx-npm)
+        working-directory: console
+        run: |
+          npm ci --ignore-scripts
+          npx --yes @cyclonedx/cyclonedx-npm@1.19.3 --omit dev --output-format JSON --output-file ../dist/sbom/console.cdx.json
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: source-sboms
+          path: dist/sbom/
+          retention-days: 30
+
+  # ------------------------------------------------------------------------------------------
+  # Firmware (tags only)
+  # ------------------------------------------------------------------------------------------
+  firmware-esp32:
+    name: firmware esp32 (prod profile)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: release-signing
+    permissions:
+      contents: read
+    container:
+      image: espressif/idf:v5.3.2
+    defaults:
+      run:
+        shell: bash
+        working-directory: device/esp32
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: build (Secure Boot v2 signed with the release key)
+        env:
+          SECURE_BOOT_KEY: ${{ secrets.ESP32_SECURE_BOOT_SIGNING_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "${SECURE_BOOT_KEY}" > secure_boot_signing_key.pem
+          source "${IDF_PATH}/export.sh"
+          idf.py -B build-prod -DSDKCONFIG=build-prod/sdkconfig \
+            -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.prod" build
+          rm -f secure_boot_signing_key.pem
+          python3 tools/check_prod_config.py --sdkconfig build-prod/sdkconfig
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: firmware-esp32-build
+          path: |
+            device/esp32/build-prod/ironmesh_esp32.bin
+            device/esp32/build-prod/bootloader/bootloader.bin
+            device/esp32/build-prod/partition_table/partition-table.bin
+            device/esp32/build-prod/sdkconfig
+          retention-days: 7
+
+  firmware-agent:
+    name: firmware agent-rs (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    defaults:
+      run:
+        working-directory: device/agent-rs
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: build (release, no dut-control)
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "${TARGET}"
+          cargo build --release --locked --target "${TARGET}" --bin ironmesh-agent --bin ironmesh-fleet
+          # C-HOOK-1: the release binary must refuse the DUT control channel.
+          if "target/${TARGET}/release/ironmesh-agent" --dut </dev/null; then
+            echo "::error::release ironmesh-agent accepted --dut"; exit 1
+          fi
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: firmware-agent-build-${{ matrix.target }}
+          path: |
+            device/agent-rs/target/${{ matrix.target }}/release/ironmesh-agent
+            device/agent-rs/target/${{ matrix.target }}/release/ironmesh-fleet
+          retention-days: 7
+
+  firmware-sign:
+    name: sign firmware artifacts
+    needs: [firmware-esp32, firmware-agent]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release-signing
+    permissions:
+      contents: read
+      id-token: write # cosign sign-blob (keyless)
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ./libs/python/ironmesh-wire
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          pattern: firmware-*-build*
+          path: build
+      - name: IronMesh manifests (Ed25519, sign_and_package.py)
+        env:
+          FW_SIGNING_KEY: ${{ secrets.FIRMWARE_SIGNING_KEY_PEM }}
+          FW_SIGNING_KEY_ID: ${{ vars.FIRMWARE_SIGNING_KEY_ID || 'fw-ed25519-release' }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          umask 077
+          key="${RUNNER_TEMP}/fw-signing.pem"
+          printf '%s\n' "${FW_SIGNING_KEY}" > "${key}"
+          umask 022
+          version="${REF_NAME#v}"
+          IFS=. read -r major minor patch <<< "${version%%-*}"
+          version_code=$(( major * 1000000 + minor * 1000 + patch ))
+          mkdir -p dist/firmware
+          # ESP32: version.txt is the source of truth for the image's app descriptor.
+          python device/esp32/tools/sign_and_package.py build/firmware-esp32-build/ironmesh_esp32.bin \
+            --key "${key}" --key-id "${FW_SIGNING_KEY_ID}" --product sensor-esp32 \
+            --out dist/firmware/esp32
+          (cd dist/firmware && tar -czf "ironmesh-esp32-${version}.tar.gz" esp32 && rm -rf esp32)
+          # Linux agent: same manifest tooling, versioned from the tag.
+          printf '%s\n%s\n' "${version}" "${version_code}" > "${RUNNER_TEMP}/agent-version.txt"
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            python device/esp32/tools/sign_and_package.py "build/firmware-agent-build-${target}/ironmesh-agent" \
+              --key "${key}" --key-id "${FW_SIGNING_KEY_ID}" --product gateway-rpi \
+              --version-file "${RUNNER_TEMP}/agent-version.txt" --skip-app-desc-check \
+              --out "dist/firmware/agent-${target}"
+            cp "build/firmware-agent-build-${target}/ironmesh-fleet" "dist/firmware/agent-${target}/"
+            (cd dist/firmware && tar -czf "ironmesh-agent-${version}-${target}.tar.gz" "agent-${target}" && rm -rf "agent-${target}")
+          done
+          shred -u "${key}" || rm -f "${key}"
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - name: cosign sign-blob (keyless)
+        working-directory: dist/firmware
+        run: |
+          for f in *.tar.gz; do
+            cosign sign-blob --yes --bundle "${f}.sigstore.json" "${f}"
+          done
+      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        with:
+          name: firmware-signed
+          path: dist/firmware/
+          retention-days: 30
+
+  # ------------------------------------------------------------------------------------------
+  # GitHub Release (tags only)
+  # ------------------------------------------------------------------------------------------
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [images, source-sbom, firmware-sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: artifacts
+      - name: assemble
+        run: |
+          mkdir -p dist
+          cp artifacts/firmware-signed/* dist/
+          cp artifacts/source-sboms/*.cdx.json dist/
+          for d in artifacts/image-*; do cp "${d}"/sbom-image-*.cdx.json dist/; done
+          (cd dist && sha256sum -- * > SHA256SUMS)
+      - id: hash
+        working-directory: dist
+        run: echo "hashes=$(sha256sum -- *.tar.gz *.cdx.json SHA256SUMS | base64 -w0)" >> "${GITHUB_OUTPUT}"
+      - name: create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "${TAG}" --repo "${GITHUB_REPOSITORY}" --title "IronMesh ${TAG}" --generate-notes \
+            --verify-tag dist/*
+
+  release-provenance:
+    name: SLSA provenance (release assets)
+    needs: release
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: ${{ needs.release.outputs.hashes }}
+      upload-assets: true
