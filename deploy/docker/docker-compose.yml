@@ -884,7 +884,7 @@ services:
   # ------------------------------------------------------------------------------------------
   otel-collector:
     <<: *hardened
-    image: ${OTELCOL_IMAGE:-otel/opentelemetry-collector-contrib:0.164.0}
+    image: ${OTELCOL_IMAGE:-otel/opentelemetry-collector-contrib:0.164.0-386}
     command: ["--config=/etc/otelcol/config.yaml"]
     environment:
       IRONMESH_ENVIRONMENT: local
