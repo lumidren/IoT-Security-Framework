@@ -39,7 +39,7 @@ more messages in flight than the consumer semaphore admits.
 | `BRIDGE_MQTT_URL` | `ssl://emqx:8883` | broker (`ssl`/`tls`/`mqtts` = mTLS; `mqtt` plaintext for dev only) |
 | `BRIDGE_MQTT_CLIENT_ID` | `svc-bridge` | must equal the certificate CN |
 | `BRIDGE_MQTT_TOPIC` | `$share/bridge/im/v1/#` | shared subscription |
-| `BRIDGE_TLS_CERT_FILE` / `BRIDGE_TLS_KEY_FILE` / `BRIDGE_TLS_CA_FILE` | — (required for mTLS) | Services CA client cert, key, and CA bundle used to verify the broker |
+| `BRIDGE_TLS_CERT_FILE` / `BRIDGE_TLS_KEY_FILE` / `BRIDGE_TLS_CA_FILE` | — (required for mTLS) | Services CA client cert, key, and CA bundle used to verify the broker. The policy authn hook checks this certificate's serial at every CONNECT (`POLICY_REQUIRE_CERT_SERIAL`, THREAT_MODEL T-37): once the serial is revoked (or `svc-bridge` is deny-listed) the broker refuses the bridge, so a stolen copy stops working on its next connect. After a certificate rotation the bridge must reconnect with the new pair (restart the pod; the files are read at start) |
 | `BRIDGE_TLS_SERVER_NAME` | broker hostname | expected broker SAN |
 | `BRIDGE_KAFKA_BROKERS` | `redpanda:9092` | comma-separated seed brokers |
 | `BRIDGE_KAFKA_INGEST_TOPIC` / `BRIDGE_KAFKA_AUTH_TOPIC` | `im.ingest` / `im.auth` | |

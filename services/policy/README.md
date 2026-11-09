@@ -14,17 +14,37 @@ console ──GET/PUT /v1/policy, POST /v1/policy/evaluate, GET /v1/policy/histo
 
 ## Decision rules
 
-**authn** (`POST /emqx/authn`, body `{clientid, username, peerhost, cert_common_name, cert_subject}`):
+**authn** (`POST /emqx/authn`, body `{clientid, username, peerhost, cert_common_name, cert_subject,
+cert_pem, cert_serial}`):
 
 1. A client certificate is mandatory (`cert_common_name` present), `clientid == CN`, and `username`
    (set by EMQX from the CN) must equal the CN.
-2. CN `dev-<16 hex>` → device: subject `O=IronMesh`, exactly one UUID `OU` = tenant (bootstrap OUs are
-   rejected), not in the revocation cache (by device id, and by serial when `cert_serial`/`cert_pem`
-   is supplied), Registry lifecycle `provisioned` or `active` (cached 30 s, 2 s timeout,
-   fail-closed unless `POLICY_REGISTRY_FAIL_OPEN=true`, which is logged at error level on start).
-3. CN `svc-bridge` / `svc-registry` → service: subject `O=IronMesh`, `OU=services`.
-4. Response `{"result":"allow","is_superuser":false,"client_attrs":{"tenant_id","device_id","kind"}}`
-   or `{"result":"deny"}`. Denials are counted in `ironmesh_auth_failures_total{reason}`.
+2. Certificate serial (THREAT_MODEL T-13, T-37): taken from `cert_pem` (parsed; CN must match, not
+   expired, issuer must be the Device CA for `dev-*` / the Services CA for `svc-*` when
+   `POLICY_DEVICE_CA_FILE` / `POLICY_SERVICES_CA_FILE` are set → `untrusted_issuer`) and/or
+   `cert_serial` (hex; must agree with `cert_pem` → `cert_serial_mismatch`). Unrendered
+   placeholders (`${...}`, `undefined`) count as absent. With `POLICY_REQUIRE_CERT_SERIAL=true`
+   (default) a CONNECT with neither is denied (`no_cert_serial`).
+3. CN `dev-<16 hex>` → device: subject `O=IronMesh`, exactly one UUID `OU` = tenant (bootstrap OUs are
+   rejected), device id not deny-listed (`revoked`), serial not revoked (`revoked_serial`, PKI push
+   or CRL), Registry lifecycle `provisioned` or `active` (cached 30 s, 2 s timeout, fail-closed
+   unless `POLICY_REGISTRY_FAIL_OPEN=true`, which is logged at error level on start).
+4. CN `svc-bridge` / `svc-registry` → service: subject `O=IronMesh`, `OU=services`, peer address in
+   `POLICY_SERVICE_CIDRS`, and the same device-id / serial revocation checks, so revoking a stolen
+   `svc-bridge` certificate stops it at the next CONNECT.
+5. Response `{"result":"allow","is_superuser":false,"client_attrs":{"tenant_id","device_id","kind"}}`
+   (plus `expire_at` from `cert_pem`) or `{"result":"deny"}`. Denials are counted in
+   `ironmesh_auth_failures_total{reason}`. The admitted serial is remembered per client id.
+
+**revocations** (`POST /internal/v1/revocations`, HMAC + bearer, deduplicated by `event_id`): an
+event denies the **device id** only when it is a device-level revocation, i.e. `device_deny: true`
+(PKI revoke-all: registry quarantine / decommission) or reason `keyCompromise` /
+`cessationOfOperation`. Every other event (`superseded` on renewal, single-certificate revocations)
+denies only its serial, so a renewed device is not locked out. The live session is kicked for
+device-level denies; for serial-scoped ones only when the session's admitted serial is the revoked
+one, or unknown (admitted by another replica / before a restart: the session is kicked and a
+renewed device simply reconnects with its current certificate). Revocation snapshots written
+before this change (format 1) keep their device-level meaning.
 
 **authz** (`POST /emqx/authz`, body `{clientid, username, topic, action, qos, retain, client_attrs}`):
 evaluates `policy/rego/mqtt_acl.rego` (package `ironmesh.mqtt`) with the session attributes; the
@@ -42,6 +62,10 @@ retained device publishes, and cross-device/cross-tenant topics.
 | `POLICY_PKI_CRL_URL` | `http://pki:8444/crl/device-ca.crl` | CRL distribution point |
 | `POLICY_CRL_POLL_INTERVAL` | `5s` | CRL poll interval (ETag honoured) |
 | `POLICY_CRL_ISSUER_CERT_FILE` | — | Device CA certificate to verify CRL signatures (strongly recommended) |
+| `POLICY_REQUIRE_CERT_SERIAL` | `true` | Deny CONNECTs whose authn body has neither `cert_pem` nor `cert_serial` (`no_cert_serial`). `false` only as a temporary measure while the EMQX template is fixed: serial revocations then do not apply |
+| `POLICY_DEVICE_CA_FILE` | `POLICY_CRL_ISSUER_CERT_FILE` | PEM bundle of the Device CA; a device `cert_pem` must be issued (name + signature) by it |
+| `POLICY_SERVICES_CA_FILE` | — | PEM bundle of the Services CA; a service `cert_pem` must be issued by it. Also the client-certificate trust anchor of the TLS listener |
+| `POLICY_TLS_CERT_FILE` / `POLICY_TLS_KEY_FILE` | — | Serve TLS 1.3 instead of plain HTTP; client certificates are optional and verified against `POLICY_SERVICES_CA_FILE`. The health check then uses `https` |
 | `POLICY_PKI_HMAC_SECRET` | — (required) | HMAC-SHA256 key for `X-IronMesh-Signature` |
 | `POLICY_PKI_TOKEN` | — (required) | Bearer token the PKI presents on revocation events |
 | `POLICY_REGISTRY_URL` | — (required) | Registry base URL |
@@ -51,7 +75,9 @@ retained device publishes, and cross-device/cross-tenant topics.
 | `POLICY_STATE_DIR` | — | Snapshot dir for `revocations.json` and `policy_history.json` |
 | `POLICY_HOOK_TOKEN` | — | If set, EMQX must send it in `X-IronMesh-Hook-Token` |
 | `POLICY_AUTHZ_CACHE_TTL` | `10s` | Decision cache lifetime |
-| `POLICY_JWT_PUBLIC_KEY_PEM` | — | P-256 public key(s) (PEM) verifying ES256 service JWTs (`aud=policy`) on the management API |
+| `POLICY_JWT_PUBLIC_KEY_PEM` | — | P-256 public key(s) (PEM) verifying ES256 service JWTs (`aud=policy`) on the management API. Service JWTs must carry `exp`, `iat`, `jti` with `exp - iat` ≤ 300 s; on the TLS listener a caller presenting a Services CA client certificate must present a token whose `sub` names the same service (`svc-` prefix ignored) |
+| `POLICY_JWT_SINGLE_USE` | `true` | Each service-JWT `jti` (scoped by `iss`) is accepted once per instance, remembered until `exp` + 30 s. Console OIDC tokens are exempt (browsers reuse access tokens) but keep `exp`/`aud`/`iss` checks |
+| `POLICY_JWT_REPLAY_CACHE_SIZE` | `100000` | Bound of the `jti` cache (≥ 1000); expired ids are dropped first, then the oldest are evicted |
 | `POLICY_JWT_ISSUER` | — | Optional required `iss` of service JWTs |
 | `POLICY_OIDC_ISSUER` | — | IdP issuer URL; enables console OIDC access tokens on the management API. The JWKS is discovered from `<issuer>/.well-known/openid-configuration` on first use, cached (1 h) and refreshed when a token names an unknown `kid` (at most every 30 s); tokens must carry exactly this `iss` |
 | `POLICY_OIDC_AUDIENCE` | `ironmesh-api` | Value `aud` must contain for OIDC tokens |
@@ -86,7 +112,7 @@ verification is skipped only for an `https` URL on a loopback host). Example:
 Metrics: `ironmesh_auth_failures_total{reason}`, `ironmesh_authz_decisions_total{result,action}`,
 `ironmesh_revocation_apply_latency_seconds` and the contract alias
 `ironmesh_revocation_latency_seconds` (revoked_at → kick done), `ironmesh_revocations_total{source}`,
-`ironmesh_kick_total{result}`, `ironmesh_crl_poll_total{result}`, `ironmesh_registry_lookups_total{result}`.
+`ironmesh_kick_total{result="ok|error|skipped"}`, `ironmesh_crl_poll_total{result}`, `ironmesh_registry_lookups_total{result}`.
 
 ## EMQX configuration
 
@@ -101,6 +127,15 @@ the selected event map is posted as JSON) and rule `ironmesh_auth_events` select
 `client.check_authz_complete` events. Override the token placeholder at deploy time
 (`EMQX_ACTIONS__HTTP__IRONMESH_AUTH_EVENTS__PARAMETERS__HEADERS__X-IRONMESH-HOOK-TOKEN`). Keys marked `VERIFY` in the file (ALPN option, `cert_pem` placeholder) must be
 checked against the deployed EMQX release because the broker was not available locally.
+
+The authn body sends `cert_pem = "${cert_pem}"` and `cert_serial = "${client_attrs.cert_serial}"`.
+**VERIFY before rollout** that the deployed 5.8.x renders `${cert_pem}` in HTTP authn bodies
+(connect one device; `ironmesh_auth_failures_total{reason="no_cert_serial"}` must stay 0):
+because `POLICY_REQUIRE_CERT_SERIAL` defaults to `true`, an unrendered placeholder denies every
+CONNECT. The `mqtt.client_attrs_init` extraction that would populate `client_attrs.cert_serial`
+is left commented out in `emqx.conf` until the expression variable for the TLS certificate serial
+is confirmed; it must never be derived from client-controlled fields (clientid, username,
+user properties).
 
 ## Development
 

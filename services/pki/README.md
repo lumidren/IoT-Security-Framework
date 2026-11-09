@@ -40,7 +40,7 @@ servers. Postgres tests run only when `PKI_TEST_DATABASE_URL` is set; SoftHSM te
 | Variable | Default | Meaning |
 |---|---|---|
 | `PKI_ENV` | `development` | `production` refuses `PKI_KMS=file` at startup (`requireProductionKMS`) |
-| `PKI_LISTEN_MTLS` | `:8443` | EST, OCSP, management API (TLS, optional client certs) |
+| `PKI_LISTEN_MTLS` | `:8443` | EST, OCSP, management API (**TLS 1.3 only**, optional client certs; a TLS 1.2 client fails the handshake, THREAT_MODEL T-30) |
 | `PKI_LISTEN_PLAIN` | `:8444` | `/crl/device-ca.crl`, `/metrics`, `/healthz`, `/readyz` |
 | `PKI_DATABASE_URL` | – | Postgres DSN (pgx). Unset = in-memory store (dev only, warns). With `PKI_MIGRATION_DATABASE_URL` set this is the non-owner runtime role (`pki_app`) and never migrates; otherwise it must be the schema owner and migrates at start (legacy) |
 | `PKI_MIGRATION_DATABASE_URL` | – | Schema-owner DSN used **only** to apply the embedded migrations at start (under an advisory lock), then closed. Requires `PKI_DATABASE_URL` |
@@ -58,9 +58,13 @@ servers. Postgres tests run only when `PKI_TEST_DATABASE_URL` is set; SoftHSM te
 | `PKI_SERVER_CERT_FILE` / `PKI_SERVER_KEY_FILE` | – | Listener certificate; unset = issued at start from the Services CA |
 | `PKI_SERVER_SANS` | `pki,pki.ironmesh.local,localhost,127.0.0.1` | SANs of the self-issued listener certificate |
 | `PKI_POLICY_URL` / `PKI_POLICY_TOKEN` / `PKI_POLICY_HMAC_KEY` | – | Policy service for revocation push (HMAC key falls back to the token) |
+| `PKI_POLICY_FANOUT` | `off` | `off`: push each revocation event to `PKI_POLICY_URL` once per attempt. `dns`: resolve the URL host to **every** A/AAAA record (point it at a Kubernetes headless Service of the policy pods) and deliver to each address with the original host as `Host` header and TLS SNI/verification name; the outbox row is acknowledged only when every resolved address returned 2xx (addresses that already acknowledged are not called again) |
+| `PKI_SUPERSEDE_GRACE` | `1h` | How long the previous operational certificate stays valid after `simplereenroll` before it is revoked (reason `superseded`, serial-scoped) |
 | `PKI_REGISTRY_URL` / `PKI_REGISTRY_TOKEN` | – | Registry for lifecycle checks and the synchronous enrolled callback (bearer token). Unset = every device treated as active and enrollments are not reported (dev only, warns) |
 | `PKI_MGMT_ALLOWED_CNS` | `svc-registry,svc-policy,svc-console` | Services CA client CNs allowed on the management API |
-| `PKI_MGMT_JWT_PUBLIC_KEY_FILE` | – | PEM `PUBLIC KEY` blocks (P-256) trusted for ES256 bearer JWTs (`aud=pki`) |
+| `PKI_MGMT_JWT_PUBLIC_KEY_FILE` | – | PEM `PUBLIC KEY` blocks (P-256) trusted for ES256 bearer JWTs (`aud=pki`). Tokens must carry `exp`, `iat` and `jti`, with `exp - iat` ≤ 300 s; a caller that also presents a Services CA client certificate must present a token whose `sub` names the same service (`svc-` prefix ignored) |
+| `PKI_MGMT_JWT_SINGLE_USE` | `true` | Remember every accepted `jti` (scoped by `iss`) until `exp` + 30 s and reject a second use on this instance (401). Callers must mint a fresh token per request |
+| `PKI_MGMT_JWT_REPLAY_CACHE_SIZE` | `100000` | Bound of the `jti` cache (≥ 1000); expired ids are dropped first, then the oldest are evicted |
 | `PKI_DEFAULT_ALLOW_SOFTWARE_KEYS` | `false` | Policy for tenants without a stored policy; also seeds `allow_software_keys` when the tenant policy API creates a tenant's record |
 | `PKI_TPM_AK_CA_FILE` / `PKI_TPM_ALLOWED_PCR_DIGESTS` | – | Service-wide TPM attestation CA bundle and hex PCR digests (merged into tenant policies) |
 | `PKI_BROKER_HOST` / `PKI_BROKER_PORT` | `mqtt.ironmesh.local` / `8883` | Defaults for the trust bundle |
@@ -153,7 +157,9 @@ unavailable (`Retry-After` when the enrolled callback failed).
 | `rejectReusedKey` | `internal/est/handler.go` | The CSR key must differ from every SPKI ever certified for the device (bootstrap and operational); reuse → 400 |
 | `checkBootstrapSerialMatchesManufactureRecord` | `internal/est/identity.go` | First enrollment must present the bootstrap certificate serial the Registry recorded at manufacture (`bootstrap_serial`); mismatch → 403 |
 | `checkSeTypeAgainstManufactureRecord` | `internal/est/handler.go` | The attested `se_type` must equal the Registry's manufacture record (`se_type`); mismatch → 403 |
-| `supersedePrevious` | `internal/est/handler.go` | On successful `simplereenroll` the previous operational certificate is revoked (reason `superseded`) after a 1 h grace; the response carries `X-IronMesh-Previous-Revoked-At` |
+| `supersedePrevious` | `internal/est/handler.go` (wired in `internal/app/app.go`) | On successful `simplereenroll` the previous operational certificate is revoked (reason `superseded`) after `PKI_SUPERSEDE_GRACE` (1 h); the response carries `X-IronMesh-Previous-Revoked-At`. The Policy event is serial-scoped (`device_deny=false`): the old serial is refused at CONNECT, the renewed certificate keeps working (`internal/app/supersede_test.go`) |
+| `TLSConfig` | `internal/server/server.go` | The 8443 listener negotiates TLS 1.3 only |
+| `ReplayCache`, `Identify` | `internal/mgmt/replay.go`, `internal/mgmt/auth.go` | Service JWTs: `iat`/`exp`/`jti` required, lifetime ≤ 300 s, single use per instance, `sub` bound to the Services CA client certificate CN when both are presented |
 | `requireProductionKMS` | `cmd/pki/main.go` | `PKI_ENV=production` with `PKI_KMS=file` refuses to start |
 
 Registry records without `se_type` / `bootstrap_serial` (legacy devices) are not constrained by the
@@ -162,17 +168,36 @@ leaves the previous certificate valid until it expires (14 d) or is revoked manu
 
 ### Revocation flow
 
-`POST /v1/certificates/{serial}/revoke` writes the revocation, regenerates the CRL, invalidates
-the OCSP cache and **synchronously** POSTs `{"event_id","serial","device_id","tenant_id","reason",
-"revoked_at"}` to `PKI_POLICY_URL/internal/v1/revocations` with `Authorization: Bearer
-<PKI_POLICY_TOKEN>` and `X-IronMesh-Signature: sha256=<hex HMAC-SHA256 over the body>`, retrying 3
-times with 500 ms backoff. `ironmesh_revocation_latency_seconds` measures request → publish ack;
-`ironmesh_revocation_publish_latency_seconds` the publish alone.
+`POST /v1/certificates/{serial}/revoke` writes the revocation **and** its Policy event to the
+durable revocation outbox in one transaction (`revocation_outbox`, migration
+`0003_revocation_outbox.sql`), regenerates the CRL, invalidates the OCSP cache and makes one
+delivery attempt before answering (`published`, `publish_error`): it POSTs
+`{"event_id","serial","device_id","tenant_id","reason","revoked_at","device_deny"}` to
+`PKI_POLICY_URL/internal/v1/revocations` with `Authorization: Bearer <PKI_POLICY_TOKEN>` and
+`X-IronMesh-Signature: sha256=<hex HMAC-SHA256 over the body>` (to every policy replica with
+`PKI_POLICY_FANOUT=dns`). A background dispatcher (`internal/revocation/outbox.go`) retries pending
+events until every endpoint acknowledged them: backoff 500 ms doubling per failure, capped at
+30 s, polled every second; claimed rows are leased (15 s) with `FOR UPDATE SKIP LOCKED`, so several
+PKI replicas do not deliver the same row concurrently, and rows left by a crashed or restarted
+process are delivered by the next one. The Policy service deduplicates by `event_id`, so
+redelivery is safe.
+
+`device_deny` is `true` for `POST /v1/devices/{device_id}/revoke-all` (registry quarantine and
+decommission): the Policy service then deny-lists the device id. Single-certificate revocations
+(including supersede on renewal) carry `false` and deny only that serial, which the Policy authn
+hook checks against the certificate presented at CONNECT. Enrollment rollbacks
+(`RevokeUndelivered`) are not pushed.
+
+`ironmesh_revocation_latency_seconds` measures revoke request → acknowledgement by every endpoint
+(retries included); `ironmesh_revocation_publish_latency_seconds` one delivery attempt.
 
 ## Metrics
 
 `ironmesh_cert_expiring_total{window="24h|72h|7d"}`, `ironmesh_revocation_latency_seconds`,
-`ironmesh_revocation_publish_latency_seconds`, `ironmesh_revocation_publish_failures_total`,
+`ironmesh_revocation_publish_latency_seconds`, `ironmesh_revocation_publish_failures_total` (failed
+attempts), `ironmesh_revocation_outbox_pending` (events not yet acknowledged by every endpoint),
+`ironmesh_revocation_publish_attempts_total{result="ok|error"}`,
+`ironmesh_revocation_publish_endpoint_total{result="ok|error"}` (per fan-out endpoint),
 `ironmesh_revocations_total{reason}`, `ironmesh_est_requests_total{op,code}`,
 `ironmesh_certs_issued_total{kind}`, `ironmesh_auth_failures_total`,
 `ironmesh_ocsp_requests_total{status}`, `ironmesh_crl_generations_total`,
@@ -228,7 +253,8 @@ sensitive and non-extractable.
 
 ## Store
 
-`internal/store.Store` (certificates, revocations, nonces, CRL number, tenant policies) has an
+`internal/store.Store` (certificates, revocations, revocation outbox, nonces, CRL number, tenant
+policies) has an
 in-memory implementation and a Postgres implementation (`internal/store/postgres`, pgx v5) whose
 migrations are embedded and applied at start under an advisory lock. Tables carry `tenant_id` and
 row-level-security policies keyed on `ironmesh.tenant_id` (contract §8); an unset setting is a
@@ -242,7 +268,9 @@ the append-only `certificates` and `revocations`, `SELECT, INSERT, DELETE` on `n
 `SELECT, INSERT, UPDATE` on `tenant_policies`, `SELECT, UPDATE` on `crl_counter`, `SELECT` on
 `schema_migrations`. The role is created when the owner may create roles, otherwise it must exist
 (`deploy/docker/postgres/10-ironmesh.sh` creates it); `rds_iam` is granted to it when that role
-exists. Production layout: `PKI_MIGRATION_DATABASE_URL=postgres://pki_owner…` and
+exists. Migration `0003_revocation_outbox.sql` adds `revocation_outbox` with the same
+`tenant_isolation` policy, forced RLS and `SELECT, INSERT, UPDATE` (no `DELETE`/`TRUNCATE`) for
+`pki_app`. Production layout: `PKI_MIGRATION_DATABASE_URL=postgres://pki_owner…` and
 `PKI_DATABASE_URL=postgres://pki_app…` (optionally with `PKI_DB_IAM_AUTH=true`). The memory
 store is unaffected.
 
