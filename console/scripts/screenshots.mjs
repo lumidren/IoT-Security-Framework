@@ -243,8 +243,13 @@ async function main() {
     cdp.close();
   } finally {
     browser.kill();
-    await sleep(500);
-    rmSync(profile, { recursive: true, force: true });
+    await sleep(1500);
+    try {
+      rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+    } catch (error) {
+      // The browser can keep the profile locked briefly on Windows; a leftover temp dir is harmless.
+      console.warn(`could not remove ${profile}: ${error.code ?? error}`);
+    }
   }
 }
 
