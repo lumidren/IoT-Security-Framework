@@ -15,6 +15,7 @@ from .. import models as m
 from .. import views
 from ..auth import Principal
 from ..context import AppContext, Unit
+from ..crypto import PKI_TENANT_POLICY
 from ..domain import (
     TELEMETRY_METRICS,
     ActionRecord,
@@ -481,6 +482,7 @@ async def resolve_tenant(app: AppContext, device_id: str) -> str:
 
 
 async def lifecycle(app: AppContext, p: Principal, device_id: str) -> m.Lifecycle:
+    """``GET /internal/v1/devices/{id}/lifecycle`` (policy, anomaly)."""
     tenant = await resolve_tenant(app, device_id)
     async with app.unit(p, tenant) as u:
         dev = await require_device(u, device_id)
@@ -610,6 +612,7 @@ async def run_pending_actions(
 ) -> int:
     """Retry due outbox actions for every tenant (or ``tenant_ids``); returns how many completed."""
     from . import config as config_svc
+    from . import tenant_policy
     from . import twin as twin_svc
 
     done = 0
@@ -617,6 +620,8 @@ async def run_pending_actions(
         async with app.unit(p, tenant_id) as u:
             due = await u.tx.due_actions(u.now(), 50)
         for action in due:
+            # tenant-level actions (PKI policy) carry no device id
+            target = ("device", action.device_id) if action.device_id else ("tenant", tenant_id)
             try:
                 if action.kind == "pki_revoke_all":
                     reason = str(action.payload.get("reason", "retry"))
@@ -629,6 +634,8 @@ async def run_pending_actions(
                     await twin_svc.republish(app, p, tenant_id, action.device_id)
                 elif action.kind == "publish_config":
                     await config_svc.republish(app, p, tenant_id, action.device_id)
+                elif action.kind == PKI_TENANT_POLICY:
+                    await tenant_policy.push(app, p, tenant_id)
                 else:
                     raise ProblemError(500, f"unknown action kind {action.kind}")
             except Exception as exc:
@@ -641,8 +648,7 @@ async def run_pending_actions(
                         action.status = "failed"
                         await u.audit(
                             f"action.{action.kind}.abandoned",
-                            "device",
-                            action.device_id,
+                            *target,
                             {"action_id": action.id, "error": str(exc)},
                             outcome="failure",
                         )
@@ -654,8 +660,7 @@ async def run_pending_actions(
                 await u.tx.save_action(action)
                 await u.audit(
                     f"action.{action.kind}.completed",
-                    "device",
-                    action.device_id,
+                    *target,
                     {"action_id": action.id, "attempts": action.attempts},
                 )
             done += 1

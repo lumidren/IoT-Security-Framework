@@ -3,13 +3,20 @@
 Both are generated on first use, wrapped by the KMS :class:`KeyWrapper` with an encryption
 context bound to the tenant and purpose, and stored in ``tenant_keys``. Unwrapped keys are cached
 in process memory for a short time so that KMS is not called on every request.
+
+The registry is the **only** holder of the command key (API_CONTRACT §1.12). Creating one also
+queues, in the same transaction, a ``pki_tenant_policy`` outbox action that publishes the public
+key to the PKI (``PUT /v1/tenants/{t}/command-key``) so EST bundles carry it.
 """
 
 from __future__ import annotations
 
 import os
 import time
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import serialization
@@ -17,7 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from ironmesh_wire import envelope
 
-from .domain import TenantKeysRecord
+from .domain import ActionRecord, TenantKeysRecord
 from .integrations.kms import KeyWrapper
 from .jsonutil import utcnow
 from .repo.base import DuplicateError, TenantTx
@@ -33,6 +40,10 @@ class TenantKeys:
         return envelope.SigningIdentity.tenant(self.cmd_key, tenant_id)
 
 
+PKI_TENANT_POLICY = "pki_tenant_policy"
+"""Outbox kind: push the tenant's command key and enrollment policy to the PKI."""
+
+
 class ConfigDecryptError(Exception):
     pass
 
@@ -42,9 +53,15 @@ def _ctx(tenant_id: str, purpose: str) -> dict[str, str]:
 
 
 class TenantKeyring:
-    def __init__(self, wrapper: KeyWrapper, cache_seconds: float = 300.0) -> None:
+    def __init__(
+        self,
+        wrapper: KeyWrapper,
+        cache_seconds: float = 300.0,
+        clock: Callable[[], datetime] = utcnow,
+    ) -> None:
         self.wrapper = wrapper
         self.cache_seconds = cache_seconds
+        self.clock = clock
         self._cache: dict[str, TenantKeys] = {}
 
     async def keys(self, tx: TenantTx) -> TenantKeys:
@@ -81,7 +98,7 @@ class TenantKeyring:
             cmd_public_key=cmd.public_key().public_bytes(
                 serialization.Encoding.Raw, serialization.PublicFormat.Raw
             ),
-            created_at=utcnow(),
+            created_at=self.clock(),
         )
         try:
             await tx.insert_tenant_keys(rec)
@@ -89,6 +106,17 @@ class TenantKeyring:
             existing = await tx.get_tenant_keys()
             assert existing is not None
             return existing
+        await tx.insert_action(
+            ActionRecord(
+                tenant_id=tenant_id,
+                id=str(uuid.uuid4()),
+                kind=PKI_TENANT_POLICY,
+                device_id="",
+                payload={"cause": "command_key_created"},
+                created_at=rec.created_at,
+                next_attempt_at=rec.created_at,
+            )
+        )
         return rec
 
     @staticmethod

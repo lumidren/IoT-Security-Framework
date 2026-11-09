@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import ssl
 import time
 from dataclasses import dataclass, field
@@ -81,6 +82,8 @@ class PkiClient(Protocol):
     async def device_certificates(self, device_id: str) -> list[PkiCertificate]: ...
     async def get_certificate(self, serial_hex: str) -> PkiCertificate | None: ...
     def invalidate(self, device_id: str) -> None: ...
+    async def put_command_key(self, tenant_id: str, public_key: bytes) -> None: ...
+    async def put_enrollment(self, tenant_id: str, allow_software_keys: bool) -> None: ...
 
 
 class OtaClient(Protocol):
@@ -189,6 +192,23 @@ class HttpPkiClient:
             if cert.device_id == device_id:
                 self.cert_cache.drop(serial)
 
+    async def _put_policy(self, tenant_id: str, field: str, body: dict[str, Any]) -> None:
+        """API_CONTRACT §5 tenant policy: ``PUT /v1/tenants/{tenant}/<field>`` -> ``204``."""
+        path = f"/v1/tenants/{tenant_id}/{field}"
+        resp = await self._request("PUT", path, json=body)
+        if not 200 <= resp.status_code < 300:
+            raise UpstreamError(f"pki PUT {path}: HTTP {resp.status_code}")
+
+    async def put_command_key(self, tenant_id: str, public_key: bytes) -> None:
+        await self._put_policy(
+            tenant_id, "command-key", {"public_key_b64": base64.b64encode(public_key).decode()}
+        )
+
+    async def put_enrollment(self, tenant_id: str, allow_software_keys: bool) -> None:
+        await self._put_policy(
+            tenant_id, "enrollment", {"allow_software_keys": allow_software_keys}
+        )
+
 
 class HttpOtaClient:
     def __init__(
@@ -222,6 +242,10 @@ class FakePki:
     revoked: list[tuple[str, str]] = field(default_factory=list)
     fail_revoke: int = 0
     fail_lookup: bool = False
+    command_keys: dict[str, bytes] = field(default_factory=dict)
+    enrollment: dict[str, bool] = field(default_factory=dict)
+    policy_calls: list[tuple[str, str]] = field(default_factory=list)
+    fail_policy: int = 0  # number of upcoming tenant-policy PUTs that fail
 
     def add(self, cert: PkiCertificate) -> None:
         self.certs[cert.serial_hex] = cert
@@ -260,6 +284,20 @@ class FakePki:
 
     def invalidate(self, device_id: str) -> None:
         return None
+
+    def _policy_call(self, tenant_id: str, field_name: str) -> None:
+        if self.fail_policy > 0:
+            self.fail_policy -= 1
+            raise UpstreamError("pki unavailable")
+        self.policy_calls.append((tenant_id, field_name))
+
+    async def put_command_key(self, tenant_id: str, public_key: bytes) -> None:
+        self._policy_call(tenant_id, "command-key")
+        self.command_keys[tenant_id] = public_key
+
+    async def put_enrollment(self, tenant_id: str, allow_software_keys: bool) -> None:
+        self._policy_call(tenant_id, "enrollment")
+        self.enrollment[tenant_id] = allow_software_keys
 
 
 @dataclass

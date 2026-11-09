@@ -40,7 +40,7 @@ from .observability import Metrics, configure_logging, configure_tracing
 from .problems import install_problem_handlers
 from .repo.base import Repository
 from .repo.memory import MemoryRepository
-from .services import admin, commands, devices
+from .services import admin, commands, devices, tenant_policy
 from .services.ingest import Ingest
 from .settings import BusBackend, KmsBackend, MqttBackend, RepoBackend, Settings, get_settings
 from .ws import Hub, TicketStore
@@ -183,10 +183,25 @@ async def _loop(name: str, interval: float, job: Callable[[], Awaitable[object]]
         await asyncio.sleep(interval)
 
 
+async def _once(name: str, job: Callable[[], Awaitable[object]]) -> None:
+    try:
+        await job()
+    except Exception as exc:
+        log.error("background_job_failed", job=name, error=repr(exc))
+
+
 async def sweep_once(ctx: AppContext) -> None:
     await commands.sweep(ctx, SYSTEM)
     await devices.run_pending_actions(ctx, SYSTEM)
     await admin.flush_health(ctx, SYSTEM)
+
+
+async def reconcile_once(ctx: AppContext) -> int:
+    """Startup reconciliation: push every tenant's command key + enrollment policy to the PKI
+    (failures become outbox actions retried by the sweeper)."""
+    count = await tenant_policy.reconcile(ctx, SYSTEM)
+    log.info("pki_tenant_policy_reconciled", tenants=count)
+    return count
 
 
 async def maintain_once(ctx: AppContext) -> None:
@@ -229,6 +244,7 @@ def create_app(
                         lambda: maintain_once(context),
                     )
                 ),
+                asyncio.create_task(_once("pki_reconcile", lambda: reconcile_once(context))),
             ]
         log.info("registry_started", version=__version__)
         try:

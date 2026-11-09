@@ -14,6 +14,7 @@ from ..domain import ApiKeyRecord, AuditFilter, GroupRecord
 from ..jsonutil import JsonObject, decode_cursor, encode_cursor
 from ..problems import conflict, not_found, unprocessable
 from ..repo.base import GENESIS_HASH, DuplicateError, chain_hash
+from . import tenant_policy
 from .common import clamp_limit
 
 # ------------------------------------------------------------------------------------------------
@@ -42,7 +43,13 @@ async def update_settings(app: AppContext, p: Principal, patch: m.TenantSettings
         m.TenantSettings(**rec.settings)  # validate the merged document
         await u.tx.save_tenant(rec)
         await u.audit("tenant.settings_updated", "tenant", rec.id, {"from": before, "to": changes})
-        return views.tenant(rec)
+        out = views.tenant(rec)
+    if "allow_software_keys" in changes and bool(before["allow_software_keys"]) != bool(
+        changes["allow_software_keys"]
+    ):
+        # the PKI enforces the flag at enrollment (API_CONTRACT §5); outbox on failure
+        await tenant_policy.sync(app, p, out.id, "allow_software_keys_changed")
+    return out
 
 
 # ------------------------------------------------------------------------------------------------
