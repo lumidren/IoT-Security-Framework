@@ -27,14 +27,15 @@ with the Python reference (`libs/python/ironmesh-wire`) and passes every file in
 | `wire::hpke` | RFC 9180 DHKEM(P-256)/HKDF-SHA256/AES-128-GCM with an abstract recipient (TPM / TEE ECDH) and Config wrap/unwrap |
 | `wire::attestation` | Type-10 attestation builder, server-side verifier, `TPMS_ATTEST` parser |
 | `wire::error` | `ErrorCode` 1:1 with WIRE_FORMAT §8 / DELTA_FORMAT §6 |
+| `atrest` | At-rest key hierarchy: the software identity's machine-secret-derived KEK as root, HKDF subkeys per purpose (anti-rollback HMAC, offline-buffer AES-256-GCM, time-floor HMAC), `SealedValue` (HMAC-tagged `u64` records) |
 | `identity` | `IdentityProvider` trait; `software` (AES-256-GCM at rest, HKDF from a 0600 machine secret [+ OS keyring]), `tpm` (feature `tpm`), `optee` (feature `optee`) |
 | `tls` | TLS 1.3-only rustls config, `PinnedVerifier` (webpki chain + hostname with only SPKI-pinned anchors), identity-backed client key, connect-failure classification |
 | `est` | RFC 7030 client (`cacerts`, nonce, `simpleenroll`/`simplereenroll` + `X-IronMesh-Attestation`), certs-only PKCS#7 decoder (`der`), `X-IronMesh-Bundle` verification, renewal schedule |
 | `enroll` | Enrollment/rotation orchestration and the on-disk credential store (crash-safe key promotion) |
 | `mqtt` | Self-written, fuzzed MQTT 5 codec and async client (clean_start=false, 7-day session expiry, receive max 32, keep-alive 60 s, user property `traceparent`), backoff 1 s x2 cap 300 s full jitter |
-| `buffer` | Persistent offline ring buffer (10 000 records, CRC per record, torn-tail recovery, compaction) |
+| `buffer` | Persistent offline ring buffer (10 000 records, AES-256-GCM per record with `seq` as AAD, CRC for torn-tail recovery, unauthenticated records dropped and counted, compaction) |
 | `telemetry` | `sysinfo` collector, `auth.log` / `journalctl` failed-login counter, firmware hash |
-| `ota` | A/B slots, `BootControl` (`FileBootControl`, `FwSetenvBootControl` for U-Boot/RAUC), resumable HTTPS download, anti-rollback floor, delta apply, staging |
+| `ota` | A/B slots, `BootControl` (`FileBootControl`, `FwSetenvBootControl` for U-Boot/RAUC), resumable HTTPS download (host allowlist, default = EST host + `ota.base_url` host), anti-rollback floor behind `AntiRollbackStore` (HMAC-tagged file, fail-closed raise before staging and before commit; TPM NV counter is the documented stronger backend), delta apply, staging |
 | `commands`, `shadow`, `config` | Command execution with expiry and 256-key persisted idempotency; desired/reported state; encrypted config |
 | `agent` | Supervisor state machine, uplink signing + buffering, inbound verification/dispatch, renewal task, health gate (MQTT + telemetry PUBACK within 120 s, else rollback) |
 | `dut` | DUT control protocol over stdio (feature `dut-control`) |
