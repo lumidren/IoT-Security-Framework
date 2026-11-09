@@ -1,0 +1,230 @@
+# Continuous deployment: staging after every successful release on main, then production behind
+# the `production` environment's required reviewers.
+#
+#   staging     cosign verify -> helm upgrade --atomic -> helm test -> synthetic device enrollment
+#               -> SLO check (Prometheus) -> automatic helm rollback on any failure
+#   production  manual approval -> canary (replica-weighted clones of every Deployment running the
+#               new images) -> smoke + SLO on the canary -> full helm upgrade -> smoke + SLO ->
+#               automatic helm rollback on any failure
+#
+# AWS access is GitHub OIDC -> IAM role (no long-lived keys). Per-environment configuration lives
+# in environment variables: AWS_DEPLOY_ROLE_ARN, AWS_REGION, EKS_CLUSTER_NAME,
+# HELM_VALUES_SSM_PARAMETER (Terraform `helm_values` output stored in SSM), SMOKE_HEALTH_URLS,
+# PROMETHEUS_NAMESPACE, PROMETHEUS_SERVICE; secrets: SMOKE_FLEET_IDENTITY_TGZ_B64,
+# SMOKE_FLEET_TOML (see scripts/ci/smoke_enroll.sh).
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. sha-1a2b3c4 or 0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAMESPACE: ghcr.io/lumidren
+  RELEASE: ironmesh
+  NAMESPACE: ironmesh
+  CHART: deploy/helm/ironmesh
+
+jobs:
+  resolve:
+    name: resolve release
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.tag.outputs.sha }}
+    steps:
+      - id: tag
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [ -n "${INPUT_TAG}" ]; then tag="${INPUT_TAG}"; else tag="sha-${HEAD_SHA:0:7}"; fi
+          if ! printf '%s' "${tag}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'; then
+            echo "::error::invalid image tag"; exit 1
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+
+  staging:
+    name: staging
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: staging
+      url: ${{ vars.ENVIRONMENT_URL }}
+    permissions:
+      contents: read
+      id-token: write # AWS OIDC
+      packages: read # pull / verify release images
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - name: verify image signatures and SBOM attestations
+        run: scripts/ci/deploy_helm.sh verify-images "${TAG}"
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ironmesh-deploy-staging-${{ github.run_id }}
+      - uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        with:
+          version: v3.16.3
+      - uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
+        with:
+          version: v1.31.4
+      - name: cluster access and chart inputs
+        run: |
+          aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ vars.AWS_REGION }}"
+          helm repo add emqx https://repos.emqx.io/charts
+          helm repo add redpanda https://charts.redpanda.com
+          scripts/ci/deploy_helm.sh values staging
+          echo "PREVIOUS_REVISION=$(scripts/ci/deploy_helm.sh revision)" >> "${GITHUB_ENV}"
+      - name: helm upgrade (atomic) + helm test
+        run: scripts/ci/deploy_helm.sh upgrade staging "${TAG}"
+      - name: fleet simulator binary from the release image
+        run: |
+          cid="$(docker create "${IMAGE_NAMESPACE}/ironmesh-fleet:${TAG}")"
+          docker cp "${cid}:/usr/local/bin/ironmesh-fleet" "${RUNNER_TEMP}/ironmesh-fleet"
+          docker rm "${cid}" >/dev/null
+          chmod 0755 "${RUNNER_TEMP}/ironmesh-fleet"
+      - name: smoke (health + synthetic device enrollment)
+        env:
+          SMOKE_FLEET_IDENTITY_TGZ_B64: ${{ secrets.SMOKE_FLEET_IDENTITY_TGZ_B64 }}
+          SMOKE_FLEET_TOML: ${{ secrets.SMOKE_FLEET_TOML }}
+          SMOKE_HEALTH_URLS: ${{ vars.SMOKE_HEALTH_URLS }}
+          FLEET_BIN: ${{ runner.temp }}/ironmesh-fleet
+        run: scripts/ci/smoke_enroll.sh
+      - name: SLO check (error ratio, revocation latency)
+        run: |
+          kubectl -n "${{ vars.PROMETHEUS_NAMESPACE }}" port-forward "svc/${{ vars.PROMETHEUS_SERVICE }}" 9090:9090 >/dev/null 2>&1 &
+          pf=$!
+          trap 'kill "${pf}"' EXIT
+          sleep 5
+          python3 scripts/ci/slo_check.py --prometheus http://127.0.0.1:9090 --samples 5 --interval 60
+      - name: automatic rollback
+        if: failure()
+        run: scripts/ci/deploy_helm.sh rollback "${PREVIOUS_REVISION:-0}"
+
+  production:
+    name: production
+    needs: [resolve, staging]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    # Required reviewers are configured on the `production` environment (manual gate).
+    environment:
+      name: production
+      url: ${{ vars.ENVIRONMENT_URL }}
+    permissions:
+      contents: read
+      id-token: write # AWS OIDC
+      packages: read # pull / verify release images
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - name: verify image signatures and SBOM attestations
+        run: scripts/ci/deploy_helm.sh verify-images "${TAG}"
+      - uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: ironmesh-deploy-prod-${{ github.run_id }}
+      - uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        with:
+          version: v3.16.3
+      - uses: azure/setup-kubectl@3e0aec4d80787158d308d7b364cb1b702e7feb7f # v4.0.0
+        with:
+          version: v1.31.4
+      - name: cluster access and chart inputs
+        run: |
+          aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ vars.AWS_REGION }}"
+          helm repo add emqx https://repos.emqx.io/charts
+          helm repo add redpanda https://charts.redpanda.com
+          scripts/ci/deploy_helm.sh values prod
+          echo "PREVIOUS_REVISION=$(scripts/ci/deploy_helm.sh revision)" >> "${GITHUB_ENV}"
+      - name: fleet simulator binary from the release image
+        run: |
+          cid="$(docker create "${IMAGE_NAMESPACE}/ironmesh-fleet:${TAG}")"
+          docker cp "${cid}:/usr/local/bin/ironmesh-fleet" "${RUNNER_TEMP}/ironmesh-fleet"
+          docker rm "${cid}" >/dev/null
+          chmod 0755 "${RUNNER_TEMP}/ironmesh-fleet"
+      - name: start Prometheus port-forward
+        run: |
+          nohup kubectl -n "${{ vars.PROMETHEUS_NAMESPACE }}" port-forward "svc/${{ vars.PROMETHEUS_SERVICE }}" 9090:9090 >/dev/null 2>&1 &
+          echo $! > "${RUNNER_TEMP}/pf.pid"
+          sleep 5
+      # Phase 1: canary. Schema migrations only run with the full upgrade, so releases must keep
+      # the expand/contract migration rule (new code tolerates the old schema for one release).
+      - name: canary up (1 replica per service on the new images)
+        run: scripts/ci/deploy_helm.sh canary-up "${TAG}" 1
+      - name: canary smoke + SLO
+        env:
+          SMOKE_FLEET_IDENTITY_TGZ_B64: ${{ secrets.SMOKE_FLEET_IDENTITY_TGZ_B64 }}
+          SMOKE_FLEET_TOML: ${{ secrets.SMOKE_FLEET_TOML }}
+          SMOKE_HEALTH_URLS: ${{ vars.SMOKE_HEALTH_URLS }}
+          FLEET_BIN: ${{ runner.temp }}/ironmesh-fleet
+        run: |
+          scripts/ci/smoke_enroll.sh
+          python3 scripts/ci/slo_check.py --prometheus http://127.0.0.1:9090 --samples 5 --interval 60
+      - name: canary down
+        if: always()
+        run: scripts/ci/deploy_helm.sh canary-down
+      # Phase 2: full rollout.
+      - name: helm upgrade (atomic) + helm test
+        run: scripts/ci/deploy_helm.sh upgrade prod "${TAG}"
+      - name: post-rollout smoke + SLO
+        env:
+          SMOKE_FLEET_IDENTITY_TGZ_B64: ${{ secrets.SMOKE_FLEET_IDENTITY_TGZ_B64 }}
+          SMOKE_FLEET_TOML: ${{ secrets.SMOKE_FLEET_TOML }}
+          SMOKE_HEALTH_URLS: ${{ vars.SMOKE_HEALTH_URLS }}
+          FLEET_BIN: ${{ runner.temp }}/ironmesh-fleet
+        run: |
+          scripts/ci/smoke_enroll.sh
+          python3 scripts/ci/slo_check.py --prometheus http://127.0.0.1:9090 --samples 10 --interval 60
+      - name: automatic rollback
+        if: failure()
+        run: |
+          scripts/ci/deploy_helm.sh canary-down || true
+          scripts/ci/deploy_helm.sh rollback "${PREVIOUS_REVISION:-0}"
+      - name: stop port-forward
+        if: always()
+        run: kill "$(cat "${RUNNER_TEMP}/pf.pid")" 2>/dev/null || true
