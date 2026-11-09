@@ -116,11 +116,6 @@ An `.env` generated before a variable was introduced lacks it, and `docker compo
 
 ## Known limitations (tracked in the integration report)
 
-* `policy` discovers the IdP from `POLICY_OIDC_ISSUER` (`<issuer>/.well-known/openid-configuration`)
-  and has no JWKS URL override. The issuer every token carries, `http://localhost:8180/realms/ironmesh`,
-  is not reachable from the policy container (Keycloak lives in the console's network namespace),
-  so console calls to the policy management API fail OIDC discovery in this stack until the policy
-  service gains a JWKS URL setting. Device authn/authz is unaffected.
 * Existing volumes keep their state: `pki-data`/`pgdata` from an older stack still work (`pki_app`
   was already created), but the obsolete `ota-keys/tenant-keys/` directory is simply ignored.
 * Tempo/Loki are not part of the stack; the collector's trace/log exporters retry and the

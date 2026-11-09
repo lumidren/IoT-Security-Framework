@@ -313,6 +313,7 @@ services:
       # iss every other service accepts). Discovery fetches <issuer>/.well-known/... lazily on the
       # first console call; see deploy/docker/README.md "Known limitations".
       POLICY_OIDC_ISSUER: http://localhost:8180/realms/ironmesh
+      POLICY_OIDC_JWKS_URL: http://console:8180/realms/ironmesh/protocol/openid-connect/certs
       POLICY_OIDC_AUDIENCE: ironmesh-api
       POLICY_OIDC_ROLE_CLAIM: role
       POLICY_LOG_LEVEL: info
