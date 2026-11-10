@@ -168,7 +168,7 @@ func (p *Provider) Save(path string, key crypto.Signer) error {
 	}
 	// The algorithm and key id are authenticated as additional data so they
 	// cannot be swapped without detection.
-	ct := aead.Seal(nil, nonce, pkcs8, []byte(env.Algorithm+"|"+env.KeyID))
+	ct := aead.Seal(nil, nonce, pkcs8, []byte(env.Algorithm+"|"+env.KeyID)) // #nosec G407 -- nonce is read from crypto/rand above
 	env.Nonce, env.Ciphertext = b64(nonce), b64(ct)
 
 	data, err := json.MarshalIndent(env, "", "  ")

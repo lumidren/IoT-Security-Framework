@@ -27,6 +27,10 @@ const (
 	TPMAlgECC    uint16 = 0x0023
 
 	maxTPMField = 1024
+	// maxPCRBanks bounds TPML_PCR_SELECTION.count when parsing and marshalling.
+	maxPCRBanks = 16
+	// pcrSelectSize is the sizeofSelect written for 24 PCRs.
+	pcrSelectSize = 3
 )
 
 // ClockInfo is TPMS_CLOCK_INFO.
@@ -147,7 +151,7 @@ func ParseQuote(b []byte) (*Quote, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-	if count == 0 || count > 16 {
+	if count == 0 || count > maxPCRBanks {
 		return nil, fmt.Errorf("tpm2: invalid PCR selection count %d", count)
 	}
 	for i := uint32(0); i < count; i++ {
@@ -205,17 +209,20 @@ func (q *Quote) Marshal() ([]byte, error) {
 		out = append(out, 0)
 	}
 	out = binary.BigEndian.AppendUint64(out, q.FirmwareVersion)
-	out = binary.BigEndian.AppendUint32(out, uint32(len(q.PCRSelections)))
+	if len(q.PCRSelections) > maxPCRBanks {
+		return nil, fmt.Errorf("tpm2: %d PCR banks exceed limit", len(q.PCRSelections))
+	}
+	out = binary.BigEndian.AppendUint32(out, uint32(len(q.PCRSelections))) // #nosec G115 -- <= maxPCRBanks, checked above
 	for _, sel := range q.PCRSelections {
 		out = binary.BigEndian.AppendUint16(out, sel.Hash)
-		bitmap := make([]byte, 3)
+		bitmap := make([]byte, pcrSelectSize)
 		for _, pcr := range sel.PCRs {
 			if pcr < 0 || pcr >= 24 {
 				return nil, fmt.Errorf("tpm2: PCR index %d out of range", pcr)
 			}
 			bitmap[pcr/8] |= 1 << (pcr % 8)
 		}
-		out = append(out, byte(len(bitmap)))
+		out = append(out, pcrSelectSize)
 		out = append(out, bitmap...)
 	}
 	return appendSized(out, q.PCRDigest)
@@ -225,7 +232,7 @@ func appendSized(out, field []byte) ([]byte, error) {
 	if len(field) > maxTPMField {
 		return nil, fmt.Errorf("tpm2: field of %d bytes exceeds limit", len(field))
 	}
-	out = binary.BigEndian.AppendUint16(out, uint16(len(field)))
+	out = binary.BigEndian.AppendUint16(out, uint16(len(field))) // #nosec G115 -- <= maxTPMField (1024), checked above
 	return append(out, field...), nil
 }
 

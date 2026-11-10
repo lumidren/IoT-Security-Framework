@@ -177,10 +177,11 @@ func mul(a, b byte) byte {
 	var p byte
 	for i := 0; i < 8; i++ {
 		// if (b & 1) p ^= a
-		mask := byte(-(int8(b & 1)))
+		// Unsigned negation wraps: -(1) = 0xff, -(0) = 0x00, with no branch or conversion.
+		mask := -(b & 1)
 		p ^= a & mask
 		// a = xtime(a)
-		carry := byte(-(int8(a >> 7)))
+		carry := -(a >> 7)
 		a <<= 1
 		a ^= 0x1b & carry
 		b >>= 1
