@@ -37,6 +37,9 @@ ignore = true
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path dependencies between this repository's own unpublished crates (publish = false, e.g.
+# im-dut-shim -> im-core-tests) are not wildcards; registry wildcards stay denied.
+allow-wildcard-paths = true
 # The agent uses rustls with ring; never pull in OpenSSL bindings by accident.
 deny = [
   { crate = "openssl", reason = "TLS is rustls + ring (DESIGN_CONTRACT.md section 4)" },
