@@ -403,6 +403,9 @@ class ServiceJwtVerifier:
     def verify(self, token: str) -> str:
         try:
             header = jwt.get_unverified_header(token)
+            # Only selects which pinned key verifies the token below (ES256, aud, iss bound to
+            # the selected service, required claims); nothing from this decode is trusted.
+            # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode, security.semgrep.ironmesh-py-jwt-alg-none  # noqa: E501
             unverified = jwt.decode(token, options={"verify_signature": False})
         except jwt.PyJWTError as exc:
             raise unauthorized("malformed service token") from exc

@@ -98,6 +98,8 @@ class Cdp {
 async function pageTarget() {
   for (let i = 0; i < 50; i += 1) {
     try {
+      // Chrome's DevTools endpoint on loopback only speaks plain HTTP.
+      // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
       const targets = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
       const page = targets.find((t) => t.type === 'page');
       if (page) return page.webSocketDebuggerUrl;

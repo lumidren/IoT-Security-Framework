@@ -20,7 +20,8 @@ def load(name):
 def put(target, data):
     d = OUT / target
     d.mkdir(parents=True, exist_ok=True)
-    (d / hashlib.sha1(data).hexdigest()).write_bytes(data)
+    # Content-addressed file name, as libFuzzer names corpus entries; not a security use.
+    (d / hashlib.sha1(data, usedforsecurity=False).hexdigest()).write_bytes(data)
 
 
 def hx(s):

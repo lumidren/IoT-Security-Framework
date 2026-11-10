@@ -87,7 +87,10 @@ func newClient(u *url.URL, timeout time.Duration) *http.Client {
 	if u.Scheme == "https" {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 		if IsLoopback(u.Hostname()) {
-			transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // loopback-only, see package doc
+			// The service certificate names its DNS SANs, not the loopback address the in-container
+			// probe dials, so verification is skipped for loopback https only (see package doc).
+			// nosemgrep: security.semgrep.ironmesh-go-tls-insecure-skip-verify
+			transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // #nosec G402 -- loopback-only probe
 		}
 	}
 	return &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
