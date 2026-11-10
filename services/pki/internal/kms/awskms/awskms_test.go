@@ -120,7 +120,6 @@ func TestOpenAndSign(t *testing.T) {
 		{"p384", elliptic.P384(), crypto.SHA384, kms.AlgorithmP384, types.SigningAlgorithmSpecEcdsaSha384},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			f := newFake()

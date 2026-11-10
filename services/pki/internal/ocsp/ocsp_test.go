@@ -73,7 +73,6 @@ func TestStatuses(t *testing.T) {
 		{"unknown", unknownCert, xocsp.Unknown, "unknown"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			nonce := []byte("nonce-" + c.name)
 			der, label := r.Respond(ctx, request(t, c.cert, p.Device.Certificate(), nonce))

@@ -23,7 +23,6 @@ var testKDF = KDFParams{Time: 1, Memory: 8 * 1024, Threads: 1}
 func TestGenerateOpenRoundTrip(t *testing.T) {
 	t.Parallel()
 	for _, alg := range []kms.Algorithm{kms.AlgorithmP256, kms.AlgorithmP384, kms.AlgorithmEd25519} {
-		alg := alg
 		t.Run(string(alg), func(t *testing.T) {
 			t.Parallel()
 			var logBuf bytes.Buffer

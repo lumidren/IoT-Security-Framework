@@ -34,7 +34,7 @@ func main() {
 		os.Exit(healthcheckMain(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "bridge:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "bridge:", err)
 		os.Exit(1)
 	}
 }

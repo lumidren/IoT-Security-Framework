@@ -229,7 +229,6 @@ func TestOperationalCertificateProfile(t *testing.T) {
 		{"max ttl", AssuranceHardware, MaxOperationalTTL, MaxOperationalTTL, []string{tenant}},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			cert, err := h.device.IssueOperational(DeviceRequest{TenantID: tenant, DeviceID: device, PublicKey: key.Public(), Assurance: c.assurance, TTL: c.ttl})
 			if err != nil {

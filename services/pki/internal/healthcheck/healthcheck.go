@@ -111,13 +111,13 @@ func Run(ctx context.Context, name string, args []string, defaultURL string, std
 		return 2
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "%s healthcheck: unexpected arguments %v\n", name, fs.Args())
+		_, _ = fmt.Fprintf(stderr, "%s healthcheck: unexpected arguments %v\n", name, fs.Args())
 		return 2
 	}
 	if err := Check(ctx, *target, *timeout); err != nil {
-		fmt.Fprintf(stderr, "%s healthcheck: unhealthy: %v\n", name, err)
+		_, _ = fmt.Fprintf(stderr, "%s healthcheck: unhealthy: %v\n", name, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "%s healthcheck: ok\n", name)
+	_, _ = fmt.Fprintf(stdout, "%s healthcheck: ok\n", name)
 	return 0
 }

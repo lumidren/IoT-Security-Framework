@@ -44,7 +44,7 @@ func main() {
 		os.Exit(healthcheckMain(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "policy:", err)
+		_, _ = fmt.Fprintln(os.Stderr, "policy:", err)
 		os.Exit(1)
 	}
 }

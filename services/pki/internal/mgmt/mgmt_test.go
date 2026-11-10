@@ -133,7 +133,6 @@ func TestAuthentication(t *testing.T) {
 		{"device cert plus valid jwt", e.s.DeviceClient(dev), "Bearer " + token(t, e.jwtKey, good("svc-registry")), http.StatusOK},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			headers := map[string]string{}
 			if c.auth != "" {

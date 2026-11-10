@@ -58,7 +58,7 @@ type env struct {
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
-		fmt.Fprint(stderr, usage)
+		_, _ = fmt.Fprint(stderr, usage)
 		return 2
 	}
 	e := &env{getenv: getenv, stdout: stdout, stderr: stderr}
@@ -75,7 +75,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	}
 	cmd, ok := cmds[args[0]]
 	if !ok {
-		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
+		_, _ = fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}
 	if err := cmd(ctx, e, args[1:]); err != nil {
@@ -83,7 +83,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 		if errors.Is(err, flag.ErrHelp) || errors.As(err, &ue) {
 			return 2
 		}
-		fmt.Fprintln(stderr, "error:", err)
+		_, _ = fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	return 0
@@ -171,13 +171,13 @@ func cmdInitRoot(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "root certificate: %s\nkey: %s (%s)\nserial: %s\nnot after: %s\n",
+	_, _ = fmt.Fprintf(e.stdout, "root certificate: %s\nkey: %s (%s)\nserial: %s\nnot after: %s\n",
 		res.CertPath, res.KeyRef, res.KeyID, ca.FormatSerial(res.Certificate.SerialNumber), res.Certificate.NotAfter.Format(time.RFC3339))
 	for _, p := range res.SharePaths {
-		fmt.Fprintf(e.stdout, "share: %s\n", p)
+		_, _ = fmt.Fprintf(e.stdout, "share: %s\n", p)
 	}
 	if len(res.SharePaths) > 0 {
-		fmt.Fprintln(e.stdout, "Distribute each share to a different custodian and delete them from this machine.")
+		_, _ = fmt.Fprintln(e.stdout, "Distribute each share to a different custodian and delete them from this machine.")
 	}
 	return nil
 }
@@ -204,9 +204,9 @@ func cmdRecoverRoot(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "root key recovered: %s\n", signer.KeyID())
+	_, _ = fmt.Fprintf(e.stdout, "root key recovered: %s\n", signer.KeyID())
 	if *out != "" {
-		fmt.Fprintf(e.stdout, "re-wrapped key written to %s\n", *out)
+		_, _ = fmt.Fprintf(e.stdout, "re-wrapped key written to %s\n", *out)
 	}
 	return nil
 }
@@ -245,7 +245,7 @@ func cmdInitIntermediate(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "%s CA certificate: %s\nserial: %s\nnot after: %s\n", kind, ca.Layout{Dir: *dir}.CertPath(kind), ca.FormatSerial(cert.SerialNumber), cert.NotAfter.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(e.stdout, "%s CA certificate: %s\nserial: %s\nnot after: %s\n", kind, ca.Layout{Dir: *dir}.CertPath(kind), ca.FormatSerial(cert.SerialNumber), cert.NotAfter.Format(time.RFC3339))
 	return nil
 }
 
@@ -263,7 +263,7 @@ func cmdInitBundleKey(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "bundle key: %s\npublic key (hex, bake into firmware): %x\n", ca.Layout{Dir: *dir}.BundleKeyPath(), []byte(pub))
+	_, _ = fmt.Fprintf(e.stdout, "bundle key: %s\npublic key (hex, bake into firmware): %x\n", ca.Layout{Dir: *dir}.BundleKeyPath(), []byte(pub))
 	return nil
 }
 
@@ -305,9 +305,9 @@ func cmdIssueBootstrap(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "bootstrap certificate: %s\nserial: %s\nnot after: %s\nrecord: %s\n", res.CertPath, res.Record.Serial, res.Certificate.NotAfter.Format(time.RFC3339), res.RecordPath)
+	_, _ = fmt.Fprintf(e.stdout, "bootstrap certificate: %s\nserial: %s\nnot after: %s\nrecord: %s\n", res.CertPath, res.Record.Serial, res.Certificate.NotAfter.Format(time.RFC3339), res.RecordPath)
 	if res.KeyPath != "" {
-		fmt.Fprintf(e.stdout, "private key (software device, assurance=software): %s\n", res.KeyPath)
+		_, _ = fmt.Fprintf(e.stdout, "private key (software device, assurance=software): %s\n", res.KeyPath)
 	}
 	return nil
 }
@@ -344,7 +344,7 @@ func cmdIssueServer(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "server certificate: %s\nprivate key: %s\nserial: %s\nnot after: %s\n", res.CertPath, res.KeyPath, ca.FormatSerial(res.Certificate.SerialNumber), res.Certificate.NotAfter.Format(time.RFC3339))
+	_, _ = fmt.Fprintf(e.stdout, "server certificate: %s\nprivate key: %s\nserial: %s\nnot after: %s\n", res.CertPath, res.KeyPath, ca.FormatSerial(res.Certificate.SerialNumber), res.Certificate.NotAfter.Format(time.RFC3339))
 	return nil
 }
 
@@ -378,7 +378,7 @@ func cmdRevoke(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "revoked serial %v (reason %v) at %v; published=%v\n", res["serial"], res["reason"], res["revoked_at"], res["published"])
+	_, _ = fmt.Fprintf(e.stdout, "revoked serial %v (reason %v) at %v; published=%v\n", res["serial"], res["reason"], res["revoked_at"], res["published"])
 	return nil
 }
 
@@ -397,10 +397,10 @@ func cmdCRL(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "issuer: %s\nnumber: %s\nthis update: %s\nnext update: %s\nentries: %d\n",
+	_, _ = fmt.Fprintf(e.stdout, "issuer: %s\nnumber: %s\nthis update: %s\nnext update: %s\nentries: %d\n",
 		crl.Issuer.CommonName, crl.Number, crl.ThisUpdate.Format(time.RFC3339), crl.NextUpdate.Format(time.RFC3339), len(crl.RevokedCertificateEntries))
 	for _, en := range crl.RevokedCertificateEntries {
-		fmt.Fprintf(e.stdout, "  %s  %s  %s\n", ca.FormatSerial(en.SerialNumber), en.RevocationTime.Format(time.RFC3339), ca.ReasonString(en.ReasonCode))
+		_, _ = fmt.Fprintf(e.stdout, "  %s  %s  %s\n", ca.FormatSerial(en.SerialNumber), en.RevocationTime.Format(time.RFC3339), ca.ReasonString(en.ReasonCode))
 	}
 	return nil
 }
@@ -437,10 +437,10 @@ func cmdOCSPCheck(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(e.stdout, "status: %s\nresponder: %s\nproduced at: %s\nnext update: %s\nnonce echoed: %v\n",
+	_, _ = fmt.Fprintf(e.stdout, "status: %s\nresponder: %s\nproduced at: %s\nnext update: %s\nnonce echoed: %v\n",
 		res.Status, res.Responder, res.ProducedAt.Format(time.RFC3339), res.NextUpdate.Format(time.RFC3339), res.NonceEchoed)
 	if res.Status == "revoked" {
-		fmt.Fprintf(e.stdout, "revoked at: %s\nreason: %s\n", res.RevokedAt.Format(time.RFC3339), res.Reason)
+		_, _ = fmt.Fprintf(e.stdout, "revoked at: %s\nreason: %s\n", res.RevokedAt.Format(time.RFC3339), res.Reason)
 	}
 	return nil
 }

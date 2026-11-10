@@ -366,7 +366,6 @@ func TestPrincipalService(t *testing.T) {
 		{Subject: "svc-ota", Method: "jwt"}:       "ota",
 	}
 	for p, want := range cases {
-		p := p
 		if got := p.Service(); got != want {
 			t.Errorf("%+v: %q want %q", p, got, want)
 		}

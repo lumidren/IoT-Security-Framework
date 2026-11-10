@@ -318,7 +318,6 @@ func TestEnrollRejections(t *testing.T) {
 		}, http.StatusUnauthorized, est.HeaderAttestation},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			dev := p.NewBootstrapDevice(t, testutil.Tenant)
 			e := prepare(t, s, dev)
@@ -499,7 +498,6 @@ func TestTPMAttestation(t *testing.T) {
 		}, http.StatusBadRequest, "invalid tpm2 evidence"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			dev := p.NewBootstrapDevice(t, testutil.Tenant)
 			e := prepare(t, s, dev)
@@ -569,7 +567,6 @@ func TestRequestFormatErrors(t *testing.T) {
 		{"content type with params", est.ContentTypePKCS10 + "; charset=utf-8", std, http.StatusOK},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			// Each success consumes the nonce and certifies the key, so use a
 			// fresh nonce, key and CSR for the cases expected to succeed.

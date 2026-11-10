@@ -48,7 +48,6 @@ func TestSplitCombineRoundTrip(t *testing.T) {
 		{"254of255", 8, 255, 254},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			secret := make([]byte, c.secretLen)

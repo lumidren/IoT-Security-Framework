@@ -53,11 +53,11 @@ func requireProductionKMS(cfg *config.Config) error {
 func run(ctx context.Context, stdout, stderr io.Writer) int {
 	cfg, err := config.FromEnv()
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
 	if err := requireProductionKMS(cfg); err != nil {
-		fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
 	logger := logging.New(stdout, cfg.LogLevel)

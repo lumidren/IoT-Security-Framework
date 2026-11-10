@@ -192,7 +192,6 @@ func TestParseSchemaErrors(t *testing.T) {
 		}, "alg"},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			_, err := attest.Parse(c.raw(t))
 			if err == nil {
@@ -279,7 +278,6 @@ func TestTPMEvidenceVerification(t *testing.T) {
 		{"digest not allowed", good, attest.Policy{AKRoots: roots}, attest.CodeForbidden},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			now := time.Now()
 			if c.name == "expired AK" {
