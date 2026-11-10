@@ -14,7 +14,7 @@ members = ["."]
 libfuzzer-sys = "0.4"
 ironmesh-agent = { path = ".." }
 p256 = "0.14"
-ed25519-dalek = "2.2"
+ed25519-dalek = "3.0"
 
 [profile.release]
 debug = 1
