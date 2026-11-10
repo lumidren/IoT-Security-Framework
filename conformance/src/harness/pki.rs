@@ -554,7 +554,7 @@ mod tests {
         assert!(issued_by(&pki.rogue_broker.der, &pki.rogue));
         assert_ne!(pki.rogue.spki_pin(), pki.services.spki_pin(), "the rogue CA is not pinned");
 
-        let key = p256::SecretKey::random(&mut rand::thread_rng());
+        let key = <p256::SecretKey as p256::elliptic_curve::Generate>::generate();
         use p256::pkcs8::EncodePublicKey;
         let spki = key.public_key().to_public_key_der().unwrap();
         let tenant = "7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11";

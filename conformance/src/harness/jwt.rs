@@ -36,7 +36,7 @@ impl ServiceJwt {
     /// A fresh P-256 key for `iss` / `sub`.
     #[must_use]
     pub fn random(issuer: &str, subject: &str) -> Self {
-        Self { key: SigningKey::random(&mut rand::rngs::OsRng), issuer: issuer.to_owned(), subject: subject.to_owned() }
+        Self { key: <SigningKey as p256::elliptic_curve::Generate>::generate(), issuer: issuer.to_owned(), subject: subject.to_owned() }
     }
 
     /// Load a PKCS#8 (`PRIVATE KEY`) or SEC1 (`EC PRIVATE KEY`) P-256 key.

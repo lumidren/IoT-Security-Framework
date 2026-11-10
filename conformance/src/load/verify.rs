@@ -18,7 +18,7 @@ use ironmesh_agent::wire::envelope::{self, Body, DecodeOptions, InMemoryReplaySt
 use ironmesh_agent::wire::error::ErrorCode;
 use ironmesh_agent::wire::ids::{self, Direction, TopicClass};
 use ironmesh_agent::wire::keys::PublicKey;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use tokio::sync::mpsc;
 
 use super::stats::Recorder;
@@ -128,7 +128,7 @@ fn refresh_keys(broker: &Broker, device: &str, keys: &mut HashMap<Vec<u8>, Publi
     for der in broker.client_certs(device) {
         if let Ok(info) = ironmesh_agent::x509::parse_cert(&der) {
             if let Some(pk) = info.p256 {
-                if let Ok(k) = PublicKey::p256_from_sec1(pk.to_encoded_point(false).as_bytes()) {
+                if let Ok(k) = PublicKey::p256_from_sec1(pk.to_sec1_point(false).as_bytes()) {
                     keys.insert(info.kid.clone(), k);
                 }
             }

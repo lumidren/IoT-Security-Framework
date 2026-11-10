@@ -358,7 +358,7 @@ pub fn device_dir(cloud: &Cloud, label: &str, device_id: &str) -> PathBuf {
 /// rcgen failures.
 pub fn harness_bootstrap_key(device_id: &str, tenant_id: &str) -> Result<(p256::SecretKey, Vec<u8>)> {
     use p256::pkcs8::EncodePrivateKey;
-    let sk = p256::SecretKey::random(&mut rand::rngs::OsRng);
+    let sk = <p256::SecretKey as p256::elliptic_curve::Generate>::generate();
     let der = sk.to_pkcs8_der().map_err(|e| anyhow!("{e}"))?;
     let kp = rcgen::KeyPair::try_from(der.as_bytes()).map_err(|e| anyhow!("{e}"))?;
     let mut p = rcgen::CertificateParams::new(Vec::<String>::new())?;

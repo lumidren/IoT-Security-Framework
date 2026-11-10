@@ -207,10 +207,10 @@ mod tests {
 
     #[test]
     fn config_wrap_roundtrip() {
-        let sk = p256::SecretKey::random(&mut rand::thread_rng());
+        let sk = <p256::SecretKey as p256::elliptic_curve::Generate>::generate();
         let pk = sk.public_key();
-        use p256::elliptic_curve::sec1::ToEncodedPoint;
-        let sec1 = pk.to_encoded_point(false);
+        use p256::elliptic_curve::sec1::ToSec1Point;
+        let sec1 = pk.to_sec1_point(false);
         let s = TenantSigner::new("7e4b1a9c-3c2e-4a4f-9c1b-0f0d2d7a6a11", SigningKey::from_bytes(&[2; 32]));
         let inner = s.sign(config_body(3, vec![("log_level".into(), Value::text("info"))]), None).unwrap();
         let wrapped = wrap_config(&inner.wire, sec1.as_bytes()).unwrap();

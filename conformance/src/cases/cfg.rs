@@ -64,10 +64,10 @@ pub async fn cfg_1(ctx: &Ctx) -> Result<Outcome> {
     ensure(!leaks, "the retained copy contains plaintext of the config")?;
     ensure(retained == wrapped, "the retained copy differs from the published Encrypt0")?;
     // Negative control: the same config wrapped to another key cannot be opened.
-    let other = p256::SecretKey::random(&mut rand::rngs::OsRng);
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    let other = <p256::SecretKey as p256::elliptic_curve::Generate>::generate();
+    use p256::elliptic_curve::sec1::ToSec1Point;
     let inner2 = ctx.cloud.signer.sign(downlink::config_body(8, vec![("log_level".to_string(), Value::text("info"))]), None)?;
-    let wrong = downlink::wrap_config(&inner2.wire, other.public_key().to_encoded_point(false).as_bytes())?;
+    let wrong = downlink::wrap_config(&inner2.wire, other.public_key().to_sec1_point(false).as_bytes())?;
     let m = dut.mark();
     ctx.cloud.inject(dut.id(), TopicClass::Config, wrong, false).await?;
     let e = dut

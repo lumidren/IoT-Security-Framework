@@ -38,7 +38,7 @@ hex = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
-p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
+p256 = { version = "0.14", features = ["ecdsa", "pkcs8", "pem"] }
 rand = "0.8"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem", "x509-parser"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

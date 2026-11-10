@@ -666,7 +666,7 @@ mod cost {
         let client = svc.client.clone().with_hook_pool(1).unwrap();
         let tenant = crate::util::uuid4();
         let id = crate::util::new_device_id();
-        let key = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let key = <p256::SecretKey as p256::elliptic_curve::Generate>::generate();
         use p256::pkcs8::EncodePublicKey;
         let spki = key.public_key().to_public_key_der().unwrap();
         let spec =
