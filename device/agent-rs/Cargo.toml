@@ -27,7 +27,7 @@ base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 der = { version = "0.7", features = ["alloc", "oid", "std"] }
-ed25519-dalek = { version = "2.2", features = ["rand_core", "zeroize"] }
+ed25519-dalek = { version = "3.0", features = ["rand_core", "zeroize"] }
 hex = "0.4"
 hkdf = "0.12"
 hmac = "0.12"
