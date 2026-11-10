@@ -759,12 +759,6 @@ static void w_str(wr_t *w, const char *s, size_t n)
     w_bytes(w, s, n);
 }
 
-static size_t vbi_len(uint32_t v)
-{
-    uint8_t b[4];
-    return vbi_encode(v, b);
-}
-
 /* Body was written at buf+5; move it behind the real fixed header. */
 static im_err_t finish(wr_t *w, uint8_t first, size_t *out_len)
 {
