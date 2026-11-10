@@ -269,10 +269,31 @@ jobs:
         run: python -m mypy --strict
       - name: bandit
         working-directory: ${{ matrix.dir }}
-        run: python -m bandit -q -c pyproject.toml -r ${{ matrix.src }}
+        env:
+          DIR: ${{ matrix.dir }}
+          SRC: ${{ matrix.src }}
+        run: |
+          status=0
+          python -m bandit -q -c pyproject.toml -r "${SRC}" -f json -o bandit.json || status=$?
+          [ "${status}" -eq 0 ] || python "${GITHUB_WORKSPACE}/scripts/ci/annotate.py" bandit bandit.json --prefix "${DIR}"
+          exit "${status}"
       - name: pytest (coverage >= ${{ matrix.min }} %)
         working-directory: ${{ matrix.dir }}
-        run: python -m pytest --cov=${{ matrix.cov }} --cov-report=term-missing --cov-report=xml --cov-fail-under=${{ matrix.min }}
+        env:
+          DIR: ${{ matrix.dir }}
+          COV: ${{ matrix.cov }}
+          MIN: ${{ matrix.min }}
+        run: |
+          set -o pipefail
+          status=0
+          python -m pytest --cov="${COV}" --cov-report=term-missing --cov-report=xml --cov-fail-under="${MIN}" \
+            --junitxml=pytest-junit.xml -o junit_family=xunit1 2>&1 | tee "${RUNNER_TEMP}/pytest.log" || status=$?
+          if [ "${status}" -ne 0 ]; then
+            python "${GITHUB_WORKSPACE}/scripts/ci/annotate.py" junit pytest-junit.xml --prefix "${DIR}"
+            python "${GITHUB_WORKSPACE}/scripts/ci/annotate.py" lines "${RUNNER_TEMP}/pytest.log" \
+              '^(TOTAL|FAIL Required test coverage|ERROR )' --title "pytest ${DIR}"
+          fi
+          exit "${status}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -399,9 +420,15 @@ jobs:
             # Release images are signed with the release key (release.yml, environment secret).
             espsecure.py generate_signing_key --version 2 --scheme rsa3072 secure_boot_signing_key.pem
           fi
+          set -o pipefail
+          status=0
           idf.py -B "build-${PROFILE}" -DSDKCONFIG="build-${PROFILE}/sdkconfig" \
-            -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.${PROFILE}" build
+            -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.${PROFILE}" build 2>&1 | tee "${RUNNER_TEMP}/idf.log" || status=$?
           rm -f secure_boot_signing_key.pem
+          if [ "${status}" -ne 0 ]; then
+            grep -E '(error|Error|ERROR)[: ]' "${RUNNER_TEMP}/idf.log" | grep -v '^-- ' | head -n 8 | sed 's|^|::error title=idf build::|'
+          fi
+          exit "${status}"
       - name: production profile gate (generated sdkconfig)
         if: matrix.profile == 'prod'
         run: python3 tools/check_prod_config.py --sdkconfig build-prod/sdkconfig
@@ -600,13 +627,18 @@ jobs:
       - name: run every target for 60 s
         working-directory: ${{ matrix.crate }}
         run: |
+          set -o pipefail
           status=0
           for target in $(cargo +nightly fuzz list); do
             mkdir -p "fuzz/corpus/${target}" "fuzz/artifacts/${target}"
             echo "::group::${target}"
+            log="${RUNNER_TEMP}/fuzz-${target}.log"
             if ! cargo +nightly fuzz run "${target}" "fuzz/corpus/${target}" -- \
-                -max_total_time=60 -max_len=16384 -print_final_stats=1; then
-              echo "::error::fuzz target ${target} found a crash"
+                -max_total_time=60 -max_len=16384 -print_final_stats=1 2>&1 | tee "${log}"; then
+              echo "::error::fuzz target ${target} failed (crash or build error)"
+              # The first build error or the sanitizer/libFuzzer summary, as annotations.
+              grep -E '^error(\[E[0-9]+\])?:|panicked at|==[0-9]+==ERROR|SUMMARY:|deadly signal|cargo:warning=.*error' "${log}" \
+                | head -n 4 | sed "s|^|::error title=fuzz ${target}::|"
               status=1
             fi
             echo "::endgroup::"

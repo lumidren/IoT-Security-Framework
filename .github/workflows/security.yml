@@ -92,7 +92,13 @@ jobs:
           sarif_file: services/${{ matrix.service }}/gosec.sarif
           category: gosec-${{ matrix.service }}
       - name: gate (high severity, medium+ confidence)
-        run: "$(go env GOPATH)/bin/gosec -quiet -severity high -confidence medium ./..."
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          status=0
+          "$(go env GOPATH)/bin/gosec" -quiet -severity high -confidence medium -fmt json -out gosec-gate.json ./... || status=$?
+          [ "${status}" -eq 0 ] || python3 "${GITHUB_WORKSPACE}/scripts/ci/annotate.py" gosec gosec-gate.json --prefix "services/${SERVICE}"
+          exit "${status}"
 
   bandit:
     name: bandit
@@ -150,7 +156,10 @@ jobs:
         run: |
           config=deny.toml
           [ -f "${config}" ] || config="${GITHUB_WORKSPACE}/device/agent-rs/deny.toml"
-          cargo deny --all-features check --config "${config}" advisories bans licenses sources
+          status=0
+          cargo deny --format json --all-features check --config "${config}" advisories bans licenses sources             2> "${RUNNER_TEMP}/deny.jsonl" || status=$?
+          [ "${status}" -eq 0 ] || python3 "${GITHUB_WORKSPACE}/scripts/ci/annotate.py" cargo-deny "${RUNNER_TEMP}/deny.jsonl"
+          exit "${status}"
 
   npm-audit:
     name: npm audit (console)
@@ -199,6 +208,7 @@ jobs:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
       - name: filesystem gate (HIGH/CRITICAL)
+        id: fs-gate
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
@@ -207,8 +217,16 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+          format: json
+          output: trivy-fs-gate.json
           trivyignores: .trivyignore
           skip-dirs: node_modules,target,.venv,.venv-infra,console/.next-mock
+      - name: filesystem gate findings
+        if: failure() && steps.fs-gate.outcome == 'failure' && hashFiles('trivy-fs-gate.json') != ''
+        run: |
+          jq -r '.Results[]? | .Target as $t |
+            ((.Vulnerabilities // [])[] | "::error file=\($t),title=trivy \(.Severity) \(.VulnerabilityID)::\(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "no fix") (\(.Title // "" | .[0:200]))"),
+            ((.Secrets // [])[] | "::error file=\($t),line=\(.StartLine),title=trivy secret \(.RuleID)::\(.Title)")' trivy-fs-gate.json
       - name: IaC config gate (Terraform, Helm, Kubernetes, Dockerfiles; HIGH/CRITICAL)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
