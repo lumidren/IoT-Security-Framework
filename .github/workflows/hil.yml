@@ -1,6 +1,8 @@
 # Hardware-in-the-loop conformance on the self-hosted ESP32-S3 + ATECC608B runner
-# (HARDWARE_SETUP.md section 4). Never runs for pull requests: the trigger is limited to manual
-# dispatch and pushes to main, and the job refuses to run outside this repository.
+# (HARDWARE_SETUP.md section 4). Manual dispatch only, and only once the runner exists: set the
+# repository variable HIL_RUNNER_ENABLED=true after registering it. Without the variable the job is
+# skipped instead of queueing forever for a runner that is not there. The job also refuses to run
+# outside this repository, and never runs for pull requests.
 #
 # Runner environment (/opt/actions-runner/.env): IDF_PATH, IRONMESH_HIL_PORT, IRONMESH_HIL_BAUD,
 # IRONMESH_HIL_TARGET. Secrets: HIL_SECURE_BOOT_KEY (Secure Boot v2 development-mode key of the
@@ -9,15 +11,6 @@ name: hil
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "device/esp32/**"
-      - "device/common/**"
-      - "conformance/**"
-      - "services/**"
-      - "deploy/docker/**"
-      - ".github/workflows/hil.yml"
 
 permissions:
   contents: read
@@ -29,7 +22,7 @@ concurrency:
 jobs:
   hil:
     name: esp32-hil conformance
-    if: github.repository == 'lumidren/IoT-Security-Framework' && github.event_name != 'pull_request'
+    if: github.repository == 'lumidren/IronMesh-IoT-security-framework' && vars.HIL_RUNNER_ENABLED == 'true'
     runs-on: [self-hosted, linux, hil, esp32]
     timeout-minutes: 90
     environment: hil
