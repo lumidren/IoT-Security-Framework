@@ -233,15 +233,26 @@ jobs:
             ((.Vulnerabilities // [])[] | "::error file=\($t),title=trivy \(.Severity) \(.VulnerabilityID)::\(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "no fix") (\(.Title // "" | .[0:200]))"),
             ((.Secrets // [])[] | "::error file=\($t),line=\(.StartLine),title=trivy secret \(.RuleID)::\(.Title)")' trivy-fs-gate.json
       - name: IaC config gate (Terraform, Helm, Kubernetes, Dockerfiles; HIGH/CRITICAL)
+        id: config-gate
+        if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
           scan-ref: .
           severity: HIGH,CRITICAL
           exit-code: "1"
+          format: json
+          output: trivy-config-gate.json
           trivyignores: .trivyignore
           skip-dirs: node_modules,target,.venv,.venv-infra,deploy/k8s
-
+      - name: IaC config gate findings
+        if: failure() && steps.config-gate.outcome == 'failure' && hashFiles('trivy-config-gate.json') != ''
+        run: |
+          jq -r '[.Results[]? | .Target as $t | (.Misconfigurations // [])[] |
+              "\($t):\(.CauseMetadata.StartLine // 0) \(.Severity) \(.ID) \(.Title)"]
+            | "::error title=trivy config gate: \(length) finding(s)::" + join("%0A")' trivy-config-gate.json
+          jq -r '.Results[]? | .Target as $t | (.Misconfigurations // [])[] |
+            "::error file=\($t),line=\(.CauseMetadata.StartLine // 1),title=trivy \(.Severity) \(.ID)::\(.Title): \(.Message // "" | gsub("\n"; " ") | .[0:300])"' trivy-config-gate.json
   gitleaks:
     name: gitleaks
     runs-on: ubuntu-24.04

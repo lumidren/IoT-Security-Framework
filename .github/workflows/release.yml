@@ -115,13 +115,24 @@ jobs:
       # Gate: an image with fixable HIGH/CRITICAL vulnerabilities is never signed, and the
       # clusters only admit signed images (deploy/k8s policies, ARCHITECTURE.md section 7).
       - name: trivy image gate (HIGH/CRITICAL)
+        id: image-gate
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.ref.outputs.ref }}
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+          format: json
+          output: trivy-image-gate.json
           trivyignores: .trivyignore
+      - name: trivy image gate findings
+        if: failure() && steps.image-gate.outcome == 'failure' && hashFiles('trivy-image-gate.json') != ''
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          jq -r --arg n "${NAME}" '[.Results[]? | .Target as $t | (.Vulnerabilities // [])[] |
+              "\($t): \(.Severity) \(.VulnerabilityID) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "no fix")"]
+            | "::error title=trivy image \($n): \(length) finding(s)::" + join("%0A")' trivy-image-gate.json
       - name: CycloneDX SBOM (syft)
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
