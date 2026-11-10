@@ -2,7 +2,7 @@
 dependencies:
   idf: ">=5.3,<5.4"
   # ATECC608B driver (atcab_*), only linked with CONFIG_IRONMESH_SE_ATECC608
-  espressif/esp-cryptoauthlib: "^0.4.1"
+  espressif/esp-cryptoauthlib: "^3.7.9"  # registry versions are 3.x (cryptoauthlib), 0.x never existed
   # Ed25519 verification (crypto_sign_ed25519_verify_detached). mbedTLS 3.6 in IDF 5.3 has no
   # Ed25519 (neither legacy nor PSA builtin), so libsodium is used; see README "Crypto".
   espressif/libsodium: "^1.0.20"
