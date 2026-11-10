@@ -139,6 +139,7 @@ func TestLoadValidation(t *testing.T) {
 		{"bad replication", func(m map[string]string) { m["BRIDGE_KAFKA_TOPIC_REPLICATION"] = "0" }, "BRIDGE_KAFKA_TOPIC_REPLICATION"},
 		{"bad topics create", func(m map[string]string) { m["BRIDGE_KAFKA_TOPICS_CREATE"] = "sure" }, "invalid boolean"},
 		{"bad level", func(m map[string]string) { m["BRIDGE_LOG_LEVEL"] = "loud" }, "unknown level"},
+		{"session expiry beyond uint32", func(m map[string]string) { m["BRIDGE_MQTT_SESSION_EXPIRY"] = "1193047h" }, "BRIDGE_MQTT_SESSION_EXPIRY"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

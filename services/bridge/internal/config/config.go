@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -162,6 +163,11 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.KeepAlive > 65535*time.Second {
 		errs = append(errs, errors.New("BRIDGE_MQTT_KEEPALIVE must be at most 65535s"))
+	}
+	// MQTT v5 Session Expiry Interval is a four-byte integer of seconds (durations are
+	// non-negative: dur() rejects negative values).
+	if cfg.SessionExpiry > time.Duration(math.MaxUint32)*time.Second {
+		errs = append(errs, fmt.Errorf("BRIDGE_MQTT_SESSION_EXPIRY must be at most %ds", uint32(math.MaxUint32)))
 	}
 	switch cfg.KafkaSASLMechanism {
 	case "none":

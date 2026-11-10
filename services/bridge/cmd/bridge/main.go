@@ -70,7 +70,10 @@ func ensureTopics(ctx context.Context, cfg config.Config, producer *bridge.Kafka
 	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	topics := cfg.KafkaTopics()
-	created, err := producer.EnsureTopics(tctx, int32(cfg.KafkaTopicPartitions), int16(cfg.KafkaTopicReplication), topics...)
+	// config.Load bounds partitions to 1..10000 and replication to -1 or 1..32767.
+	partitions := int32(cfg.KafkaTopicPartitions)   // #nosec G115 -- validated range, see config.Load
+	replication := int16(cfg.KafkaTopicReplication) // #nosec G115 -- validated range, see config.Load
+	created, err := producer.EnsureTopics(tctx, partitions, replication, topics...)
 	if err != nil {
 		return err
 	}
@@ -123,13 +126,15 @@ func run() error {
 		log.Warn("broker URL is plaintext; mTLS is mandatory outside local development", "url", cfg.MQTTURL.String())
 	}
 	source, err := bridge.NewMQTTSource(bridge.MQTTConfig{
-		ServerURL:         cfg.MQTTURL,
-		ClientID:          cfg.MQTTClientID,
-		TopicFilter:       cfg.MQTTTopic,
-		TLS:               mqttTLS,
-		KeepAlive:         uint16(cfg.KeepAlive / time.Second),
-		SessionExpiry:     uint32(cfg.SessionExpiry / time.Second),
-		ReceiveMaximum:    uint16(cfg.MaxInflight),
+		ServerURL:   cfg.MQTTURL,
+		ClientID:    cfg.MQTTClientID,
+		TopicFilter: cfg.MQTTTopic,
+		TLS:         mqttTLS,
+		// Ranges are validated by config.Load: keep-alive 0..65535 s, session expiry
+		// 0..MaxUint32 s, in-flight 1..65535.
+		KeepAlive:         uint16(cfg.KeepAlive / time.Second),     // #nosec G115 -- validated range
+		SessionExpiry:     uint32(cfg.SessionExpiry / time.Second), // #nosec G115 -- validated range
+		ReceiveMaximum:    uint16(cfg.MaxInflight),                 // #nosec G115 -- validated range
 		ConnectRetryDelay: cfg.ConnectRetry,
 		Logger:            log,
 		Metrics:           m,
