@@ -22,7 +22,7 @@ keyring = ["dep:keyring"]
 dut-control = []
 
 [dependencies]
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
