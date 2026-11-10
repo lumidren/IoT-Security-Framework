@@ -9,6 +9,9 @@
 #   **/testdata/, **/tests/fixtures/,       test fixtures
 #   console/src/mocks/fixtures/             console demo-mode fixtures (no real credentials)
 #
+# Below the paths, a few exact lines are allowlisted (public RFC test vector values, an invalid
+# placeholder PEM, a type annotation); each is explained next to its regex.
+#
 # Anything else that matches a rule fails the job. Add new public fixtures under one of these
 # directories rather than widening the allowlist.
 
@@ -25,4 +28,21 @@ paths = [
   '''(^|/)testdata/''',
   '''(^|/)tests/fixtures/''',
   '''^console/src/mocks/fixtures/''',
+]
+# Line-level exceptions for known false positives outside those directories. Each entry is an
+# exact public value or a deliberately invalid placeholder, so the files themselves stay scanned.
+regexTarget = "line"
+regexes = [
+  # RFC 9180 Appendix A.3 (DHKEM(P-256), HKDF-SHA256, AES-128-GCM) published test vector in
+  # libs/python/ironmesh-wire/src/ironmesh_wire/vectors.py: shared_secret, key_schedule_context,
+  # secret and exporter_secret of the RFC's base-mode example.
+  '''"shared_secret": "c0d26aeab536609a572b07695d933b589dcf363ff9d93c93adea537aeabb8cb8"''',
+  '''"key_schedule_context": "00b88d4e6d91759e65e87c470e8b9141113e9ad5f0c8ceefc1e088c82e6980500798e486f9c9c09c9b5c753ac72d6005de254c607d1b534ed11d493ae1c1d9ac85"''',
+  '''"secret": "2eb7b6bf138f6b5aff857414a058a3f1750054a9ba1f72c2cf0684a6f20b10e1"''',
+  '''"exporter_secret": "14ad94af484a7ad3ef40e9f3be99ecc6fa9036df9d4920548424df127ee0d99f"''',
+  # Malformed PEM placeholder ("AAAA" body) used by negative tests that expect a parse error
+  # (services/policy/internal/auth/jwt_test.go, conformance/src/harness/keys.rs).
+  '''"-----BEGIN PRIVATE KEY-----\\nAAAA\\n-----END PRIVATE KEY-----(\\n)?"''',
+  # Type annotation, not a value (services/registry/app/crypto.py TenantKeys.cmd_key).
+  '''^\s*cmd_key: ed25519\.Ed25519PrivateKey$''',
 ]
