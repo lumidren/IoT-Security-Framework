@@ -184,7 +184,9 @@ export function AppShell({
               variant="outline"
               className="h-9 w-9 justify-start gap-2 px-0 text-muted-foreground sm:w-64 sm:px-3"
               onClick={() => setPaletteOpen(true)}
-              aria-label="Open command palette"
+              // Starts with the visible text (WCAG 2.5.3 label in name); the name stays available when
+              // the text is hidden on narrow screens.
+              aria-label="Search or jump to… Ctrl K"
               aria-keyshortcuts="Control+K Meta+K"
             >
               <SearchIcon className="mx-auto size-4 sm:mx-0" aria-hidden="true" />

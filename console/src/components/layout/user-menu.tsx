@@ -26,13 +26,20 @@ function initials(name: string): string {
 
 export function UserMenu() {
   const user = useCurrentUser();
+  const shown = initials(user.name);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="rounded-full" aria-label="Account menu">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="rounded-full"
+          // The visible initials lead the name so it contains the visible label (WCAG 2.5.3).
+          aria-label={`${shown}, account menu for ${user.name}`}
+        >
           <Avatar>
             {user.image && <AvatarImage src={user.image} alt="" />}
-            <AvatarFallback>{initials(user.name)}</AvatarFallback>
+            <AvatarFallback>{shown}</AvatarFallback>
           </Avatar>
         </Button>
       </DropdownMenuTrigger>

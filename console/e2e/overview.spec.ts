@@ -26,7 +26,7 @@ test.describe('fleet overview', () => {
 
   test('command palette jumps to a device', async ({ page }) => {
     await page.goto('/');
-    await page.getByRole('button', { name: 'Open command palette' }).click();
+    await page.getByRole('button', { name: /^Search or jump to/ }).click();
     const input = page.getByPlaceholder('Search pages, devices or actions…');
     await input.fill('gateway');
     const option = page.getByRole('option', { name: /dev-/ }).first();
