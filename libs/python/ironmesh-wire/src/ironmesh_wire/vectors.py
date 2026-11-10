@@ -63,7 +63,8 @@ PRODUCT: Final = "gateway-rpi"
 
 
 def _rand(seed: str, length: int) -> bytes:
-    return random.Random(f"ironmesh-test-vectors/{seed}").randbytes(length)
+    # Seeded on purpose: test-vector bytes must be reproducible, not secret.
+    return random.Random(f"ironmesh-test-vectors/{seed}").randbytes(length)  # nosec B311
 
 
 FIRMWARE_IMAGE: Final = _rand("firmware-image", 1000)

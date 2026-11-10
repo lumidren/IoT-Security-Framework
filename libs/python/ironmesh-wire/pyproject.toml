@@ -75,6 +75,13 @@ explicit_package_bases = true
 module = ["pqcrypto.*", "pyhpke.*"]
 ignore_missing_imports = true
 
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+# B101: asserts in src only narrow types after an explicit check (kid type fixed by COSE decoding,
+# body type by the message type, struct sizes at import); every security decision raises a
+# WireError explicitly, so stripping asserts with -O changes nothing.
+skips = ["B101"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
