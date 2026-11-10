@@ -49,9 +49,11 @@ export function MetricTile({
       <Link
         href={href}
         className="block rounded-xl focus-visible:ring-[3px] focus-visible:outline-none"
-        aria-label={`${label}: open details`}
       >
+        {/* The visible label, value and hint name the link (WCAG 2.5.3); the suffix is for
+            screen readers only. */}
         {body}
+        <span className="sr-only">, open details</span>
       </Link>
     );
   }
