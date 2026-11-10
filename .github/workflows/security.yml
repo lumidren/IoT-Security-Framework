@@ -22,7 +22,7 @@ env:
   SEMGREP_IMAGE: semgrep/semgrep:1.99.0
   GITLEAKS_IMAGE: zricethezav/gitleaks:v8.21.2
   OSV_IMAGE: ghcr.io/google/osv-scanner:v1.9.2
-  GOSEC_VERSION: v2.21.4
+  GOSEC_VERSION: v2.30.0 # 5eb1d104ef85ff2c905c877eb600e8c1dee33a22; v2.21.4 pulls an x/tools that no longer compiles on Go 1.27
 
 jobs:
   semgrep:
