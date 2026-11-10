@@ -29,7 +29,7 @@ test.describe('policy editor (owner)', () => {
   test('shows compiler diagnostics on 422 and saves a valid version', async ({ page }) => {
     await page.goto('/policy');
     await expect(page.getByText('Rego source')).toBeVisible();
-    await expect(page.getByText('v7')).toBeVisible();
+    await expect(page.getByRole('list', { name: 'Policy versions' }).getByText('v7')).toBeVisible();
 
     const editor = page.getByRole('textbox', { name: 'Rego policy source' });
     await editor.click();

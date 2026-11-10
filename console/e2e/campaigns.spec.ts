@@ -38,7 +38,8 @@ test.describe('campaign builder', () => {
     ).toBeVisible();
     await second.fill('25');
     await page.getByLabel('Stage 3 target percent').fill('100');
-    await expect(page.getByRole('alert')).toHaveCount(0);
+    // Scoped to the page content: Next's route announcer is also a role=alert element.
+    await expect(page.getByRole('main').getByRole('alert')).toHaveCount(0);
     await expectNoSeriousA11yViolations(page, 'builder: stages');
     await next.click();
 

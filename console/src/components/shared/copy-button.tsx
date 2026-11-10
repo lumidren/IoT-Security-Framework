@@ -30,7 +30,9 @@ export function CopyButton({
     <Button
       variant={variant}
       size={size}
-      aria-label={copied ? `${label} copied` : label}
+      // Icon-only buttons need the label; with visible text, the text is the name (WCAG 2.5.3).
+      aria-label={children ? undefined : copied ? `${label} copied` : label}
+      title={children ? label : undefined}
       onClick={async () => {
         const ok = await copyToClipboard(value);
         if (ok) {
