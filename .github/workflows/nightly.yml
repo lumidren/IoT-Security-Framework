@@ -14,6 +14,10 @@ concurrency:
   group: nightly
   cancel-in-progress: false
 
+env:
+  # cargo-fuzz needs nightly; pinned to a dated build (same as ci.yml).
+  FUZZ_TOOLCHAIN: nightly-2026-10-27
+
 jobs:
   # ------------------------------------------------------------------------------------------
   # scripts/backup/pg_backup.sh -> pg_restore_test.sh against a seeded postgres:16, with an
@@ -125,7 +129,7 @@ jobs:
         with:
           persist-credentials: false
       - name: nightly toolchain
-        run: rustup toolchain install nightly --profile minimal --component llvm-tools-preview
+        run: rustup toolchain install "${FUZZ_TOOLCHAIN}" --profile minimal --component llvm-tools-preview
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-fuzz
@@ -133,15 +137,15 @@ jobs:
         working-directory: ${{ matrix.crate }}
         run: |
           status=0
-          for target in $(cargo +nightly fuzz list); do
+          for target in $(cargo "+${FUZZ_TOOLCHAIN}" fuzz list); do
             mkdir -p "fuzz/corpus/${target}"
             echo "::group::${target}"
-            if ! cargo +nightly fuzz run "${target}" "fuzz/corpus/${target}" -- \
+            if ! cargo "+${FUZZ_TOOLCHAIN}" fuzz run "${target}" "fuzz/corpus/${target}" -- \
                 -max_total_time=600 -max_len=16384 -print_final_stats=1; then
               echo "::error::fuzz target ${target} found a crash"
               status=1
             fi
-            cargo +nightly fuzz cmin "${target}" "fuzz/corpus/${target}" || status=1
+            cargo "+${FUZZ_TOOLCHAIN}" fuzz cmin "${target}" "fuzz/corpus/${target}" || status=1
             echo "::endgroup::"
           done
           exit "${status}"
