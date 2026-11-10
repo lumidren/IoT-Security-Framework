@@ -287,11 +287,10 @@ jobs:
           set -o pipefail
           status=0
           python -m pytest --cov="${COV}" --cov-report=term-missing --cov-report=xml --cov-fail-under="${MIN}" \
-            --junitxml=pytest-junit.xml -o junit_family=xunit1 2>&1 | tee "${RUNNER_TEMP}/pytest.log" || status=$?
+            2>&1 | tee "${RUNNER_TEMP}/pytest.log" || status=$?
           if [ "${status}" -ne 0 ]; then
-            python "${GITHUB_WORKSPACE}/scripts/ci/annotate.py" junit pytest-junit.xml --prefix "${DIR}"
             python "${GITHUB_WORKSPACE}/scripts/ci/annotate.py" lines "${RUNNER_TEMP}/pytest.log" \
-              '^(TOTAL|FAIL Required test coverage|ERROR )' --title "pytest ${DIR}"
+              '^(FAILED|ERROR) |^TOTAL |^FAIL Required test coverage' --title "pytest ${DIR}"
           fi
           exit "${status}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -560,11 +559,11 @@ jobs:
             crate: device/agent-rs
             # Debug build with the control channel + a release build for C-HOOK-1.
             build: cargo build --locked --features dut-control --bin ironmesh-agent && cargo build --locked --release --bin ironmesh-agent
-            dut_args: --dut-bin device/agent-rs/target/debug/ironmesh-agent --release-bin device/agent-rs/target/release/ironmesh-agent
+            dut_args: --agent-bin device/agent-rs/target/debug/ironmesh-agent --agent-release-bin device/agent-rs/target/release/ironmesh-agent
           - dut: esp32-host
             crate: device/esp32/host
             build: cargo build --locked -p im-dut-shim
-            dut_args: --dut-bin device/esp32/host/target/debug/im-dut-shim
+            dut_args: --shim-bin device/esp32/host/target/debug/im-dut-shim
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -574,6 +573,11 @@ jobs:
           workspaces: |
             ${{ matrix.crate }}
             conformance
+      # The suite builds and runs the real policy service (go build ./services/policy/cmd/policy).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: services/policy/go.mod
+          cache-dependency-path: services/policy/go.sum
       - name: build DUT
         working-directory: ${{ matrix.crate }}
         run: |
@@ -591,7 +595,8 @@ jobs:
           mkdir -p reports
           # shellcheck disable=SC2086 # DUT_ARGS is a flag list
           cargo run --locked --release --manifest-path conformance/Cargo.toml --bin ironmesh-conformance -- \
-            --dut "${DUT}" ${DUT_ARGS} --junit "reports/conformance-${DUT}.xml"
+            run --target "${DUT}" ${DUT_ARGS} --junit "reports/conformance-${DUT}.xml" \
+            --report "reports/conformance-${DUT}.md" --results-dir "${RUNNER_TEMP}/conformance-results"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -637,8 +642,8 @@ jobs:
                 -max_total_time=60 -max_len=16384 -print_final_stats=1 2>&1 | tee "${log}"; then
               echo "::error::fuzz target ${target} failed (crash or build error)"
               # The first build error or the sanitizer/libFuzzer summary, as annotations.
-              grep -E '^error(\[E[0-9]+\])?:|panicked at|==[0-9]+==ERROR|SUMMARY:|deadly signal|cargo:warning=.*error' "${log}" \
-                | head -n 4 | sed "s|^|::error title=fuzz ${target}::|"
+              python3 "${GITHUB_WORKSPACE}/scripts/ci/annotate.py" lines "${log}" \
+                '^error(\[E[0-9]+\])?:|error: |panicked at|==[0-9]+==ERROR|SUMMARY:|deadly signal' --title "fuzz ${target}"
               status=1
             fi
             echo "::endgroup::"
