@@ -76,7 +76,20 @@ jobs:
         working-directory: device/esp32/host
         run: |
           rustup show active-toolchain || rustup toolchain install stable --profile minimal
-          cargo build --locked --workspace --all-targets
+          set -o pipefail
+          status=0
+          cargo build --locked --workspace --all-targets 2>&1 | tee "${RUNNER_TEMP}/host-build.log" || status=$?
+          if [ "${status}" -ne 0 ]; then
+            # Surface the C compiler diagnostics (relayed by the cc crate) as annotations.
+            grep -oE '[^ ]+\.[ch]:[0-9]+:[0-9]+: (fatal error|error|warning): .*' "${RUNNER_TEMP}/host-build.log" | sort -u | head -40 |
+              while IFS= read -r d; do
+                f="${d%%:*}"; rest="${d#*:}"; line="${rest%%:*}"
+                rel="$(realpath -m --relative-to="${GITHUB_WORKSPACE}" "${f}" 2>/dev/null || echo "${f}")"
+                echo "::error file=${rel},line=${line},title=host C build::${d#*: }"
+              done
+            grep -E "panicked|error(\[|:)" "${RUNNER_TEMP}/host-build.log" | head -10 | sed 's/^/::error title=host build::/'
+          fi
+          exit "${status}"
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           category: /language:${{ matrix.language }}
