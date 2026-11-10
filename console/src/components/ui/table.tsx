@@ -3,7 +3,13 @@ import { cn } from '@/lib/utils';
 
 function Table({ className, ...props }: React.ComponentProps<'table'>) {
   return (
-    <div data-slot="table-container" className="relative w-full overflow-x-auto">
+    // Focusable so keyboard users can scroll wide tables that have no focusable cells
+    // (axe scrollable-region-focusable, WCAG 2.1.1).
+    <div
+      data-slot="table-container"
+      tabIndex={0}
+      className="relative w-full overflow-x-auto rounded-md focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+    >
       <table
         data-slot="table"
         className={cn('w-full caption-bottom text-sm', className)}
