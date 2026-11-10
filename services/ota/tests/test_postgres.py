@@ -8,6 +8,7 @@ server from the ``pgserver`` wheel; skipped when neither is available.
 from __future__ import annotations
 
 import os
+import secrets
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -75,11 +76,14 @@ def pg_urls(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, str
         await engine.dispose()
 
     owner_db = owner.rsplit("/", 1)[0] + f"/{db_name}"
+    # Per-session password: a server with password auth on TCP (the CI service container) needs
+    # one, a trust-auth server (pgserver) ignores it. Hex only, so it is safe inside the SQL.
+    app_password = secrets.token_hex(16)
 
     async def grant_login() -> None:
         engine = create_async_engine(owner_db, isolation_level="AUTOCOMMIT")
         async with engine.connect() as conn:
-            await conn.execute(text("ALTER ROLE ota_app LOGIN"))
+            await conn.execute(text(f"ALTER ROLE ota_app LOGIN PASSWORD '{app_password}'"))
             await conn.execute(text(f'GRANT CONNECT ON DATABASE "{db_name}" TO ota_app'))
         await engine.dispose()
 
@@ -91,7 +95,7 @@ def pg_urls(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, str
     with ThreadPoolExecutor(1) as pool:
         pool.submit(setup).result()
     host = owner_db.split("@", 1)[1]
-    app = f"postgresql+asyncpg://ota_app@{host}"
+    app = f"postgresql+asyncpg://ota_app:{app_password}@{host}"
     yield owner_db, app
     if server is not None:
         server.cleanup()
