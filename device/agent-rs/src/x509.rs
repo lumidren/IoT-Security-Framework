@@ -119,8 +119,8 @@ pub fn pem_or_der_all(data: &[u8]) -> Result<Vec<Vec<u8>>, X509Error> {
     if data.first() == Some(&0x30) {
         return Ok(vec![data.to_vec()]);
     }
-    let mut reader = std::io::BufReader::new(data);
-    let certs: Result<Vec<_>, _> = rustls_pemfile::certs(&mut reader).collect();
+    use rustls::pki_types::{pem::PemObject, CertificateDer};
+    let certs: Result<Vec<_>, _> = CertificateDer::pem_slice_iter(data).collect();
     let certs = certs.map_err(|e| X509Error::Der(e.to_string()))?;
     if certs.is_empty() {
         return Err(X509Error::Invalid("no certificate found".into()));
