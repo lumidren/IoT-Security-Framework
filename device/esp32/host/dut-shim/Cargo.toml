@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 im-core-tests = { path = "../core-tests" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 p256 = { version = "0.14", features = ["ecdsa", "pkcs8"] }
 sha2 = "0.10"
 base64 = "0.22"
