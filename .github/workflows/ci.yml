@@ -45,7 +45,7 @@ jobs:
       infra: ${{ steps.filter.outputs.infra }}
       compose: ${{ steps.filter.outputs.compose }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: filter
@@ -139,10 +139,10 @@ jobs:
       # Used by services/pki/internal/store/postgres tests only (other services ignore it).
       PKI_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/pki_test?sslmode=disable
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: services/${{ matrix.service }}/go.mod
           cache-dependency-path: services/${{ matrix.service }}/go.sum
@@ -160,7 +160,7 @@ jobs:
         run: go test ./... -race -covermode=atomic -coverprofile=coverage.out
       - name: coverage gate (internal packages >= 90 %)
         run: python3 ../../scripts/ci/go_coverage_gate.py coverage.out --min 90 --include /internal/ --exclude /internal/testutil/ --exclude /storetest/
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: go-coverage-${{ matrix.service }}
@@ -179,10 +179,10 @@ jobs:
       run:
         working-directory: services/policy
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: services/policy/go.mod
           cache-dependency-path: services/policy/go.sum
@@ -249,10 +249,10 @@ jobs:
       OTA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
       IRONMESH_TEST_PG_DSN: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -273,7 +273,7 @@ jobs:
       - name: pytest (coverage >= ${{ matrix.min }} %)
         working-directory: ${{ matrix.dir }}
         run: python -m pytest --cov=${{ matrix.cov }} --cov-report=term-missing --cov-report=xml --cov-fail-under=${{ matrix.min }}
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: python-coverage-${{ matrix.name }}
@@ -295,7 +295,7 @@ jobs:
       run:
         working-directory: device/agent-rs
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # rust-toolchain.toml pins the channel and components; rustup installs them on first use.
@@ -324,7 +324,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends libtss2-dev pkg-config
           cargo check --locked --features tpm --all-targets
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: agent-rs-lcov
@@ -343,7 +343,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: toolchain
@@ -361,7 +361,7 @@ jobs:
       - name: cargo test (C protocol core built with cc)
         working-directory: device/esp32/host
         run: cargo test --locked
-      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: production profile gate (sdkconfig defaults)
@@ -386,7 +386,7 @@ jobs:
         shell: bash
         working-directory: device/esp32
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: build
@@ -405,7 +405,7 @@ jobs:
       - name: production profile gate (generated sdkconfig)
         if: matrix.profile == 'prod'
         run: python3 tools/check_prod_config.py --sdkconfig build-prod/sdkconfig
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: esp32-${{ matrix.profile }}-build
           path: |
@@ -428,10 +428,10 @@ jobs:
       run:
         working-directory: console
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -457,10 +457,10 @@ jobs:
       run:
         working-directory: console
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -472,7 +472,7 @@ jobs:
           CI: "true"
           NEXT_TELEMETRY_DISABLED: "1"
           AUTH_SECRET: ${{ secrets.CONSOLE_E2E_AUTH_SECRET || 'ci-only-secret-not-for-production-0123456789' }}
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-report
@@ -491,10 +491,10 @@ jobs:
       run:
         working-directory: console
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -507,7 +507,7 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
           AUTH_SECRET: ${{ secrets.CONSOLE_E2E_AUTH_SECRET || 'ci-only-secret-not-for-production-0123456789' }}
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: lighthouse-report
@@ -539,7 +539,7 @@ jobs:
             build: cargo build --locked -p im-dut-shim
             dut_args: --dut-bin device/esp32/host/target/debug/im-dut-shim
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
@@ -565,7 +565,7 @@ jobs:
           # shellcheck disable=SC2086 # DUT_ARGS is a flag list
           cargo run --locked --release --manifest-path conformance/Cargo.toml --bin ironmesh-conformance -- \
             --dut "${DUT}" ${DUT_ARGS} --junit "reports/conformance-${DUT}.xml"
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: conformance-${{ matrix.dut }}
@@ -589,7 +589,7 @@ jobs:
       matrix:
         crate: [device/agent-rs, device/esp32/host]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: nightly toolchain
@@ -612,7 +612,7 @@ jobs:
             echo "::endgroup::"
           done
           exit "${status}"
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: fuzz-crashes-${{ strategy.job-index }}
@@ -631,10 +631,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: threat model references
@@ -664,10 +664,10 @@ jobs:
       TFLINT_IMAGE: ghcr.io/terraform-linters/tflint:v0.54.0
       PROMETHEUS_IMAGE: prom/prometheus:v3.1.0
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: python tooling
@@ -743,7 +743,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: docker compose config

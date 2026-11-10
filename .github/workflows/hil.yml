@@ -45,7 +45,7 @@ jobs:
       IRONMESH_FLEET_ANOMALOUS: "0"
       IRONMESH_STACK_ONLY: "1"
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           clean: true
@@ -140,7 +140,7 @@ jobs:
           docker compose -f "${COMPOSE_FILE}" ps -a > reports/compose-ps.txt 2>&1 || true
           docker compose -f "${COMPOSE_FILE}" logs --no-color --timestamps > reports/compose.log 2>&1 || true
 
-      - uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: hil-esp32-${{ github.run_id }}
