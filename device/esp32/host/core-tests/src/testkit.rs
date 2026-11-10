@@ -225,10 +225,10 @@ pub fn bundle(signer: &EdSigner, tenant_pub: &[u8; 32], fw_keys: &[&[u8]], host:
 pub fn wrap_config(device_pub: &[u8; 65], plaintext: &[u8]) -> Vec<u8> {
     use crate::crypto::{im_crypto_aes_gcm_encrypt, im_crypto_random};
     use hkdf::Hkdf;
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use p256::elliptic_curve::sec1::ToSec1Point;
     // ephemeral key and DH
-    let sk_e = p256::SecretKey::random(&mut rand_core::OsRng);
-    let enc_pt = sk_e.public_key().to_encoded_point(false);
+    let sk_e = <p256::SecretKey as p256::elliptic_curve::Generate>::generate();
+    let enc_pt = sk_e.public_key().to_sec1_point(false);
     let mut enc = [0u8; 65];
     enc.copy_from_slice(enc_pt.as_bytes());
     let pk_r = p256::PublicKey::from_sec1_bytes(device_pub).expect("device key");

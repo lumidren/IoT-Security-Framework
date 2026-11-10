@@ -61,7 +61,7 @@ impl SoftIdentity {
 
     /// Fresh random identity (a "new key generated in the secure element").
     pub fn random() -> Box<Self> {
-        let sk = p256::SecretKey::random(&mut rand_core::OsRng);
+        let sk = <p256::SecretKey as p256::elliptic_curve::Generate>::generate();
         Box::new(Self {
             sk,
             se_type: CString::new("software").unwrap(),
@@ -70,8 +70,8 @@ impl SoftIdentity {
 
     /// Uncompressed 65-byte public key.
     pub fn public_raw(&self) -> [u8; 65] {
-        use p256::elliptic_curve::sec1::ToEncodedPoint;
-        let pt = self.sk.public_key().to_encoded_point(false);
+        use p256::elliptic_curve::sec1::ToSec1Point;
+        let pt = self.sk.public_key().to_sec1_point(false);
         let mut out = [0u8; 65];
         out.copy_from_slice(pt.as_bytes());
         out
