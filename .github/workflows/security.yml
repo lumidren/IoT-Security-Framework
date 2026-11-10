@@ -224,6 +224,11 @@ jobs:
       - name: filesystem gate findings
         if: failure() && steps.fs-gate.outcome == 'failure' && hashFiles('trivy-fs-gate.json') != ''
         run: |
+          # One summary annotation with every finding (GitHub keeps 10 annotations per step).
+          jq -r '[.Results[]? | .Target as $t |
+            ((.Vulnerabilities // [])[] | "\($t): \(.Severity) \(.VulnerabilityID) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "no fix")"),
+            ((.Secrets // [])[] | "\($t):\(.StartLine) secret \(.RuleID)")]
+            | "::error title=trivy fs gate: \(length) finding(s)::" + join("%0A")' trivy-fs-gate.json
           jq -r '.Results[]? | .Target as $t |
             ((.Vulnerabilities // [])[] | "::error file=\($t),title=trivy \(.Severity) \(.VulnerabilityID)::\(.PkgName) \(.InstalledVersion) -> \(.FixedVersion // "no fix") (\(.Title // "" | .[0:200]))"),
             ((.Secrets // [])[] | "::error file=\($t),line=\(.StartLine),title=trivy secret \(.RuleID)::\(.Title)")' trivy-fs-gate.json
