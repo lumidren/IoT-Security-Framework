@@ -52,7 +52,7 @@ x509-cert = { version = "0.2", features = ["std"] }
 zeroize = { version = "1.8", features = ["derive"] }
 ml-dsa = { version = "0.1", optional = true }
 tss-esapi = { version = "7.6", optional = true }
-optee-teec = { version = "0.9", optional = true }
+optee-teec = { version = "0.10", optional = true }
 keyring = { version = "3", optional = true, features = ["linux-native", "windows-native", "apple-native"] }
 
 [dev-dependencies]

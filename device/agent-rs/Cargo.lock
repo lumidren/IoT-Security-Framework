@@ -1341,7 +1341,6 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -1385,9 +1384,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "optee-teec"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfb228c6da0de39021edabf5f960e83af7417f6b3ab456305af593372771a2f7"
+checksum = "ce7042ce46b1cd5d426be8b63c51d917bc776a89559f5aa8aa9ac3c52dd26fb4"
 dependencies = [
  "document-features",
  "hex",
@@ -1399,9 +1398,9 @@ dependencies = [
 
 [[package]]
 name = "optee-teec-sys"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c347bdb9105a695c0866c21059e05ef3a2cdc06ec9341432e5f3b400913e392"
+checksum = "b1f847e243f1236683f4d4833d916c3a599821f8024e55e2549aeef3426720cf"
 dependencies = [
  "document-features",
 ]
