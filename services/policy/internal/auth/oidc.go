@@ -354,13 +354,17 @@ func (v *OIDCVerifier) refreshLocked(ctx context.Context) error {
 	return nil
 }
 
+// getJSON fetches the discovery document or the JWKS. u is never request-derived: it is the
+// configured issuer (POLICY_OIDC_ISSUER) or JWKS URL, or the jwks_uri of the issuer's own
+// discovery document, which refreshLocked accepts only after the issuer matches and the scheme is
+// https (http only for an http issuer in development).
 func (v *OIDCVerifier) getJSON(ctx context.Context, u string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil) // #nosec G704 -- operator-configured IdP URL, see above
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrDiscovery, err)
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := v.cfg.HTTPClient.Do(req)
+	resp, err := v.cfg.HTTPClient.Do(req) // #nosec G704 -- operator-configured IdP URL, see above
 	if err != nil {
 		return fmt.Errorf("%w: GET %s: %v", ErrDiscovery, u, err)
 	}
