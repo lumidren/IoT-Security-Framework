@@ -178,7 +178,7 @@ jobs:
         with:
           persist-credentials: false
       - name: filesystem (vulnerabilities, secrets, licenses) -> SARIF
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -194,7 +194,7 @@ jobs:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
       - name: filesystem gate (HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -205,7 +205,7 @@ jobs:
           trivyignores: .trivyignore
           skip-dirs: node_modules,target,.venv,.venv-infra,console/.next-mock
       - name: IaC config gate (Terraform, Helm, Kubernetes, Dockerfiles; HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
           scan-ref: .

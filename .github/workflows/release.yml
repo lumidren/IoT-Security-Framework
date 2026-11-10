@@ -115,7 +115,7 @@ jobs:
       # Gate: an image with fixable HIGH/CRITICAL vulnerabilities is never signed, and the
       # clusters only admit signed images (deploy/k8s policies, ARCHITECTURE.md section 7).
       - name: trivy image gate (HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # 0.29.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ steps.ref.outputs.ref }}
           severity: HIGH,CRITICAL
