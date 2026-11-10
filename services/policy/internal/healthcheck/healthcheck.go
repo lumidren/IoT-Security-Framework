@@ -90,7 +90,7 @@ func newClient(u *url.URL, timeout time.Duration) *http.Client {
 			// The service certificate names its DNS SANs, not the loopback address the in-container
 			// probe dials, so verification is skipped for loopback https only (see package doc).
 			// nosemgrep: security.semgrep.ironmesh-go-tls-insecure-skip-verify
-			transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // #nosec G402 -- loopback-only probe
+			transport.TLSClientConfig.InsecureSkipVerify = true // #nosec G402 -- loopback-only probe, see package doc
 		}
 	}
 	return &http.Client{Timeout: timeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
