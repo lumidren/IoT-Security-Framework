@@ -678,7 +678,16 @@ jobs:
         with:
           terraform_wrapper: false
       - name: terraform fmt
-        run: terraform fmt -check -recursive deploy/terraform
+        run: |
+          status=0
+          for f in $(terraform fmt -check -recursive -list=true deploy/terraform || true); do
+            status=1
+            # The diff goes into the annotation (newlines encoded) so it is readable without logs.
+            diff="$(terraform fmt -diff -check "${f}" || true)"
+            diff="${diff//'%'/'%25'}"; diff="${diff//$'\r'/'%0D'}"; diff="${diff//$'\n'/'%0A'}"
+            echo "::error file=${f},title=terraform fmt::${diff}"
+          done
+          exit "${status}"
       - name: terraform validate
         run: |
           for dir in deploy/terraform/aws deploy/terraform/aws/bootstrap; do
