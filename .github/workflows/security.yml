@@ -50,10 +50,15 @@ jobs:
           category: semgrep
       - name: gate (ERROR severity = high)
         run: |
+          status=0
           docker run --rm -v "${PWD}:/src" -w /src "${SEMGREP_IMAGE}" semgrep scan \
             --config p/ci --config p/golang --config p/python --config p/rust \
             --config p/typescript --config p/secrets --config security/semgrep \
-            --metrics off --severity ERROR --error
+            --metrics off --severity ERROR --error --json --output semgrep-gate.json || status=$?
+          # One annotation per finding so the gate result is readable without the job log.
+          jq -r '.results[] | "::error file=\(.path),line=\(.start.line),endLine=\(.end.line),title=semgrep \(.check_id)::\(.extra.message | gsub("[\r\n]+"; " ") | .[0:400])"' semgrep-gate.json
+          jq -r '.errors[]? | "::warning title=semgrep scan error::\(.type // "error"): \((.message // "") | gsub("[\r\n]+"; " ") | .[0:300])"' semgrep-gate.json
+          exit "${status}"
 
   gosec:
     name: gosec (${{ matrix.service }})
@@ -228,10 +233,17 @@ jobs:
           persist-credentials: false
       - name: scan history
         run: |
-          docker run --rm -v "${PWD}:/repo" -w /repo \
-            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
-            "${GITLEAKS_IMAGE}" detect --source /repo --config /repo/.gitleaks.toml --redact \
-            --report-format sarif --report-path /repo/gitleaks.sarif --exit-code 1
+          gitleaks() {
+            docker run --rm -v "${PWD}:/repo" -w /repo \
+              -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+              "${GITLEAKS_IMAGE}" detect --source /repo --config /repo/.gitleaks.toml --redact "$@"
+          }
+          status=0
+          gitleaks --report-format json --report-path /repo/gitleaks.json --exit-code 1 || status=$?
+          # Redacted findings as annotations (rule, path, line, commit); no secret values.
+          jq -r '.[] | "::error file=\(.File),line=\(.StartLine),title=gitleaks \(.RuleID)::\(.RuleID) in \(.File):\(.StartLine) (commit \(.Commit[0:12]))"' gitleaks.json
+          gitleaks --report-format sarif --report-path /repo/gitleaks.sarif --exit-code 0
+          exit "${status}"
       - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: always() && hashFiles('gitleaks.sarif') != ''
         with:
