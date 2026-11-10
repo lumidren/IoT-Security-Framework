@@ -7,7 +7,7 @@ import { CheckIcon, XIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ConfirmDialog } from '@/components/shared/confirm-dialog';
 import { DataTable } from '@/components/shared/data-table';
 import { PaginationControls } from '@/components/shared/pagination-controls';
@@ -163,15 +163,21 @@ export function ProvisioningView() {
           <TabsTrigger value="provisioned">Enrolled, pending activation</TabsTrigger>
           <TabsTrigger value="failed">Failed</TabsTrigger>
         </TabsList>
+        {/* Each tab controls a real panel (aria-controls must resolve); the table below follows the
+            selected state. */}
+        <TabsContent value="manufactured" className="text-sm text-muted-foreground">
+          Manufactured devices with a bootstrap certificate that have not completed EST enrollment.
+          Approving moves them to provisioned.
+        </TabsContent>
+        <TabsContent value="provisioned" className="text-sm text-muted-foreground">
+          Devices that passed attestation. When the tenant requires manual approval, activate them
+          here.
+        </TabsContent>
+        <TabsContent value="failed" className="text-sm text-muted-foreground">
+          Enrollment attempts rejected by the PKI (attestation, nonce or assurance policy). Approve
+          to retry or reject to record a decision.
+        </TabsContent>
       </Tabs>
-      <p className="text-sm text-muted-foreground">
-        {state === 'manufactured' &&
-          'Manufactured devices with a bootstrap certificate that have not completed EST enrollment. Approving moves them to provisioned.'}
-        {state === 'provisioned' &&
-          'Devices that passed attestation. When the tenant requires manual approval, activate them here.'}
-        {state === 'failed' &&
-          'Enrollment attempts rejected by the PKI (attestation, nonce or assurance policy). Approve to retry or reject to record a decision.'}
-      </p>
       {items.isError ? (
         <ErrorState error={items.error} onRetry={() => void items.refetch()} />
       ) : (
