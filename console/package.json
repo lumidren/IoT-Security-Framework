@@ -82,5 +82,10 @@
     "workerDirectory": [
       "public"
     ]
+  },
+  "overrides": {
+    "next": {
+      "postcss": "^8.5.32"
+    }
   }
 }
