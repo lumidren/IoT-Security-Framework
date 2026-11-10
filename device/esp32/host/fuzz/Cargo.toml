@@ -10,7 +10,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-sha2 = "0.10"
+sha2 = "0.11"
 # feature "fuzz": the C core is compiled with MSVC /fsanitize-coverage (+ /fsanitize=address
 # when IM_FUZZ_ASAN=1, see RESULTS.md)
 im-core-tests = { path = "../core-tests", features = ["fuzz"] }
