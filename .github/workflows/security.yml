@@ -157,7 +157,7 @@ jobs:
           config=deny.toml
           [ -f "${config}" ] || config="${GITHUB_WORKSPACE}/device/agent-rs/deny.toml"
           status=0
-          cargo deny --format json --all-features check --config "${config}" advisories bans licenses sources             2> "${RUNNER_TEMP}/deny.jsonl" || status=$?
+          cargo deny --format json --all-features --config "${config}" check advisories bans licenses sources             2> "${RUNNER_TEMP}/deny.jsonl" || status=$?
           [ "${status}" -eq 0 ] || python3 "${GITHUB_WORKSPACE}/scripts/ci/annotate.py" cargo-deny "${RUNNER_TEMP}/deny.jsonl"
           exit "${status}"
 
