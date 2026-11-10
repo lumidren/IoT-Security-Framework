@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Mutex;
 
-use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+use p256::elliptic_curve::sec1::{FromSec1Point, ToSec1Point};
 use tss_esapi::attributes::ObjectAttributesBuilder;
 use tss_esapi::constants::tss::TPM2_RH_NULL;
 use tss_esapi::constants::StructureTag;
@@ -186,8 +186,8 @@ fn public_to_p256(public: &Public) -> Result<p256::PublicKey, IdentityError> {
     let mut yb = [0u8; 32];
     xb[32 - x.len()..].copy_from_slice(x);
     yb[32 - y.len()..].copy_from_slice(y);
-    let point = p256::EncodedPoint::from_affine_coordinates(&xb.into(), &yb.into(), false);
-    Option::from(p256::PublicKey::from_encoded_point(&point)).ok_or_else(|| IdentityError::Backend("TPM returned an invalid point".into()))
+    let point = p256::Sec1Point::from_affine_coordinates(&xb.into(), &yb.into(), false);
+    Option::from(p256::PublicKey::from_sec1_point(&point)).ok_or_else(|| IdentityError::Backend("TPM returned an invalid point".into()))
 }
 
 struct Worker {
@@ -272,7 +272,7 @@ impl Worker {
 
     fn ecdh(&mut self, slot: KeySlot, peer: &p256::PublicKey) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
         let (handle, _) = self.load(slot.name())?;
-        let point = peer.to_encoded_point(false);
+        let point = peer.to_sec1_point(false);
         let (Some(x), Some(y)) = (point.x(), point.y()) else {
             return Err(IdentityError::Crypto("peer point at infinity".into()));
         };

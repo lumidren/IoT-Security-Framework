@@ -69,7 +69,7 @@ impl PublicKey {
     #[must_use]
     pub fn raw(&self) -> Vec<u8> {
         match self {
-            PublicKey::P256(k) => k.to_encoded_point(false).as_bytes().to_vec(),
+            PublicKey::P256(k) => k.to_sec1_point(false).as_bytes().to_vec(),
             PublicKey::Ed25519(k) => k.to_bytes().to_vec(),
         }
     }

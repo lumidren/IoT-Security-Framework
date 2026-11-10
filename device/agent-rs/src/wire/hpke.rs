@@ -96,8 +96,8 @@ fn deserialize_public_key(data: &[u8]) -> WireResult<p256::PublicKey> {
 }
 
 fn serialize_public_key(pk: &p256::PublicKey) -> Vec<u8> {
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
-    pk.to_encoded_point(false).as_bytes().to_vec()
+    use p256::elliptic_curve::sec1::ToSec1Point;
+    pk.to_sec1_point(false).as_bytes().to_vec()
 }
 
 fn extract_and_expand(dh: &[u8], kem_context: &[u8]) -> WireResult<Zeroizing<Vec<u8>>> {
@@ -137,7 +137,7 @@ impl EcdhRecipient for p256::SecretKey {
 pub fn encap(pk_r: &p256::PublicKey, ikm_e: Option<&[u8]>) -> WireResult<(Zeroizing<Vec<u8>>, Vec<u8>)> {
     let sk_e = match ikm_e {
         Some(ikm) => derive_key_pair(ikm)?,
-        None => p256::SecretKey::random(&mut rand::rngs::OsRng),
+        None => <p256::SecretKey as p256::elliptic_curve::Generate>::generate(),
     };
     let dh = sk_e.ecdh(pk_r)?;
     let enc = serialize_public_key(&sk_e.public_key());

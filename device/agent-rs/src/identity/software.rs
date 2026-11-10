@@ -237,7 +237,7 @@ impl SoftwareIdentity {
     }
 
     fn generate_into(&self, slot: KeySlot) -> Result<p256::PublicKey, IdentityError> {
-        let key = p256::SecretKey::random(&mut rand::rngs::OsRng);
+        let key = <p256::SecretKey as p256::elliptic_curve::Generate>::generate();
         let pk = key.public_key();
         self.install_key(slot, key)?;
         Ok(pk)

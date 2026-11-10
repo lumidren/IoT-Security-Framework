@@ -21,7 +21,7 @@
 use std::sync::{mpsc, Mutex};
 
 use optee_teec::{Context, Operation, ParamNone, ParamTmpRef, ParamType, ParamValue, Session, Uuid};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use zeroize::Zeroizing;
 
 use super::{Assurance, IdentityError, IdentityProvider, KeySlot};
@@ -177,7 +177,7 @@ impl IdentityProvider for OpteeIdentity {
     }
 
     fn ecdh(&self, slot: KeySlot, peer: &p256::PublicKey) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
-        let point = peer.to_encoded_point(false).as_bytes().to_vec();
+        let point = peer.to_sec1_point(false).as_bytes().to_vec();
         let z = Zeroizing::new(self.call(|r| Req::Ecdh(slot, point, r))?);
         let mut out = Zeroizing::new([0u8; 32]);
         if z.len() != 32 {

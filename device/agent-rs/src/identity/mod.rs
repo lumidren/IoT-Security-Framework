@@ -156,8 +156,8 @@ pub struct IdentityRecipient {
 
 impl EcdhRecipient for IdentityRecipient {
     fn public_key_sec1(&self) -> Vec<u8> {
-        use p256::elliptic_curve::sec1::ToEncodedPoint;
-        self.provider.public_key(self.slot).map(|pk| pk.to_encoded_point(false).as_bytes().to_vec()).unwrap_or_default()
+        use p256::elliptic_curve::sec1::ToSec1Point;
+        self.provider.public_key(self.slot).map(|pk| pk.to_sec1_point(false).as_bytes().to_vec()).unwrap_or_default()
     }
 
     fn ecdh(&self, peer: &p256::PublicKey) -> WireResult<Zeroizing<[u8; 32]>> {
