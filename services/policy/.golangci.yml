@@ -1,0 +1,14 @@
+version: "2"
+
+# Default "standard" linters (errcheck, govet, ineffassign, staticcheck, unused).
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  exclusions:
+    # golangci-lint v2's replacement for the v1 default exclusions: unchecked errors from Close,
+    # Flush, os.Remove(All), print functions and Setenv, which are cleanup or best-effort calls.
+    presets:
+      - std-error-handling

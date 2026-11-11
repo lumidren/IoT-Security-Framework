@@ -29,6 +29,10 @@ linters:
     gocritic:
       enabled-tags: [diagnostic, performance]
   exclusions:
+    # golangci-lint v2's replacement for the v1 default exclusions: unchecked errors from Close,
+    # Flush, os.Remove(All), print functions and Setenv, which are cleanup or best-effort calls.
+    presets:
+      - std-error-handling
     rules:
       - path: _test\.go
         linters: [gosec, errcheck, unparam, bodyclose, gocritic]
