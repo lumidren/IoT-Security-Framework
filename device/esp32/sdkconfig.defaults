@@ -14,6 +14,9 @@ CONFIG_MBEDTLS_SSL_PROTO_TLS1_2=n
 # client in wpa_supplicant needs TLS 1.2, so it is compiled out together with TLS 1.2.
 CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
 CONFIG_ESP_WIFI_MBEDTLS_TLS_CLIENT=n
+# Renegotiation exists only in TLS 1.2 (and is a legacy attack surface); esp-tls configures it
+# whenever it is enabled, so it is disabled together with TLS 1.2.
+CONFIG_MBEDTLS_SSL_RENEGOTIATION=n
 CONFIG_MBEDTLS_SSL_TLS1_3_KEXM_EPHEMERAL=y
 CONFIG_MBEDTLS_CLIENT_SSL_SESSION_TICKETS=y
 CONFIG_MBEDTLS_SSL_ALPN=y
