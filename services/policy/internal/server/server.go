@@ -116,7 +116,10 @@ func Serve(ctx context.Context, ln net.Listener, h http.Handler, timeout time.Du
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
-	<-errCh
+	// After Shutdown, Serve returns http.ErrServerClosed; anything else is a real failure.
+	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
 	return nil
 }
 
