@@ -34,7 +34,8 @@ test.describe('policy editor (owner)', () => {
     const editor = page.getByRole('textbox', { name: 'Rego policy source' });
     await editor.click();
     await page.keyboard.press('Control+End');
-    await page.keyboard.type('\nbroken_rule if {\n  input.x == 1\n');
+    // insertText bypasses the editor's bracket auto-closing, so the rule stays unclosed.
+    await page.keyboard.insertText('\nbroken_rule if {\n  input.x == 1\n');
     await expect(page.getByText('Unsaved changes')).toBeVisible();
 
     await page.getByRole('button', { name: 'Save new version' }).click();
@@ -46,11 +47,14 @@ test.describe('policy editor (owner)', () => {
     await expectNoSeriousA11yViolations(page, 'policy save diagnostics');
 
     await dialog.getByRole('button', { name: 'Cancel' }).click();
-    await page.keyboard.type('}\n');
+    // The dialog returns focus to its trigger; put the caret back at the end of the source.
+    await editor.click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.insertText('}\n');
     await page.getByRole('button', { name: 'Save new version' }).click();
     await page.getByRole('dialog').getByLabel('Change message').fill('e2e: add broken_rule');
     await page.getByRole('dialog').getByRole('button', { name: 'Compile and save' }).click();
     await expect(page.getByText('Policy saved as version 8')).toBeVisible();
-    await expect(page.getByText('v8')).toBeVisible();
+    await expect(page.getByRole('list', { name: 'Policy versions' }).getByText('v8')).toBeVisible();
   });
 });
