@@ -18,6 +18,10 @@
 # HELM_VALUES_SSM_PARAMETER (Terraform `helm_values` output stored in SSM), SMOKE_HEALTH_URLS,
 # PROMETHEUS_NAMESPACE, PROMETHEUS_SERVICE; secrets: SMOKE_FLEET_IDENTITY_TGZ_B64,
 # SMOKE_FLEET_TOML (see scripts/ci/smoke_enroll.sh).
+#
+# The whole workflow is opt-in: it runs only when the repository variable DEPLOY_ENABLED is
+# `true` (Settings -> Secrets and variables -> Actions -> Variables), i.e. once the AWS account,
+# EKS cluster and the variables above exist. Until then every job is skipped, not failed.
 name: deploy
 
 on:
@@ -49,8 +53,9 @@ jobs:
   resolve:
     name: resolve release
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+      vars.DEPLOY_ENABLED == 'true' && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
