@@ -69,7 +69,7 @@ flowchart LR
   end
 
   subgraph Edge["Trust boundary: Internet"]
-    EMQX["EMQX 5<br/>MQTT 5 · TLS 1.3 · mTLS · ALPN mqtt"]
+    EMQX["EMQX 5<br/>MQTT 5 · TLS 1.3 · mTLS"]
     PKI["PKI (Go)<br/>EST RFC 7030 · OCSP · CRL<br/>KMS / HSM keys"]
   end
 
@@ -165,7 +165,8 @@ On re-enrollment the previous serial is revoked after a one-hour grace period.
 
 ### 3. Transport: TLS 1.3, mutual auth, pinning
 
-- **TLS 1.3 only**, ALPN `mqtt`, client certificate required (`verify_peer`,
+- **TLS 1.3 only**, devices offer ALPN `mqtt` (EMQX 5.8 cannot negotiate it, so a broker that
+  selects no protocol is accepted and any other protocol rejected), client certificate required (`verify_peer`,
   `fail_if_no_peer_cert`). A TLS 1.2-only server is rejected by both firmware targets.
 - **Pinning.** Devices validate the chain *and* compare the Services CA SPKI SHA-256 against pins
   delivered in the signed bundle. A rogue broker with a publicly trusted certificate gets
