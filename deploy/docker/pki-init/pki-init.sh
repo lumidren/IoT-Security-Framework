@@ -89,7 +89,9 @@ issue() {
   chmod 0600 "${out}/tls.key"
   # Public key for ES256 service-JWT verification (OTA_SERVICE_PUBLIC_KEYS_DIR, PKI JWT allow list).
   openssl x509 -in "${out}/tls.crt" -pubkey -noout > "${TRUST_DIR}/service-pubkeys/${name}.pem"
-  cp "${TRUST_DIR}/service-pubkeys/${name}.pem" "${TRUST_DIR}/service-pubkeys/${cn}.pem"
+  if [ "${cn}" != "${name}" ]; then
+    cp "${TRUST_DIR}/service-pubkeys/${name}.pem" "${TRUST_DIR}/service-pubkeys/${cn}.pem"
+  fi
 }
 
 issue pki pki "pki,localhost,127.0.0.1${PKI_EXTRA_SANS:+,${PKI_EXTRA_SANS}}"
