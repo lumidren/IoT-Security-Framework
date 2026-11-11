@@ -1,6 +1,7 @@
 package ca
 
 import (
+	"bytes"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -119,7 +120,7 @@ func IssuedBy(leaf, issuer *x509.Certificate) bool {
 	if leaf == nil || issuer == nil {
 		return false
 	}
-	if string(leaf.RawIssuer) != string(issuer.RawSubject) {
+	if !bytes.Equal(leaf.RawIssuer, issuer.RawSubject) {
 		return false
 	}
 	return leaf.CheckSignatureFrom(issuer) == nil

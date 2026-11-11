@@ -69,7 +69,7 @@ func TestRunServesAndStops(t *testing.T) {
 	fast := file.KDFParams{Time: 1, Memory: 8 * 1024, Threads: 1}
 	prov := &file.Provider{Passphrase: []byte("pw"), KDF: fast}
 	ctx := context.Background()
-	if _, err := ceremony.InitRoot(ctx, ceremony.RootOptions{Dir: dir, Provider: prov}); err != nil {
+	if _, err := ceremony.InitRoot(ctx, &ceremony.RootOptions{Dir: dir, Provider: prov}); err != nil {
 		t.Fatal(err)
 	}
 	root, err := prov.Open(ctx, ca.Layout{Dir: dir}.KeyPath(ca.KindRoot))

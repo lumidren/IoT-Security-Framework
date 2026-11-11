@@ -35,7 +35,7 @@ func buildDir(t *testing.T) (string, kms.Provider) {
 	dir := t.TempDir()
 	prov := fileProvider()
 	ctx := context.Background()
-	if _, err := ceremony.InitRoot(ctx, ceremony.RootOptions{Dir: dir, Provider: prov}); err != nil {
+	if _, err := ceremony.InitRoot(ctx, &ceremony.RootOptions{Dir: dir, Provider: prov}); err != nil {
 		t.Fatalf("InitRoot: %v", err)
 	}
 	rootSigner, err := prov.Open(ctx, ca.Layout{Dir: dir}.KeyPath(ca.KindRoot))
@@ -93,7 +93,7 @@ func TestFullOfflineCeremony(t *testing.T) {
 	}
 
 	// Refuse to overwrite existing material.
-	if _, err := ceremony.InitRoot(ctx, ceremony.RootOptions{Dir: dir, Provider: prov}); err == nil {
+	if _, err := ceremony.InitRoot(ctx, &ceremony.RootOptions{Dir: dir, Provider: prov}); err == nil {
 		t.Error("root overwrite accepted")
 	}
 	rootSigner, _ := prov.Open(ctx, layout.KeyPath(ca.KindRoot))
@@ -194,7 +194,7 @@ func TestQuorumCeremony(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	ctx := context.Background()
-	res, err := ceremony.InitRoot(ctx, ceremony.RootOptions{Dir: dir, QuorumShares: 5, QuorumThreshold: 3, FileKDF: fastKDF})
+	res, err := ceremony.InitRoot(ctx, &ceremony.RootOptions{Dir: dir, QuorumShares: 5, QuorumThreshold: 3, FileKDF: fastKDF})
 	if err != nil {
 		t.Fatalf("InitRoot(quorum): %v", err)
 	}
@@ -257,7 +257,7 @@ func TestQuorumCeremony(t *testing.T) {
 		{Dir: t.TempDir()},
 		{},
 	} {
-		if _, err := ceremony.InitRoot(ctx, o); err == nil {
+		if _, err := ceremony.InitRoot(ctx, &o); err == nil {
 			t.Errorf("options %+v accepted", o)
 		}
 	}

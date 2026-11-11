@@ -134,11 +134,11 @@ func (s *Service) revoke(ctx context.Context, serial, reason, revokedBy string, 
 	start := s.opts.Clock()
 	_, canonical, err := ca.ParseSerial(serial)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidSerial, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidSerial, err)
 	}
 	reasonCode, err := ca.ParseReason(reason)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidReason, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidReason, err)
 	}
 	rec, err := s.store.GetCertificate(ctx, canonical)
 	if err != nil {
@@ -208,7 +208,7 @@ func (s *Service) revoke(ctx context.Context, serial, reason, revokedBy string, 
 // device_deny=true so the Policy service deny-lists the device id itself.
 func (s *Service) RevokeDevice(ctx context.Context, deviceID, reason, revokedBy string) ([]*Result, error) {
 	if _, err := ca.ParseReason(reason); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidReason, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidReason, err)
 	}
 	certs, err := s.store.ListCertificatesByDevice(ctx, deviceID)
 	if err != nil {

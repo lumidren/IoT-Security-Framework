@@ -60,7 +60,7 @@ type RootResult struct {
 
 // InitRoot generates the root key, writes the self-signed certificate and,
 // when a quorum is configured, the KEK shares.
-func InitRoot(ctx context.Context, opts RootOptions) (*RootResult, error) {
+func InitRoot(ctx context.Context, opts *RootOptions) (*RootResult, error) {
 	if opts.Dir == "" {
 		return nil, errors.New("ceremony: directory is required")
 	}

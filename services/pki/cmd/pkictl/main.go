@@ -164,10 +164,10 @@ func cmdInitRoot(ctx context.Context, e *env, args []string) error {
 			return err
 		}
 		opts.Provider = prov
-	} else if strings.ToLower(*backend) != "file" {
+	} else if !strings.EqualFold(*backend, "file") {
 		return errors.New("--quorum-* applies to the file backend only; HSM/KMS backends enforce quorum through their own key policies")
 	}
-	res, err := ceremony.InitRoot(ctx, opts)
+	res, err := ceremony.InitRoot(ctx, &opts)
 	if err != nil {
 		return err
 	}

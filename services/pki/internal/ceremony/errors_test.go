@@ -21,7 +21,7 @@ func TestFilesystemFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A regular file where a directory is expected.
-	if _, err := ceremony.InitRoot(ctx, ceremony.RootOptions{Dir: filepath.Join(blocker, "sub"), Provider: fileProvider()}); err == nil {
+	if _, err := ceremony.InitRoot(ctx, &ceremony.RootOptions{Dir: filepath.Join(blocker, "sub"), Provider: fileProvider()}); err == nil {
 		t.Error("InitRoot under a file accepted")
 	}
 	if _, err := ceremony.InitBundleKey(ctx, filepath.Join(blocker, "sub"), []byte("pw"), fastKDF); err == nil {
@@ -38,7 +38,7 @@ func TestFilesystemFailures(t *testing.T) {
 	}
 	// Explicit key reference for an intermediate and an invalid share encoding.
 	extra := t.TempDir()
-	if _, err := ceremony.InitRoot(ctx, ceremony.RootOptions{Dir: extra, Provider: fileProvider(), KeyRef: filepath.Join(extra, "custom-root.json")}); err != nil {
+	if _, err := ceremony.InitRoot(ctx, &ceremony.RootOptions{Dir: extra, Provider: fileProvider(), KeyRef: filepath.Join(extra, "custom-root.json")}); err != nil {
 		t.Fatal(err)
 	}
 	rootSigner, err := fileProvider().Open(ctx, filepath.Join(extra, "custom-root.json"))
@@ -61,7 +61,7 @@ func TestFilesystemFailures(t *testing.T) {
 	}
 	// Quorum root key under a custom reference.
 	q := t.TempDir()
-	res, err := ceremony.InitRoot(ctx, ceremony.RootOptions{Dir: q, QuorumShares: 2, QuorumThreshold: 2, KeyRef: filepath.Join(q, "r.json"), FileKDF: fastKDF})
+	res, err := ceremony.InitRoot(ctx, &ceremony.RootOptions{Dir: q, QuorumShares: 2, QuorumThreshold: 2, KeyRef: filepath.Join(q, "r.json"), FileKDF: fastKDF})
 	if err != nil || res.KeyRef != filepath.Join(q, "r.json") {
 		t.Fatalf("quorum custom ref: %+v %v", res, err)
 	}

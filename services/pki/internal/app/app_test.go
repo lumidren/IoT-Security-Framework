@@ -33,7 +33,7 @@ func caDir(t *testing.T) string {
 	dir := t.TempDir()
 	prov := &file.Provider{Passphrase: []byte(passphrase), KDF: fastKDF}
 	ctx := context.Background()
-	if _, err := ceremony.InitRoot(ctx, ceremony.RootOptions{Dir: dir, Provider: prov}); err != nil {
+	if _, err := ceremony.InitRoot(ctx, &ceremony.RootOptions{Dir: dir, Provider: prov}); err != nil {
 		t.Fatal(err)
 	}
 	root, err := prov.Open(ctx, ca.Layout{Dir: dir}.KeyPath(ca.KindRoot))
