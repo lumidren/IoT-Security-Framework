@@ -14,6 +14,7 @@ COPY services/ota/pyproject.toml services/ota/README.md ota/
 COPY services/ota/src ota/src
 RUN pip install --upgrade pip \
  && pip install ./libs/wire ./ota \
+ && if pip show setuptools >/dev/null 2>&1; then pip install --upgrade "setuptools>=78.1.1"; fi \
  && python -m compileall -q /opt/venv/lib
 
 FROM ${PYTHON_IMAGE} AS runtime
