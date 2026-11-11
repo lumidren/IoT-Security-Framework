@@ -212,8 +212,12 @@ func caName(cn string) pkix.Name {
 
 // NewRoot creates the self-signed root certificate for signer (P-384).
 func NewRoot(signer kms.Signer, now time.Time) (*x509.Certificate, error) {
-	if alg, err := kms.AlgorithmOf(signer.Public()); err != nil || alg != kms.AlgorithmP384 {
-		return nil, fmt.Errorf("ca: root key must be ECDSA P-384 (got %s, %v)", alg, err)
+	alg, err := kms.AlgorithmOf(signer.Public())
+	if err != nil {
+		return nil, fmt.Errorf("ca: root key must be ECDSA P-384: %w", err)
+	}
+	if alg != kms.AlgorithmP384 {
+		return nil, fmt.Errorf("ca: root key must be ECDSA P-384 (got %s)", alg)
 	}
 	serial, err := NewSerial()
 	if err != nil {
