@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # cargo-fuzz needs nightly; pinned to a dated build (same as ci.yml).
-  FUZZ_TOOLCHAIN: nightly-2026-10-27
+  # cargo-fuzz needs nightly (sanitizers).
+  FUZZ_TOOLCHAIN: nightly
 
 jobs:
   # ------------------------------------------------------------------------------------------
@@ -137,15 +137,18 @@ jobs:
         working-directory: ${{ matrix.crate }}
         run: |
           status=0
+          # cargo-fuzz defaults --target to the triple it was built for (the prebuilt binary is
+          # musl: static libc, no sanitizer support), so build for the toolchain host instead.
+          host="$(rustc "+${FUZZ_TOOLCHAIN}" -vV | sed -n 's/^host: //p')"
           for target in $(cargo "+${FUZZ_TOOLCHAIN}" fuzz list); do
             mkdir -p "fuzz/corpus/${target}"
             echo "::group::${target}"
-            if ! cargo "+${FUZZ_TOOLCHAIN}" fuzz run "${target}" "fuzz/corpus/${target}" -- \
+            if ! cargo "+${FUZZ_TOOLCHAIN}" fuzz run --target "${host}" "${target}" "fuzz/corpus/${target}" -- \
                 -max_total_time=600 -max_len=16384 -print_final_stats=1; then
               echo "::error::fuzz target ${target} found a crash"
               status=1
             fi
-            cargo "+${FUZZ_TOOLCHAIN}" fuzz cmin "${target}" "fuzz/corpus/${target}" || status=1
+            cargo "+${FUZZ_TOOLCHAIN}" fuzz cmin --target "${host}" "${target}" "fuzz/corpus/${target}" || status=1
             echo "::endgroup::"
           done
           exit "${status}"

@@ -22,8 +22,8 @@ env:
   GO_VERSION_FILE: go.work
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "24"
-  # cargo-fuzz needs nightly; pinned to a dated build so a nightly regression cannot break the gate.
-  FUZZ_TOOLCHAIN: nightly-2026-10-27
+  # cargo-fuzz needs nightly (sanitizers).
+  FUZZ_TOOLCHAIN: nightly
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -639,11 +639,14 @@ jobs:
         run: |
           set -o pipefail
           status=0
+          # cargo-fuzz defaults --target to the triple it was built for (the prebuilt binary is
+          # musl: static libc, no sanitizer support), so build for the toolchain host instead.
+          host="$(rustc "+${FUZZ_TOOLCHAIN}" -vV | sed -n 's/^host: //p')"
           for target in $(cargo "+${FUZZ_TOOLCHAIN}" fuzz list); do
             mkdir -p "fuzz/corpus/${target}" "fuzz/artifacts/${target}"
             echo "::group::${target}"
             log="${RUNNER_TEMP}/fuzz-${target}.log"
-            if ! cargo "+${FUZZ_TOOLCHAIN}" fuzz run "${target}" "fuzz/corpus/${target}" -- \
+            if ! cargo "+${FUZZ_TOOLCHAIN}" fuzz run --target "${host}" "${target}" "fuzz/corpus/${target}" -- \
                 -max_total_time=60 -max_len=16384 -print_final_stats=1 2>&1 | tee "${log}"; then
               echo "::error::fuzz target ${target} failed (crash or build error)"
               # The first build error or the sanitizer/libFuzzer summary, as annotations.
