@@ -86,6 +86,8 @@ issue() {
   cp "${work}/${cn}.crt" "${out}/tls.crt"
   cp "${TRUST_DIR}/ca-bundle.pem" "${out}/ca.crt"
   rm -rf "${work}"
+  # pkictl writes under umask 077 and cp keeps the source mode, so set the public files explicitly.
+  chmod 0644 "${out}/tls.crt" "${out}/ca.crt"
   chmod 0600 "${out}/tls.key"
   # Public key for ES256 service-JWT verification (OTA_SERVICE_PUBLIC_KEYS_DIR, PKI JWT allow list).
   openssl x509 -in "${out}/tls.crt" -pubkey -noout > "${TRUST_DIR}/service-pubkeys/${name}.pem"
@@ -116,6 +118,8 @@ umask 027
   printf 'registry:%s:administrator\n' "${EMQX_REGISTRY_API_SECRET}"
   printf 'ota:%s:administrator\n' "${EMQX_OTA_API_SECRET}"
 } > "${TLS_DIR}/emqx/api-keys.txt"
+# EMQX reads these through group 10001 only (set on every run so existing volumes are repaired).
+chmod 0644 "${TLS_DIR}/emqx/broker.pem" "${TLS_DIR}/emqx/ca-chain.pem" "${TLS_DIR}/emqx/ca.crt"
 chmod 0640 "${TLS_DIR}/emqx/broker.key" "${TLS_DIR}/emqx/api-keys.txt"
 umask 022
 
