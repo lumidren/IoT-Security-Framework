@@ -24,6 +24,7 @@
 #include "im_esp.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
+#include "mbedtls/net_sockets.h" /* MBEDTLS_ERR_NET_* returned by the socket BIO */
 #include "mbedtls/sha256.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
