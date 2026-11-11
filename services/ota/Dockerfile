@@ -14,16 +14,17 @@ COPY services/ota/pyproject.toml services/ota/README.md ota/
 COPY services/ota/src ota/src
 RUN pip install --upgrade pip \
  && pip install ./libs/wire ./ota \
- && if pip show setuptools >/dev/null 2>&1; then pip install --upgrade "setuptools>=78.1.1"; fi \
- && python -m compileall -q /opt/venv/lib
+ && python -m compileall -q /opt/venv/lib \
+ && pip uninstall --yes pip setuptools wheel
 
 FROM ${PYTHON_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="ironmesh-ota" \
       org.opencontainers.image.source="https://github.com/lumidren/IoT-Security-Framework" \
       org.opencontainers.image.licenses="Apache-2.0"
-# The service runs from /opt/venv; the base image's own setuptools/wheel are unused at runtime
-# and carried a fixed HIGH CVE (CVE-2025-47273), so they are removed.
-RUN python -m pip uninstall --yes setuptools wheel
+# The service runs from /opt/venv and never installs packages at runtime. The base image's pip,
+# setuptools and wheel are unused, and pip vendors an old setuptools pkg_resources that scanners
+# report as CVE-2025-47273, so all three are removed (as in the anomaly image).
+RUN python -m pip uninstall --yes pip setuptools wheel
 RUN groupadd --system --gid 10001 ota \
  && useradd --system --uid 10001 --gid ota --home-dir /nonexistent --shell /usr/sbin/nologin ota \
  && mkdir -p /var/lib/ironmesh/ota/artifacts \
