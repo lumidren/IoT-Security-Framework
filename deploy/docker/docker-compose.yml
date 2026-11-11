@@ -1026,7 +1026,7 @@ services:
 
   grafana:
     <<: *hardened
-    image: grafana/grafana-oss:11.4.0
+    image: grafana/grafana-oss:13.0.2
     environment:
       GF_SECURITY_ADMIN_USER: admin
       # Compose can only mount `file` secrets into a read-only container, and the generated .env
