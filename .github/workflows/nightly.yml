@@ -198,7 +198,9 @@ jobs:
         with:
           persist-credentials: false
       - name: stack + fleet
-        run: scripts/demo/quickstart.sh
+        run: |
+          set -o pipefail
+          scripts/demo/quickstart.sh 2>&1 | tee quickstart.log
       - name: wait for 1000 enrolled devices
         run: docker compose --profile tools run --rm --no-deps demo-tools wait-active 1000 --timeout-s 1200
       - name: hold load for 5 minutes
@@ -214,8 +216,13 @@ jobs:
       - name: annotate unhealthy containers
         if: failure()
         run: |
-          # Job logs need sign-in; annotations are public. Report each container that is not running
-          # and healthy, with its state and the tail of its log.
+          # Job logs need sign-in; annotations are public. Report the quickstart output tail (compose's
+          # own error), then each container that is not running and healthy, with its state, its last
+          # health probe and the tail of its log.
+          if [ -f quickstart.log ]; then
+            qs="$(tail -n 25 quickstart.log | tr -d '\033' | sed -E 's/\[[0-9;]*m//g' | cut -c1-240 | sed 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }' | tail -c 3500)"
+            echo "::error title=quickstart output::${qs}"
+          fi
           docker compose --profile tools ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' | while IFS='|' read -r svc state health code; do
             if [ "${state}" = "running" ] && { [ -z "${health}" ] || [ "${health}" = "healthy" ]; }; then continue; fi
             if [ "${state}" = "exited" ] && [ "${code}" = "0" ]; then continue; fi
