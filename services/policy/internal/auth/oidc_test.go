@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -53,10 +54,12 @@ func rsaJWK(kid, alg string, k *rsa.PublicKey) map[string]any {
 }
 
 func ecJWK(kid string, k *ecdsa.PublicKey) map[string]any {
-	x, y := make([]byte, 32), make([]byte, 32)
-	k.X.FillBytes(x)
-	k.Y.FillBytes(y)
-	return map[string]any{"kty": "EC", "kid": kid, "crv": "P-256", "x": b64u(x), "y": b64u(y)}
+	// Uncompressed SEC 1 point: 0x04 || X (32 bytes) || Y (32 bytes).
+	point, err := k.Bytes()
+	if err != nil || len(point) != 65 {
+		panic(fmt.Sprintf("ecJWK: not a P-256 public key: %v", err))
+	}
+	return map[string]any{"kty": "EC", "kid": kid, "crv": "P-256", "x": b64u(point[1:33]), "y": b64u(point[33:])}
 }
 
 // signJWT builds a compact JWT; key is *rsa.PrivateKey (RS256/PS256), *ecdsa.PrivateKey (ES256)
@@ -284,7 +287,7 @@ func TestOIDCRejections(t *testing.T) {
 		want  error
 	}{
 		"alg none":            {signJWT(t, "none", "rsa-1", nil, p.claims(nil)), ErrAlgorithm},
-		"alg HS256":           {signJWT(t, "HS256", "rsa-1", k1.PublicKey.N.Bytes(), p.claims(nil)), ErrAlgorithm},
+		"alg HS256":           {signJWT(t, "HS256", "rsa-1", k1.N.Bytes(), p.claims(nil)), ErrAlgorithm},
 		"wrong audience":      {signJWT(t, "RS256", "rsa-1", k1, p.claims(map[string]any{"aud": "policy"})), ErrAudience},
 		"wrong issuer":        {signJWT(t, "RS256", "rsa-1", k1, p.claims(map[string]any{"iss": "https://evil.example"})), ErrIssuer},
 		"expired":             {signJWT(t, "RS256", "rsa-1", k1, p.claims(map[string]any{"exp": fixedNow.Add(-time.Hour).Unix()})), ErrExpired},

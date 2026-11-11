@@ -144,12 +144,12 @@ func (c *Client) kickOnce(ctx context.Context, clientID string) error {
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-	switch {
-	case resp.StatusCode == http.StatusNoContent, resp.StatusCode == http.StatusOK, resp.StatusCode == http.StatusNotFound:
+	switch resp.StatusCode {
+	case http.StatusNoContent, http.StatusOK, http.StatusNotFound:
 		return nil
-	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusForbidden:
 		return &permanentError{err: ErrUnauthorized}
-	case resp.StatusCode == http.StatusBadRequest:
+	case http.StatusBadRequest:
 		return &permanentError{err: fmt.Errorf("%w: client id %q", ErrBadRequest, clientID)}
 	default:
 		return fmt.Errorf("emqx api: unexpected status %d", resp.StatusCode)

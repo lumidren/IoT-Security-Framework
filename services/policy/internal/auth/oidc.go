@@ -330,7 +330,7 @@ func (v *OIDCVerifier) refreshLocked(ctx context.Context) error {
 			return fmt.Errorf("%w: discovery document issuer %q does not match %q", ErrDiscovery, doc.Issuer, v.issuer)
 		}
 		u, err := url.Parse(doc.JWKSURI)
-		if err != nil || u.Host == "" || (u.Scheme != "https" && !(u.Scheme == "http" && strings.HasPrefix(v.issuer, "http://"))) {
+		if err != nil || u.Host == "" || (u.Scheme != "https" && (u.Scheme != "http" || !strings.HasPrefix(v.issuer, "http://"))) {
 			return fmt.Errorf("%w: invalid jwks_uri %q", ErrDiscovery, doc.JWKSURI)
 		}
 		v.jwksURI = doc.JWKSURI
