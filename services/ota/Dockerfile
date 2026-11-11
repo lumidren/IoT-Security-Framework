@@ -20,6 +20,9 @@ FROM ${PYTHON_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="ironmesh-ota" \
       org.opencontainers.image.source="https://github.com/lumidren/IoT-Security-Framework" \
       org.opencontainers.image.licenses="Apache-2.0"
+# The service runs from /opt/venv; the base image's own setuptools/wheel are unused at runtime
+# and carried a fixed HIGH CVE (CVE-2025-47273), so they are removed.
+RUN python -m pip uninstall --yes setuptools wheel
 RUN groupadd --system --gid 10001 ota \
  && useradd --system --uid 10001 --gid ota --home-dir /nonexistent --shell /usr/sbin/nologin ota \
  && mkdir -p /var/lib/ironmesh/ota/artifacts \
