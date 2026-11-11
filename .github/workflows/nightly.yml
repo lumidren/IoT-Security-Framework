@@ -13,6 +13,7 @@ on:
     paths:
       - deploy/docker/**
       - scripts/demo/**
+      - services/policy/deploy/emqx/**
       - .github/workflows/nightly.yml
 
 permissions:
