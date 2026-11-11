@@ -1007,7 +1007,7 @@ services:
 
   prometheus:
     <<: *hardened
-    image: prom/prometheus:v3.1.0
+    image: prom/prometheus:v3.16.0
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
