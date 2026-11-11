@@ -28,6 +28,10 @@ linters:
           arguments: ["checkPrivateReceivers", "disableStutteringCheck"]
     gocritic:
       enabled-tags: [diagnostic, performance]
+      disabled-checks:
+        # Options/config structs (80-264 bytes) are passed by value once per constructor or
+        # ceremony call; value semantics keep callers' structs immutable and the copy is noise.
+        - hugeParam
   exclusions:
     # golangci-lint v2's replacement for the v1 default exclusions: unchecked errors from Close,
     # Flush, os.Remove(All), print functions and Setenv, which are cleanup or best-effort calls.
