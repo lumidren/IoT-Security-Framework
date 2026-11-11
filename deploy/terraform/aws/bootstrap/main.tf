@@ -1,6 +1,6 @@
 # One-time, per-account bootstrap of the Terraform remote state backend. Runs with local
-# state (keep the resulting terraform.tfstate in the ops vault; it only describes the two
-# resources below and contains no secrets).
+# state (keep the resulting terraform.tfstate in the ops vault; it only describes the bucket,
+# the lock table and their KMS key below and contains no secrets).
 #
 #   cd deploy/terraform/aws/bootstrap
 #   terraform init
@@ -52,9 +52,96 @@ variable "name_prefix" {
   default     = "ironmesh"
 }
 
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
+
 locals {
-  bucket_name = "${var.name_prefix}-tfstate-${var.environment}"
-  table_name  = "${var.name_prefix}-tfstate-lock-${var.environment}"
+  bucket_name  = "${var.name_prefix}-tfstate-${var.environment}"
+  table_name   = "${var.name_prefix}-tfstate-lock-${var.environment}"
+  account_root = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root"
+
+  # Administrative actions only (no Encrypt/Decrypt/GenerateDataKey).
+  state_key_admin_actions = [
+    "kms:CancelKeyDeletion",
+    "kms:CreateAlias",
+    "kms:DeleteAlias",
+    "kms:DescribeKey",
+    "kms:DisableKey",
+    "kms:EnableKey",
+    "kms:EnableKeyRotation",
+    "kms:GetKeyPolicy",
+    "kms:GetKeyRotationStatus",
+    "kms:ListAliases",
+    "kms:ListGrants",
+    "kms:ListKeyPolicies",
+    "kms:ListResourceTags",
+    "kms:PutKeyPolicy",
+    "kms:ScheduleKeyDeletion",
+    "kms:TagResource",
+    "kms:UntagResource",
+    "kms:UpdateAlias",
+    "kms:UpdateKeyDescription",
+  ]
+}
+
+#------------------------------------------------------------------------------
+# Customer-managed key for the state bucket and the lock table. Administration is delegated
+# to IAM in this account; data-key use is limited to S3 and DynamoDB calls from this account.
+#------------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "state_key" {
+  statement {
+    sid       = "KeyAdministrationThroughIam"
+    actions   = local.state_key_admin_actions
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [local.account_root]
+    }
+  }
+
+  statement {
+    sid       = "StateEncryptionViaS3AndDynamoDb"
+    actions   = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = [local.account_root]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:CallerAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["s3.${var.region}.amazonaws.com", "dynamodb.${var.region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_kms_key" "state" {
+  description             = "IronMesh Terraform state (${var.environment}): S3 bucket and DynamoDB lock table"
+  key_usage               = "ENCRYPT_DECRYPT"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  rotation_period_in_days = 365
+  policy                  = data.aws_iam_policy_document.state_key.json
+
+  tags = {
+    Name = local.bucket_name
+  }
+}
+
+resource "aws_kms_alias" "state" {
+  name          = "alias/${local.bucket_name}"
+  target_key_id = aws_kms_key.state.key_id
 }
 
 resource "aws_s3_bucket" "state" {
@@ -78,8 +165,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.state.arn
     }
+    bucket_key_enabled = true
   }
 }
 
@@ -138,7 +227,8 @@ resource "aws_dynamodb_table" "lock" {
   }
 
   server_side_encryption {
-    enabled = true
+    enabled     = true
+    kms_key_arn = aws_kms_key.state.arn
   }
 
   point_in_time_recovery {
@@ -158,5 +248,6 @@ output "backend_config" {
     region         = var.region
     dynamodb_table = aws_dynamodb_table.lock.name
     encrypt        = true
+    kms_key_id     = aws_kms_key.state.arn
   }
 }
