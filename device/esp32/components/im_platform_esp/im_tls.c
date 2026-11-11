@@ -2,7 +2,9 @@
  * IronMesh TLS transport: an esp_transport for esp-mqtt (and the EST client) built directly on
  * mbedTLS 3.6 so that
  *   - only TLS 1.3 is offered (contract section 4; TLS 1.2 brokers fail with tls_handshake),
- *   - ALPN "mqtt" is required,
+ *   - ALPN "mqtt" is offered; a broker that selects any other protocol is rejected, and one that
+ *     selects none (EMQX 5.8 has no listener ALPN option) is accepted per RFC 7301 - the SPKI pin
+ *     below is what authenticates the broker,
  *   - the trust anchors are exactly the CA certificates whose SPKI SHA-256 is pinned in the
  *     trust bundle (contract section 4) - a broker under any other CA fails with
  *     tls_pin_mismatch BEFORE a single MQTT byte is sent (C-TLS-2),
@@ -269,7 +271,7 @@ static int tls_connect(esp_transport_handle_t tr, const char *host, int port, in
     }
     if (t->opts.alpn != NULL) {
         const char *a = mbedtls_ssl_get_alpn_protocol(&t->ssl);
-        if (a == NULL || strcmp(a, "mqtt") != 0) {
+        if (a != NULL && strcmp(a, "mqtt") != 0) {
             s_last_failure = "tls_handshake";
             tls_free(t);
             return -1;

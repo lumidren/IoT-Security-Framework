@@ -85,7 +85,8 @@ ML-DSA-65 backend on the ESP32: `IRONMESH_REQUIRE_PQ` would reject every update 
 
 ## TLS, EST and MQTT
 
-`im_tls.c` is an `esp_transport` on mbedTLS: TLS 1.3 only, ALPN `mqtt`, server SAN = broker
+`im_tls.c` is an `esp_transport` on mbedTLS: TLS 1.3 only, ALPN `mqtt` offered (a broker selecting
+another protocol is rejected; one selecting none is accepted), server SAN = broker
 host, and trust anchors = exactly the CA certificates (from EST `/cacerts`) whose SPKI SHA-256 is
 pinned in the trust bundle - a rogue CA fails with `tls_pin_mismatch` before any MQTT byte.
 TLS 1.3 tickets are cached for resumption. It exists because esp-tls' secure-element hook is
