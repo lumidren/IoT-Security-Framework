@@ -18,6 +18,11 @@ variable "vpc_id" {
   type        = string
 }
 
+variable "vpc_cidr" {
+  description = "VPC IPv4 CIDR; broker egress is limited to it."
+  type        = string
+}
+
 variable "subnet_ids" {
   description = "Isolated subnet ids for the brokers."
   type        = list(string)

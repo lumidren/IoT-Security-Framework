@@ -62,10 +62,12 @@ resource "aws_vpc_security_group_ingress_rule" "intra" {
   ip_protocol                  = "-1"
 }
 
-resource "aws_vpc_security_group_egress_rule" "all" {
+# Brokers only talk to each other and answer client connections inside the VPC (MSK manages
+# its control plane out of band), so egress never needs to leave the VPC.
+resource "aws_vpc_security_group_egress_rule" "vpc" {
   security_group_id = aws_security_group.this.id
-  description       = "Broker egress"
-  cidr_ipv4         = "0.0.0.0/0"
+  description       = "Broker egress within the VPC"
+  cidr_ipv4         = var.vpc_cidr
   ip_protocol       = "-1"
 }
 

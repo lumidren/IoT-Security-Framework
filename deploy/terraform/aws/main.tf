@@ -89,6 +89,7 @@ module "msk" {
   name_prefix               = local.name_prefix
   mode                      = var.kafka_mode
   vpc_id                    = module.network.vpc_id
+  vpc_cidr                  = var.vpc_cidr
   subnet_ids                = module.network.isolated_subnet_ids
   client_security_group_ids = [module.eks.cluster_security_group_id]
   kms_key_arn               = lookup(module.kms.key_arns, "msk", null)
