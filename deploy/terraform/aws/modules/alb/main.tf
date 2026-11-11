@@ -430,7 +430,9 @@ resource "aws_lb_listener" "https" {
     type = "fixed-response"
 
     fixed_response {
-      content_type = "application/problem+json"
+      # ALB fixed responses accept only text/plain, text/css, text/html, application/javascript
+      # and application/json, so the problem-details body is served as application/json.
+      content_type = "application/json"
       message_body = "{\"type\":\"about:blank\",\"title\":\"Not Found\",\"status\":404}"
       status_code  = "404"
     }
