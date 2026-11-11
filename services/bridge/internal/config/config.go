@@ -156,7 +156,7 @@ func Load(getenv func(string) string) (Config, error) {
 		errs = append(errs, errors.New("BRIDGE_KAFKA_BROKERS must list at least one broker"))
 	}
 	if cfg.KafkaIngestTopic == "" || cfg.KafkaAuthTopic == "" {
-		errs = append(errs, errors.New("Kafka topics must not be empty"))
+		errs = append(errs, errors.New("BRIDGE_KAFKA_INGEST_TOPIC and BRIDGE_KAFKA_AUTH_TOPIC must not be empty"))
 	}
 	if cfg.MaxInflight < 1 || cfg.MaxInflight > 65535 {
 		errs = append(errs, fmt.Errorf("BRIDGE_MAX_INFLIGHT must be between 1 and 65535, got %d", cfg.MaxInflight))

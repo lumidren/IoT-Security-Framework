@@ -89,7 +89,7 @@ func (s *MQTTSource) Run(ctx context.Context, handle Handler) error {
 		KeepAlive:                     s.cfg.KeepAlive,
 		CleanStartOnInitialConnection: false,
 		SessionExpiryInterval:         s.cfg.SessionExpiry,
-		ConnectRetryDelay:             s.cfg.ConnectRetryDelay,
+		ReconnectBackoff:              autopaho.NewConstantBackoff(s.cfg.ConnectRetryDelay),
 		ConnectTimeout:                s.cfg.ConnectTimeout,
 		AttemptConnection:             s.cfg.AttemptConnection,
 		OnConnectionUp: func(cm *autopaho.ConnectionManager, ca *paho.Connack) {
