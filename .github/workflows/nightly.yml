@@ -220,7 +220,7 @@ jobs:
           # own error), then each container that is not running and healthy, with its state, its last
           # health probe and the tail of its log.
           if [ -f quickstart.log ]; then
-            qs="$(tail -n 25 quickstart.log | tr -d '\033' | sed -E 's/\[[0-9;]*m//g' | cut -c1-240 | sed 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }' | tail -c 3500)"
+            qs="$({ grep -iE 'error|fail|didn.t complete|unhealthy|exited|Container ' quickstart.log | grep -vE '^(NAME |ironmesh-)|docker compose up failed' || true; } | tail -n 40 | tr -d '\033' | sed -E 's/\[[0-9;]*m//g' | cut -c1-240 | sed 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }' | tail -c 3500)"
             echo "::error title=quickstart output::${qs}"
           fi
           docker compose --profile tools ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' | while IFS='|' read -r svc state health code; do
