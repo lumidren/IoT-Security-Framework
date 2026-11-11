@@ -923,12 +923,12 @@ RFC9180_A3_1: Final[dict[str, Any]] = {
     "pkRm": "04fe8c19ce0905191ebc298a9245792531f26f0cece2460639e8bc39cb7f706a826a779b4cf969b8a0e539c7f62fb3d30ad6aa8f80e30f1d128aafd68a2ce72ea0",
     "skRm": "f3ce7fdae57e1a310d87f1ebbde6f328be0a99cdbcadf4d6589cf29de4b8ffd2",
     "enc": "04a92719c6195d5085104f469a8b9814d5838ff72b60501e2c4466e5e67b325ac98536d7b61a1af4b78e5b7f951c0900be863c403ce65c9bfcb9382657222d18c4",
-    "shared_secret": "c0d26aeab536609a572b07695d933b589dcf363ff9d93c93adea537aeabb8cb8",
+    "shared_secret": "c0d26aeab536609a572b07695d933b589dcf363ff9d93c93adea537aeabb8cb8",  # nosec B105 - published RFC 9180 A.3 test-vector value
     "key_schedule_context": "00b88d4e6d91759e65e87c470e8b9141113e9ad5f0c8ceefc1e088c82e6980500798e486f9c9c09c9b5c753ac72d6005de254c607d1b534ed11d493ae1c1d9ac85",
-    "secret": "2eb7b6bf138f6b5aff857414a058a3f1750054a9ba1f72c2cf0684a6f20b10e1",
+    "secret": "2eb7b6bf138f6b5aff857414a058a3f1750054a9ba1f72c2cf0684a6f20b10e1",  # nosec B105 - published RFC 9180 A.3 test-vector value
     "key": "868c066ef58aae6dc589b6cfdd18f97e",
     "base_nonce": "4e0bc5018beba4bf004cca59",
-    "exporter_secret": "14ad94af484a7ad3ef40e9f3be99ecc6fa9036df9d4920548424df127ee0d99f",
+    "exporter_secret": "14ad94af484a7ad3ef40e9f3be99ecc6fa9036df9d4920548424df127ee0d99f",  # nosec B105 - published RFC 9180 A.3 test-vector value
     "encryptions": [
         {
             "sequence_number": 0,
