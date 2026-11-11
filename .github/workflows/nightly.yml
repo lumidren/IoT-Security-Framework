@@ -6,13 +6,21 @@ on:
   schedule:
     - cron: "15 1 * * *"
   workflow_dispatch:
+  # A change to the compose stack or the demo scripts runs the load smoke immediately (the other
+  # nightly jobs stay on the schedule), so the README quickstart is exercised on every such change.
+  push:
+    branches: [main]
+    paths:
+      - deploy/docker/**
+      - scripts/demo/**
+      - .github/workflows/nightly.yml
 
 permissions:
   contents: read
 
 concurrency:
-  group: nightly
-  cancel-in-progress: false
+  group: nightly-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 env:
   # cargo-fuzz needs nightly (sanitizers).
@@ -25,6 +33,7 @@ jobs:
   # ------------------------------------------------------------------------------------------
   backup-restore:
     name: backup restore drill
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -116,6 +125,7 @@ jobs:
   # ------------------------------------------------------------------------------------------
   fuzz-long:
     name: fuzz (${{ matrix.crate }})
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:
@@ -201,6 +211,17 @@ jobs:
           errors="$(curl -sf 'http://127.0.0.1:9090/api/v1/query?query=sum(increase(ironmesh_bridge_forward_errors_total%5B5m%5D))' | jq -r '.data.result[0].value[1] // "0"')"
           echo "bridge forward errors in the last 5 min: ${errors}"
           awk -v e="${errors}" 'BEGIN { exit (e > 0) }' || { echo "::error::bridge forward errors under load"; exit 1; }
+      - name: annotate unhealthy containers
+        if: failure()
+        run: |
+          # Job logs need sign-in; annotations are public. Report each container that is not running
+          # and healthy, with its state and the tail of its log.
+          docker compose --profile tools ps -a --format '{{.Service}}|{{.State}}|{{.Health}}|{{.ExitCode}}' | while IFS='|' read -r svc state health code; do
+            if [ "${state}" = "running" ] && { [ -z "${health}" ] || [ "${health}" = "healthy" ]; }; then continue; fi
+            if [ "${state}" = "exited" ] && [ "${code}" = "0" ]; then continue; fi
+            tail_lines="$(docker compose logs --no-color --tail 25 "${svc}" 2>&1 | sed 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }' | cut -c1-3500)"
+            echo "::error title=${svc} ${state} ${health} exit=${code}::${tail_lines}"
+          done
       - name: logs
         if: always()
         run: docker compose logs --no-color --timestamps > compose.log 2>&1 || true
@@ -223,6 +244,7 @@ jobs:
   # ------------------------------------------------------------------------------------------
   dependency-drift:
     name: dependency drift
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
