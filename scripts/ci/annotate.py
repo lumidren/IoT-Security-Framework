@@ -121,7 +121,9 @@ def lines(log: str, pattern: str, title: str) -> None:
     rx = re.compile(pattern)
     with open(log, encoding="utf-8", errors="replace") as fh:
         hits = [ANSI.sub("", ln).rstrip() for ln in fh]
-    _emit(title, [("", "", title, ln) for ln in hits if rx.search(ln)])
+    # Compilers repeat the same diagnostic per translation unit; keep the first of each.
+    unique = list(dict.fromkeys(ln for ln in hits if rx.search(ln)))
+    _emit(title, [("", "", title, ln) for ln in unique])
 
 
 def main() -> int:
