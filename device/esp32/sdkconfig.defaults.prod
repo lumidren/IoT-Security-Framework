@@ -9,6 +9,10 @@ CONFIG_IRONMESH_REQUIRE_PQ=n
 CONFIG_SECURE_BOOT=y
 CONFIG_SECURE_BOOT_V2_ENABLED=y
 CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+# On the ESP32 target, Secure Boot v2 (RSA) requires chip revision v3.0 (ECO3) or later; without
+# this minimum IDF falls back to Secure Boot v1 (ECDSA). ESP32-WROOM-32E modules are ECO3. The
+# option does not exist for ESP32-S3 and is ignored there.
+CONFIG_ESP32_REV_MIN_3=y
 CONFIG_SECURE_BOOT_INSECURE=n
 CONFIG_SECURE_BOOT_ALLOW_ROM_BASIC=n
 CONFIG_SECURE_BOOT_ALLOW_JTAG=n
