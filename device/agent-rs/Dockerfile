@@ -8,7 +8,10 @@ COPY src ./src
 RUN cargo build --release --locked --bin ironmesh-fleet --bin ironmesh-agent \
  && strip target/release/ironmesh-fleet target/release/ironmesh-agent
 
-FROM gcr.io/distroless/cc-debian12:nonroot
+# Debian 13 runtime: the debian12 cc image still ships a libssl3 with a fixed HIGH CVE (the
+# binary is rustls/ring only and never loads it). glibc is backward compatible, so the
+# bookworm-built binary runs unchanged.
+FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /src/target/release/ironmesh-fleet /usr/local/bin/ironmesh-fleet
 USER nonroot:nonroot
 WORKDIR /fleet
