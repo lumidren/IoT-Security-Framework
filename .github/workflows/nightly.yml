@@ -118,6 +118,10 @@ jobs:
     name: fuzz (${{ matrix.crate }})
     runs-on: ubuntu-24.04
     timeout-minutes: 300
+    env:
+      # The ESP32 C core is instrumented with -fsanitize=address,fuzzer-no-link (clang only).
+      CC: clang
+      CXX: clang++
     permissions:
       contents: read
     strategy:
