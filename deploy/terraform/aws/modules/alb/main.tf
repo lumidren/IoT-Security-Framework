@@ -349,6 +349,9 @@ resource "aws_wafv2_web_acl_logging_configuration" "this" {
 # Application Load Balancer
 #------------------------------------------------------------------------------
 
+# Internet-facing by design: the console and API over HTTPS for operators (WAF, TLS 1.2+ policy, security group).
+#trivy:ignore:AWS-0053
+#trivy:ignore:AVD-AWS-0053
 resource "aws_lb" "alb" {
   name               = "${var.name_prefix}-edge-alb"
   load_balancer_type = "application"
@@ -461,6 +464,9 @@ resource "aws_lb_listener_rule" "host" {
 # Network Load Balancer (TLS passthrough)
 #------------------------------------------------------------------------------
 
+# Internet-facing by design: the MQTT/EST endpoint that field devices reach over the internet (mTLS passthrough).
+#trivy:ignore:AWS-0053
+#trivy:ignore:AVD-AWS-0053
 resource "aws_lb" "nlb" {
   name               = "${var.name_prefix}-edge-nlb"
   load_balancer_type = "network"
