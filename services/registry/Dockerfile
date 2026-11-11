@@ -14,6 +14,10 @@ COPY services/registry/app /src/services/registry/app
 RUN pip install /src/services/registry
 
 FROM python:3.12-slim AS runtime
+# Pick up Debian security updates released after the base image was built.
+RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 ironmesh \
  && useradd --system --uid 10001 --gid ironmesh --no-create-home --shell /usr/sbin/nologin ironmesh
 COPY --from=build /opt/venv /opt/venv
