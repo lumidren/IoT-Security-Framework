@@ -396,7 +396,7 @@ services:
 
   emqx:
     <<: *hardened
-    image: ${EMQX_IMAGE:-emqx/emqx:5.8.9}
+    image: ${EMQX_IMAGE:-emqx/emqx:6.3.2}
     read_only: false
     group_add: ["10001"]
     environment:
